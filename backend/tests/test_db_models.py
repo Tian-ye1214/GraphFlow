@@ -1,4 +1,6 @@
+import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.models import Dataset, ModelConfig, Run, RunNodeState, RunRow, User, Workflow, WorkflowVersion
 
@@ -31,3 +33,7 @@ async def test_run_row_unique_unit(session_factory):
         s.add(RunNodeState(run_id=run.id, node_id="n1", status="done", total=1, done=1))
         await s.commit()
         assert run.status == "queued"
+    async with session_factory() as s2:
+        s2.add(RunRow(run_id=run.id, node_id="n1", row_idx=0))
+        with pytest.raises(IntegrityError):
+            await s2.commit()

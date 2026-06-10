@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import ForeignKey, Index, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -19,7 +19,7 @@ class User(Base):
     display_name: Mapped[str] = mapped_column(default="")
     auth_provider: Mapped[str] = mapped_column(default="dev")
     max_llm_concurrency: Mapped[int] = mapped_column(default=8)
-    created_at: Mapped[datetime] = mapped_column(default=now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class ModelConfig(Base):
@@ -31,7 +31,7 @@ class ModelConfig(Base):
     base_url: Mapped[str]
     api_key_enc: Mapped[str]
     default_params_json: Mapped[str] = mapped_column(Text, default="{}")
-    created_at: Mapped[datetime] = mapped_column(default=now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class Dataset(Base):
@@ -44,15 +44,16 @@ class Dataset(Base):
     file_path: Mapped[str] = mapped_column(default="")
     row_count: Mapped[int] = mapped_column(default=0)
     columns_json: Mapped[str] = mapped_column(Text, default="[]")
-    created_at: Mapped[datetime] = mapped_column(default=now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class DatasetRow(Base):
     __tablename__ = "dataset_rows"
     id: Mapped[int] = mapped_column(primary_key=True)
-    dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.id"), index=True)
+    dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.id"))
     idx: Mapped[int]
     data_json: Mapped[str] = mapped_column(Text)
+    __table_args__ = (Index("ix_dataset_row_unit", "dataset_id", "idx", unique=True),)
 
 
 class Workflow(Base):
@@ -62,8 +63,8 @@ class Workflow(Base):
     name: Mapped[str]
     graph_json: Mapped[str] = mapped_column(Text, default='{"nodes": [], "edges": []}')
     is_template: Mapped[bool] = mapped_column(default=False)
-    created_at: Mapped[datetime] = mapped_column(default=now)
-    updated_at: Mapped[datetime] = mapped_column(default=now, onupdate=now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
 class WorkflowVersion(Base):
@@ -72,7 +73,7 @@ class WorkflowVersion(Base):
     workflow_id: Mapped[int] = mapped_column(ForeignKey("workflows.id"), index=True)
     version: Mapped[int]
     graph_json: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(default=now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class Run(Base):
@@ -84,28 +85,28 @@ class Run(Base):
     status: Mapped[str] = mapped_column(default="queued")  # queued/running/cancelled/completed/failed
     stats_json: Mapped[str] = mapped_column(Text, default="{}")
     error: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(default=now)
-    started_at: Mapped[datetime | None] = mapped_column(default=None)
-    finished_at: Mapped[datetime | None] = mapped_column(default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
 
 class RunNodeState(Base):
     __tablename__ = "run_node_states"
     id: Mapped[int] = mapped_column(primary_key=True)
-    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"), index=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"))
     node_id: Mapped[str]
     status: Mapped[str] = mapped_column(default="pending")  # pending/running/done/failed
     total: Mapped[int] = mapped_column(default=0)
     done: Mapped[int] = mapped_column(default=0)
     failed: Mapped[int] = mapped_column(default=0)
-    updated_at: Mapped[datetime] = mapped_column(default=now, onupdate=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
     __table_args__ = (Index("ix_node_state_unit", "run_id", "node_id", unique=True),)
 
 
 class RunRow(Base):
     __tablename__ = "run_rows"
     id: Mapped[int] = mapped_column(primary_key=True)
-    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"), index=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"))
     node_id: Mapped[str]
     row_idx: Mapped[int]
     attempt: Mapped[int] = mapped_column(default=0)
@@ -113,5 +114,5 @@ class RunRow(Base):
     status: Mapped[str] = mapped_column(default="pending")  # pending/running/done/failed
     data_json: Mapped[str] = mapped_column(Text, default="[]")
     error: Mapped[str] = mapped_column(Text, default="")
-    updated_at: Mapped[datetime] = mapped_column(default=now, onupdate=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
     __table_args__ = (Index("ix_run_row_unit", "run_id", "node_id", "row_idx", unique=True),)
