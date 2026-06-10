@@ -4,7 +4,7 @@ from fastapi import FastAPI
 
 from app import db
 from app.db import init_db
-from app.routers import auth
+from app.routers import auth, model_configs
 
 
 @asynccontextmanager
@@ -17,6 +17,7 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(title="GraphFlow", lifespan=lifespan)
     app.include_router(auth.router)
+    app.include_router(model_configs.router)
     return app
 
 

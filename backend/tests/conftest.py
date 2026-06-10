@@ -1,23 +1,13 @@
 import httpx
 import pytest
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import settings
-from app.models import Base
 
 
 @pytest.fixture
-async def engine(tmp_path):
-    eng = create_async_engine(f"sqlite+aiosqlite:///{(tmp_path / 'test.db').as_posix()}")
-    async with eng.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    yield eng
-    await eng.dispose()
-
-
-@pytest.fixture
-async def session_factory(engine):
-    return async_sessionmaker(engine, expire_on_commit=False)
+async def session_factory(client):
+    from app import db
+    return db.get_session_factory()
 
 
 @pytest.fixture
