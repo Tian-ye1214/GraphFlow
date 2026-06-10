@@ -2,7 +2,7 @@ import asyncio
 import json
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.engine import nodes
@@ -37,31 +37,32 @@ async def _execute(run_id, session_factory, user_sem, cancel_event):
         run.started_at = run.started_at or _now()
         await s.commit()
         user_id = run.user_id
-        stats = json.loads(run.stats_json)
-    stats.setdefault("prompt_tokens", 0)
-    stats.setdefault("completion_tokens", 0)
     graph = parse_graph(ver.graph_json)
     validate_graph(graph)
 
     for node in topo_order(graph):
         if cancel_event.is_set():
-            return await _finish(session_factory, run_id, "cancelled", stats)
+            return await _finish(session_factory, run_id, "cancelled")
         inputs = await _node_inputs(session_factory, run_id, graph, node)
         if node.type == "llm_synth":
             await _run_llm_node(session_factory, run_id, user_id, node, inputs,
-                                user_sem, cancel_event, stats)
+                                user_sem, cancel_event)
         else:
             await _run_barrier_node(session_factory, run_id, user_id, node, inputs)
         if cancel_event.is_set():
-            return await _finish(session_factory, run_id, "cancelled", stats)
-    await _finish(session_factory, run_id, "completed", stats)
+            return await _finish(session_factory, run_id, "cancelled")
+    await _finish(session_factory, run_id, "completed")
 
 
-async def _finish(session_factory, run_id, status, stats):
+async def _finish(session_factory, run_id, status):
     async with session_factory() as s:
         run = await s.get(Run, run_id)
+        sums = (await s.execute(
+            select(func.coalesce(func.sum(RunRow.prompt_tokens), 0),
+                   func.coalesce(func.sum(RunRow.completion_tokens), 0))
+            .where(RunRow.run_id == run_id, RunRow.status == "done"))).one()
+        run.stats_json = json.dumps({"prompt_tokens": sums[0], "completion_tokens": sums[1]})
         run.status = status
-        run.stats_json = json.dumps(stats)
         run.finished_at = _now()
         await s.commit()
 
@@ -85,7 +86,8 @@ async def _node_inputs(session_factory, run_id, graph: Graph, node: Node) -> lis
     return rows
 
 
-async def _write_unit(session_factory, run_id, node_id, row_idx, status, out_rows, error):
+async def _write_unit(session_factory, run_id, node_id, row_idx, status, out_rows, error,
+                      usage: dict | None = None):
     async with session_factory() as s:
         rec = (await s.execute(select(RunRow).where(
             RunRow.run_id == run_id, RunRow.node_id == node_id, RunRow.row_idx == row_idx
@@ -97,6 +99,9 @@ async def _write_unit(session_factory, run_id, node_id, row_idx, status, out_row
         rec.data_json = json.dumps(out_rows, ensure_ascii=False)
         rec.error = error
         rec.attempt = (rec.attempt or 0) + 1
+        if usage:
+            rec.prompt_tokens = usage["prompt_tokens"]
+            rec.completion_tokens = usage["completion_tokens"]
         await s.commit()
 
 
@@ -118,7 +123,8 @@ async def _run_barrier_node(session_factory, run_id, user_id, node: Node, inputs
             RunRow.run_id == run_id, RunRow.node_id == node.id, RunRow.row_idx == 0
         ))).scalar_one_or_none()
     if rec is not None and rec.status == "done":
-        return  # 断点续跑：已完成
+        await _set_node_state(session_factory, run_id, node.id, status="done", total=1, done=1, failed=0)
+        return  # 断点续跑：单元已完成；补写状态以修复「单元已写、状态未写」的崩溃窗口
     await _set_node_state(session_factory, run_id, node.id, status="running", total=1, done=0, failed=0)
     try:
         out = await _barrier_output(session_factory, user_id, node, inputs)
@@ -152,7 +158,7 @@ async def _barrier_output(session_factory, user_id, node: Node, inputs) -> list[
 
 
 async def _run_llm_node(session_factory, run_id, user_id, node: Node, inputs,
-                        user_sem, cancel_event, stats):
+                        user_sem, cancel_event):
     cfg = node.config
     async with session_factory() as s:
         mc = await s.get(ModelConfig, cfg.get("model_config_id"))
@@ -168,7 +174,6 @@ async def _run_llm_node(session_factory, run_id, user_id, node: Node, inputs,
                           total=total, done=done_count, failed=failed_count)
     todo = [i for i in range(total) if i not in done_idx and i not in failed_idx]
     node_sem = asyncio.Semaphore(cfg.get("concurrency", 4))
-    lock = asyncio.Lock()
 
     async def work(idx: int):
         nonlocal done_count, failed_count
@@ -177,15 +182,12 @@ async def _run_llm_node(session_factory, run_id, user_id, node: Node, inputs,
                 return
             try:
                 out_rows, usage = await nodes.run_llm_synth_row(cfg, inputs[idx], mc, user_sem)
-                await _write_unit(session_factory, run_id, node.id, idx, "done", out_rows, "")
-                async with lock:
-                    stats["prompt_tokens"] += usage["prompt_tokens"]
-                    stats["completion_tokens"] += usage["completion_tokens"]
-                    done_count += 1
+                await _write_unit(session_factory, run_id, node.id, idx, "done", out_rows, "",
+                                  usage=usage)
+                done_count += 1
             except Exception as e:
                 await _write_unit(session_factory, run_id, node.id, idx, "failed", [], str(e))
-                async with lock:
-                    failed_count += 1
+                failed_count += 1
             await _set_node_state(session_factory, run_id, node.id, status="running",
                                   total=total, done=done_count, failed=failed_count)
 

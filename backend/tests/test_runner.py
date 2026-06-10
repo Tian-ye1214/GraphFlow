@@ -168,3 +168,42 @@ async def test_output_save_as_dataset(session_factory, monkeypatch):
     async with session_factory() as s:
         ds = (await s.execute(select(Dataset).where(Dataset.name == "结果集"))).scalar_one()
     assert ds.source == "run" and ds.row_count == 3
+
+
+async def test_barrier_crash_window_repairs_state(session_factory, monkeypatch):
+    patch_chat(monkeypatch)
+    run_id = await make_run(session_factory)
+    async with session_factory() as s:  # 模拟崩溃窗口：单元已 done，节点状态卡在 running
+        s.add(RunRow(run_id=run_id, node_id="in", row_idx=0, status="done",
+                     data_json=json.dumps([{"q": f"问{i}"} for i in range(3)], ensure_ascii=False)))
+        s.add(RunNodeState(run_id=run_id, node_id="in", status="running", total=1, done=0))
+        await s.commit()
+    await run_it(session_factory, run_id)
+    assert (await get_run(session_factory, run_id)).status == "completed"
+    async with session_factory() as s:
+        ns = (await s.execute(select(RunNodeState).where(
+            RunNodeState.run_id == run_id, RunNodeState.node_id == "in"))).scalar_one()
+    assert ns.status == "done" and ns.done == 1
+
+
+async def test_cancel_during_llm_node(session_factory, monkeypatch):
+    ev = asyncio.Event()
+    calls = []
+
+    async def fake(mc, system, user, params=None, retries=3):
+        calls.append(user)
+        ev.set()  # 第一行处理中触发取消
+        return "ok", {"prompt_tokens": 1, "completion_tokens": 1}
+
+    monkeypatch.setattr(llm, "chat", fake)
+    graph = json.loads(json.dumps(GRAPH))
+    graph["nodes"][1]["config"]["concurrency"] = 1  # 串行，保证后续行未开始
+    run_id = await make_run(session_factory, graph=graph)
+    await runner.execute_run(run_id, session_factory, asyncio.Semaphore(8), ev)
+    run = await get_run(session_factory, run_id)
+    assert run.status == "cancelled"
+    assert len(calls) == 1  # 仅第一行调用了 LLM
+    async with session_factory() as s:
+        recs = (await s.execute(select(RunRow).where(
+            RunRow.run_id == run_id, RunRow.node_id == "gen"))).scalars().all()
+    assert len(recs) == 1 and recs[0].status == "done" and recs[0].row_idx == 0

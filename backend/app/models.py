@@ -111,6 +111,8 @@ class RunRow(Base):
     row_idx: Mapped[int]
     attempt: Mapped[int] = mapped_column(default=0)
     qc_round: Mapped[int] = mapped_column(default=0)
+    prompt_tokens: Mapped[int] = mapped_column(default=0)
+    completion_tokens: Mapped[int] = mapped_column(default=0)
     status: Mapped[str] = mapped_column(default="pending")  # pending/running/done/failed
     data_json: Mapped[str] = mapped_column(Text, default="[]")
     error: Mapped[str] = mapped_column(Text, default="")
