@@ -1,5 +1,10 @@
+import asyncio
+import json as _json
 import random
 import re
+
+from app.models import ModelConfig
+from app.services import llm
 
 
 def _dedup(rows, op, rng):
@@ -84,3 +89,40 @@ def apply_operations(rows: list[dict], operations: list[dict], seed: int | None 
             raise ValueError(f"未知操作: {op.get('op')}")
         rows = fn(rows, op, rng)
     return rows
+
+
+TEMPLATE_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
+
+
+def render_template(template: str, row: dict) -> str:
+    return TEMPLATE_RE.sub(lambda m: str(row.get(m.group(1), "")), template)
+
+
+async def run_llm_synth_row(config: dict, row: dict, mc: ModelConfig,
+                            user_sem: asyncio.Semaphore) -> tuple[list[dict], dict]:
+    """处理一条输入行：扇出 fanout_n 次调用，返回 (输出行列表, usage 汇总)。失败抛异常由 runner 记为行失败。"""
+    system = render_template(config.get("system_prompt", ""), row)
+    user = render_template(config.get("user_prompt", ""), row)
+    params = config.get("params", {})
+    retries = config.get("retries", 3)
+    fanout = config.get("fanout_n", 1)
+
+    async def one() -> tuple[str, dict]:
+        async with user_sem:
+            return await llm.chat(mc, system, user, params=params, retries=retries)
+
+    results = await asyncio.gather(*[one() for _ in range(fanout)])
+
+    out_rows: list[dict] = []
+    usage_total = {"prompt_tokens": 0, "completion_tokens": 0}
+    for text, usage in results:
+        usage_total["prompt_tokens"] += usage["prompt_tokens"]
+        usage_total["completion_tokens"] += usage["completion_tokens"]
+        if config.get("output_mode") == "json":
+            parsed = _json.loads(text)
+            if not isinstance(parsed, dict):
+                raise ValueError("LLM 返回的不是 JSON 对象")
+            out_rows.append({**row, **parsed})
+        else:
+            out_rows.append({**row, config.get("output_column", "output"): text})
+    return out_rows, usage_total
