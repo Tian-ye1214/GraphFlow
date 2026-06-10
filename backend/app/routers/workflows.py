@@ -26,6 +26,7 @@ def _out(wf: Workflow) -> dict:
             "updated_at": wf.updated_at.isoformat()}
 
 
+# 不带下划线前缀：runs 路由（Task 12）会导入复用
 async def get_owned_workflow(wf_id: int, user: User, session: AsyncSession) -> Workflow:
     wf = await session.get(Workflow, wf_id)
     if wf is None or wf.user_id != user.id:

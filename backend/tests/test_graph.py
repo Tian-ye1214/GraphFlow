@@ -51,3 +51,8 @@ def test_upstream_ids():
     graph = g(LINEAR, [("a", "b", "normal"), ("b", "c", "normal")])
     assert upstream_ids(graph, "c") == ["b"]
     assert upstream_ids(graph, "a") == []
+
+
+def test_parse_malformed_raises_graph_error():
+    with pytest.raises(GraphError, match="缺少字段"):
+        parse_graph({"nodes": [{"type": "input"}], "edges": []})

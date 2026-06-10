@@ -23,9 +23,12 @@ class Graph:
 
 def parse_graph(graph_json: str | dict) -> Graph:
     data = json.loads(graph_json) if isinstance(graph_json, str) else graph_json
-    nodes = [Node(id=n["id"], type=n["type"], config=n.get("config", {})) for n in data.get("nodes", [])]
-    edges = [{"source": e["source"], "target": e["target"], "kind": e.get("kind", "normal")}
-             for e in data.get("edges", [])]
+    try:
+        nodes = [Node(id=n["id"], type=n["type"], config=n.get("config", {})) for n in data.get("nodes", [])]
+        edges = [{"source": e["source"], "target": e["target"], "kind": e.get("kind", "normal")}
+                 for e in data.get("edges", [])]
+    except KeyError as exc:
+        raise GraphError(f"图数据结构损坏: 缺少字段 {exc}") from exc
     return Graph(nodes=nodes, edges=edges)
 
 

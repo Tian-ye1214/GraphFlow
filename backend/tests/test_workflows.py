@@ -21,6 +21,7 @@ async def test_save_incomplete_graph_allowed(auth_client):
 
 
 async def test_user_isolation(auth_client):
-    await auth_client.post("/api/workflows", json={"name": "我的"})
+    wf = (await auth_client.post("/api/workflows", json={"name": "我的"})).json()
     await auth_client.post("/api/auth/login", json={"username": "other"})
     assert (await auth_client.get("/api/workflows")).json() == []
+    assert (await auth_client.get(f"/api/workflows/{wf['id']}")).status_code == 404
