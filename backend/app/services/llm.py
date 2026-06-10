@@ -8,14 +8,21 @@ from app.models import ModelConfig
 
 BACKOFF_BASE = 1  # 秒；重试等待 BACKOFF_BASE * 2**attempt，测试中置 0
 
+_client_cache: dict[tuple[str, str], AsyncOpenAI] = {}
+
 
 class LLMError(Exception):
     pass
 
 
 def _client(mc: ModelConfig) -> AsyncOpenAI:
-    api_key = crypto.decrypt(mc.api_key_enc) if mc.api_key_enc else "none"
-    return AsyncOpenAI(base_url=mc.base_url, api_key=api_key)
+    """按 (base_url, api_key_enc) 缓存客户端：避免每行调用重建 SSL 上下文（约 45ms 阻塞）。
+    重试由 chat() 的外层循环负责，故关闭 SDK 内置重试。"""
+    cache_key = (mc.base_url, mc.api_key_enc or "")
+    if cache_key not in _client_cache:
+        api_key = crypto.decrypt(mc.api_key_enc) if mc.api_key_enc else "none"
+        _client_cache[cache_key] = AsyncOpenAI(base_url=mc.base_url, api_key=api_key, max_retries=0)
+    return _client_cache[cache_key]
 
 
 async def chat(mc: ModelConfig, system_prompt: str, user_prompt: str,
