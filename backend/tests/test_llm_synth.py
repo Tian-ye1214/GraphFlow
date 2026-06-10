@@ -76,3 +76,24 @@ async def test_semaphore_limits_concurrency(monkeypatch):
     config = {"user_prompt": "u", "fanout_n": 10, "output_column": "v"}
     await nodes.run_llm_synth_row(config, {}, mc(), asyncio.Semaphore(2))
     assert state["peak"] <= 2
+
+
+async def test_partial_fanout_failure_releases_semaphore(monkeypatch):
+    """扇出部分失败后，兄弟任务必须被取消并立刻释放信号量。"""
+    calls = {"n": 0}
+
+    async def fake_chat(mc_, system, user, params=None, retries=3):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            await asyncio.sleep(0.05)
+            raise RuntimeError("llm error")
+        await asyncio.sleep(0.3)
+        return "ok", {"prompt_tokens": 0, "completion_tokens": 0}
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    sem = asyncio.Semaphore(2)
+    config = {"user_prompt": "u", "fanout_n": 3, "output_column": "v"}
+    with pytest.raises(RuntimeError):
+        await nodes.run_llm_synth_row(config, {}, mc(), sem)
+    await asyncio.sleep(0.1)  # 留出取消传播时间；远小于兄弟任务 0.3s 的自然完成时间
+    assert sem._value == 2, "兄弟任务在行失败后仍占用信号量"

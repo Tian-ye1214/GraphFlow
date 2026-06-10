@@ -111,7 +111,13 @@ async def run_llm_synth_row(config: dict, row: dict, mc: ModelConfig,
         async with user_sem:
             return await llm.chat(mc, system, user, params=params, retries=retries)
 
-    results = await asyncio.gather(*[one() for _ in range(fanout)])
+    tasks = [asyncio.create_task(one()) for _ in range(fanout)]
+    try:
+        results = await asyncio.gather(*tasks)
+    except BaseException:
+        for t in tasks:  # 首个异常即取消兄弟任务，立刻释放用户信号量槽位
+            t.cancel()
+        raise
 
     out_rows: list[dict] = []
     usage_total = {"prompt_tokens": 0, "completion_tokens": 0}
