@@ -9,6 +9,7 @@ from app import crypto
 from app.auth import get_current_user
 from app.db import get_session
 from app.models import ModelConfig, User
+from app.services import llm
 
 router = APIRouter(prefix="/api/models", tags=["models"])
 
@@ -79,3 +80,14 @@ async def delete_model(mc_id: int, user: User = Depends(get_current_user),
     await session.delete(mc)
     await session.commit()
     return {"ok": True}
+
+
+@router.post("/{mc_id}/test")
+async def test_model(mc_id: int, user: User = Depends(get_current_user),
+                     session: AsyncSession = Depends(get_session)):
+    mc = await _get_owned(mc_id, user, session)
+    try:
+        text, _ = await llm.chat(mc, "", "ping", params={"max_tokens": 8}, retries=1)
+        return {"ok": True, "reply": text[:100]}
+    except llm.LLMError as e:
+        return {"ok": False, "error": str(e)}
