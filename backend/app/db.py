@@ -28,3 +28,8 @@ async def init_db() -> None:
 def get_session_factory() -> async_sessionmaker:
     assert session_factory is not None, "init_db() 未调用"
     return session_factory
+
+
+async def get_session():
+    async with get_session_factory()() as session:
+        yield session
