@@ -1,0 +1,30 @@
+from sqlalchemy import event
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+
+from app.config import settings
+from app.models import Base
+
+engine: AsyncEngine | None = None
+session_factory: async_sessionmaker | None = None
+
+
+def _set_sqlite_pragma(dbapi_conn, _):
+    cur = dbapi_conn.cursor()
+    cur.execute("PRAGMA journal_mode=WAL")
+    cur.execute("PRAGMA busy_timeout=5000")
+    cur.close()
+
+
+async def init_db() -> None:
+    global engine, session_factory
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    engine = create_async_engine(settings.db_url)
+    event.listen(engine.sync_engine, "connect", _set_sqlite_pragma)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+
+def get_session_factory() -> async_sessionmaker:
+    assert session_factory is not None, "init_db() 未调用"
+    return session_factory
