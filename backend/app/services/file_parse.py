@@ -19,8 +19,7 @@ def parse_file(filename: str, content: bytes) -> list[dict]:
         df = pd.read_excel(io.BytesIO(content))
     else:
         raise ValueError(f"不支持的文件格式: {suffix}")
-    df = df.astype(object).where(df.notna(), None)
-    return df.to_dict(orient="records")
+    return json.loads(df.to_json(orient="records", date_format="iso", force_ascii=False))
 
 
 def union_columns(rows: list[dict]) -> list[str]:
