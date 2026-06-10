@@ -1,3 +1,7 @@
+from pathlib import Path
+
+from app.models import Dataset
+
 JSONL = '{"q": "你好"}\n{"q": "第二"}\n{"q": "第三"}\n'.encode("utf-8")
 
 
@@ -40,6 +44,19 @@ async def test_delete(auth_client):
 
 
 async def test_user_isolation(auth_client):
-    await upload(auth_client, ("a.jsonl", JSONL))
+    ds = (await upload(auth_client, ("a.jsonl", JSONL))).json()[0]
     await auth_client.post("/api/auth/login", json={"username": "other"})
     assert (await auth_client.get("/api/datasets")).json() == []
+    assert (await auth_client.get(f"/api/datasets/{ds['id']}/rows")).status_code == 404
+    assert (await auth_client.delete(f"/api/datasets/{ds['id']}")).status_code == 404
+
+
+async def test_traversal_filename_sanitized(auth_client, session_factory):
+    r = await upload(auth_client, ("../../evil.jsonl", JSONL))
+    assert r.status_code == 200
+    ds_id = r.json()[0]["id"]
+    async with session_factory() as s:
+        ds = await s.get(Dataset, ds_id)
+    p = Path(ds.file_path)
+    assert p.exists()
+    assert p.parent.name == str(ds.user_id) and p.parent.parent.name == "uploads"

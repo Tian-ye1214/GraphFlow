@@ -1,5 +1,7 @@
 import json
+import re
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from sqlalchemy import delete as sa_delete, insert, select
@@ -30,9 +32,11 @@ async def _get_owned(ds_id: int, user: User, session: AsyncSession) -> Dataset:
 
 
 async def create_dataset(session: AsyncSession, user_id: int, name: str, rows: list[dict],
-                         source: str = "upload", original_filename: str = "") -> Dataset:
+                         source: str = "upload", original_filename: str = "",
+                         file_path: str = "") -> Dataset:
     """供上传与（后续）运行结果保存共用。"""
     ds = Dataset(user_id=user_id, name=name, source=source, original_filename=original_filename,
+                 file_path=file_path,
                  row_count=len(rows), columns_json=json.dumps(union_columns(rows), ensure_ascii=False))
     session.add(ds)
     await session.flush()
@@ -53,16 +57,16 @@ async def upload(files: list[UploadFile], user: User = Depends(get_current_user)
         content = await f.read()
         try:
             rows = parse_file(f.filename, content)
-        except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as e:
+        except (ValueError, UnicodeDecodeError) as e:
             raise HTTPException(status_code=422, detail=f"{f.filename} 解析失败: {e}")
-        ds = await create_dataset(session, user.id, Path(f.filename).stem, rows,
-                                  original_filename=f.filename)
+        # 仅取文件名末段并清洗非法字符，杜绝路径穿越；uuid 前缀保证唯一
+        safe_name = re.sub(r'[\\/:*?"<>|]', "_", Path(f.filename).name)
         upload_dir = settings.data_dir / "uploads" / str(user.id)
         upload_dir.mkdir(parents=True, exist_ok=True)
-        file_path = upload_dir / f"{ds.id}_{f.filename}"
+        file_path = upload_dir / f"{uuid4().hex[:8]}_{safe_name}"
         file_path.write_bytes(content)
-        ds.file_path = str(file_path)
-        await session.commit()
+        ds = await create_dataset(session, user.id, Path(f.filename).stem, rows,
+                                  original_filename=f.filename, file_path=str(file_path))
         results.append(_out(ds))
     return results
 
