@@ -11,7 +11,7 @@ class Settings(BaseSettings):
 
     @property
     def db_url(self) -> str:
-        return f"sqlite+aiosqlite:///{self.data_dir / 'graphflow.db'}"
+        return f"sqlite+aiosqlite:///{self.data_dir.as_posix()}/graphflow.db"
 
 
 settings = Settings()
