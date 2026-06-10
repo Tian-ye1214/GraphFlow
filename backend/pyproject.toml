@@ -1,0 +1,23 @@
+[project]
+name = "graphflow-backend"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.115",
+    "sqlalchemy[asyncio]>=2.0",
+    "aiosqlite>=0.20",
+    "openai>=1.60",
+    "pandas>=2.2",
+    "openpyxl>=3.1",
+    "cryptography>=43",
+    "itsdangerous>=2.2",
+    "pydantic-settings>=2.6",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.25", "httpx>=0.28"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
