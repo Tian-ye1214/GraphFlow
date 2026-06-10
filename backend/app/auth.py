@@ -43,7 +43,7 @@ async def get_current_user(
     gf_session: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> User:
     user_id = parse_session_cookie(gf_session) if gf_session else None
-    user = await session.get(User, user_id) if user_id else None
+    user = await session.get(User, user_id) if user_id is not None else None
     if user is None:
         raise HTTPException(status_code=401, detail="未登录")
     return user

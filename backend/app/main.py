@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app import db
 from app.db import init_db
 from app.routers import auth
 
@@ -10,6 +11,7 @@ from app.routers import auth
 async def lifespan(app: FastAPI):
     await init_db()
     yield
+    await db.engine.dispose()
 
 
 def create_app() -> FastAPI:

@@ -1,5 +1,7 @@
+from collections.abc import AsyncGenerator
+
 from sqlalchemy import event
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
 from app.models import Base
@@ -30,6 +32,7 @@ def get_session_factory() -> async_sessionmaker:
     return session_factory
 
 
-async def get_session():
+async def get_session() -> AsyncGenerator[AsyncSession, None]:
+    """写路径由调用方负责 session.commit()。"""
     async with get_session_factory()() as session:
         yield session
