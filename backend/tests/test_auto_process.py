@@ -60,3 +60,8 @@ def test_sample_larger_than_rows_returns_all():
 def test_unknown_op_raises():
     with pytest.raises(ValueError, match="未知操作"):
         apply_operations(ROWS, [{"op": "magic"}])
+
+
+def test_cast_none_raises_clear_error():
+    with pytest.raises(ValueError, match="缺失值"):
+        apply_operations([{"x": None}], [{"op": "cast", "column": "x", "to": "str"}])

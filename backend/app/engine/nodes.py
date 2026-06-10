@@ -4,9 +4,10 @@ import re
 
 def _dedup(rows, op, rng):
     cols = op.get("columns") or []
+    all_cols = cols or sorted({k for r in rows for k in r})
     seen, out = set(), []
     for row in rows:
-        key = tuple(str(row.get(c)) for c in (cols or sorted({k for r in rows for k in r})))
+        key = tuple(str(row.get(c)) for c in all_cols)
         if key not in seen:
             seen.add(key)
             out.append(row)
@@ -49,8 +50,15 @@ def _concat(rows, op, rng):
 
 
 def _cast(rows, op, rng):
+    col = op["column"]
     caster = {"str": str, "int": int, "float": float}[op["to"]]
-    return [{**r, op["column"]: caster(r.get(op["column"]))} for r in rows]
+
+    def cast_one(value):
+        if value is None:
+            raise ValueError(f"类型转换: 列 '{col}' 存在缺失值")
+        return caster(value)
+
+    return [{**r, col: cast_one(r.get(col))} for r in rows]
 
 
 def _sample(rows, op, rng):
