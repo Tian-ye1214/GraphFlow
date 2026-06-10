@@ -4,7 +4,7 @@ from fastapi import FastAPI
 
 from app import db
 from app.db import init_db
-from app.routers import auth, datasets, model_configs
+from app.routers import auth, datasets, model_configs, workflows
 
 
 @asynccontextmanager
@@ -19,6 +19,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(model_configs.router)
     app.include_router(datasets.router)
+    app.include_router(workflows.router)
     return app
 
 
