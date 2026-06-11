@@ -499,7 +499,8 @@ def cmd_export(args):
     if args.node:
         params["node_id"] = args.node
     r = cli.check(cli.http.get(f"/api/runs/{args.run_id}/export", params=params))
-    out = Path(args.output or f"run{args.run_id}.{args.format}")
+    name = f"run{args.run_id}_{args.node}.{args.format}" if args.node else f"run{args.run_id}.{args.format}"
+    out = Path(args.output or name)
     out.write_bytes(r.content)
     print(f"已导出 {out}（{len(r.content)} 字节）")
 
