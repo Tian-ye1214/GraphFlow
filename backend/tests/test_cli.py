@@ -189,3 +189,35 @@ def test_op_on_non_auto_node_dies(server, capsys):
     with pytest.raises(SystemExit):
         gf("op", "add", "llm_synth_1", "shuffle")
     assert "不是自动处理节点" in capsys.readouterr().err
+
+
+def test_model_lifecycle(server, capsys):
+    gf("login", "tester", "--server", server)
+    gf("model", "add", "通义", "--url", "http://x/v1", "--model", "qwen", "--key", "k")
+    capsys.readouterr()
+    gf("model", "ls")
+    out = capsys.readouterr().out
+    assert "通义" in out and "qwen" in out and "key:已配置" in out
+    gf("model", "set", "通义", "model=qwen-max", "temp=0.7")
+    capsys.readouterr()
+    gf("model", "ls")
+    out = capsys.readouterr().out
+    assert "qwen-max" in out and "key:已配置" in out  # api_key 留空不覆盖
+    gf("model", "rm", "通义")
+    capsys.readouterr()
+    gf("model", "ls")
+    assert "通义" not in capsys.readouterr().out
+
+
+def test_model_test_reports_result(server, capsys, monkeypatch):
+    from app.services import llm
+
+    async def fake_chat(mc, system, user, params=None, retries=3):
+        return "pong", {"prompt_tokens": 1, "completion_tokens": 1}
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    gf("login", "tester", "--server", server)
+    gf("model", "add", "m", "--url", "http://x/v1", "--model", "q", "--key", "k")
+    capsys.readouterr()
+    gf("model", "test", "m")
+    assert "连通正常" in capsys.readouterr().out

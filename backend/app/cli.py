@@ -349,6 +349,61 @@ def cmd_op_rm(args):
     print(f"已删除操作: {OP_LABELS[removed['op']]}")
 
 
+MODEL_KEYS = {"name": "name", "model": "model_name", "url": "base_url", "key": "api_key"}
+
+
+def cmd_model_ls(args):
+    cli = Cli()
+    for m in cli.req("GET", "/api/models"):
+        key = "已配置" if m["api_key_set"] else "未配置"
+        print(f"{m['id']:>4}  {m['name']}  {m['model_name']}  {m['base_url']}  key:{key}")
+
+
+def cmd_model_add(args):
+    cli = Cli()
+    m = cli.req("POST", "/api/models", json={
+        "name": args.name, "model_name": args.model, "base_url": args.url,
+        "api_key": args.key, "default_params": {}})
+    print(f"已创建模型配置 {m['name']}（#{m['id']}）")
+
+
+def cmd_model_set(args):
+    cli = Cli()
+    mc_id = cli.resolve("models", args.ref)
+    hits = [m for m in cli.req("GET", "/api/models") if m["id"] == mc_id]
+    if not hits:
+        die("模型配置不存在")
+    cur = hits[0]
+    body = {"name": cur["name"], "model_name": cur["model_name"], "base_url": cur["base_url"],
+            "api_key": "", "default_params": cur["default_params"]}  # key 留空=不修改
+    for k, v in parse_kv(args.pairs).items():
+        if k in MODEL_KEYS:
+            body[MODEL_KEYS[k]] = v
+        elif k in LLM_PARAM_KEYS:
+            body["default_params"][LLM_PARAM_KEYS[k]] = convert(LLM_PARAM_KEYS[k], v)
+        else:
+            die(f"未知配置键 {k}")
+    cli.req("PUT", f"/api/models/{mc_id}", json=body)
+    print("已更新")
+
+
+def cmd_model_rm(args):
+    cli = Cli()
+    mc_id = cli.resolve("models", args.ref)
+    cli.req("DELETE", f"/api/models/{mc_id}")
+    print(f"已删除模型配置 #{mc_id}")
+
+
+def cmd_model_test(args):
+    cli = Cli()
+    mc_id = cli.resolve("models", args.ref)
+    r = cli.req("POST", f"/api/models/{mc_id}/test")
+    if r["ok"]:
+        print(f"连通正常: {r['reply']}")
+    else:
+        die(f"连接失败: {r['error']}")
+
+
 def main(argv: list[str] | None = None):
     p = argparse.ArgumentParser(prog="gf", description="GraphFlow 命令行客户端")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -391,6 +446,13 @@ def main(argv: list[str] | None = None):
     s = op.add_parser("add"); s.add_argument("node_id"); s.add_argument("op"); s.add_argument("params", nargs="*"); s.set_defaults(func=cmd_op_add)
     s = op.add_parser("ls"); s.add_argument("node_id"); s.set_defaults(func=cmd_op_ls)
     s = op.add_parser("rm"); s.add_argument("node_id"); s.add_argument("index", type=int); s.set_defaults(func=cmd_op_rm)
+
+    model = sub.add_parser("model", help="模型配置").add_subparsers(dest="action", required=True)
+    s = model.add_parser("ls"); s.set_defaults(func=cmd_model_ls)
+    s = model.add_parser("add"); s.add_argument("name"); s.add_argument("--url", required=True); s.add_argument("--model", required=True); s.add_argument("--key", default=""); s.set_defaults(func=cmd_model_add)
+    s = model.add_parser("set"); s.add_argument("ref"); s.add_argument("pairs", nargs="+"); s.set_defaults(func=cmd_model_set)
+    s = model.add_parser("rm"); s.add_argument("ref"); s.set_defaults(func=cmd_model_rm)
+    s = model.add_parser("test"); s.add_argument("ref"); s.set_defaults(func=cmd_model_test)
 
     args = p.parse_args(argv)
     if sys.platform == "win32":
