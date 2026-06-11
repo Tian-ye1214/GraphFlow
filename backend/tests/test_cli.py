@@ -246,3 +246,54 @@ def test_data_up_missing_file_dies(server, capsys):
     with pytest.raises(SystemExit):
         gf("data", "up", "不存在.jsonl")
     assert "文件不存在" in capsys.readouterr().err
+
+
+def test_cli_full_chain(server, capsys, tmp_path, monkeypatch):
+    from app.services import llm
+
+    async def fake_chat(mc, system, user, params=None, retries=3):
+        return f"答[{user}]", {"prompt_tokens": 1, "completion_tokens": 2}
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    seed = tmp_path / "种子.jsonl"
+    seed.write_text('{"q": "问0"}\n{"q": "问1"}\n', encoding="utf-8")
+
+    gf("login", "tester", "--server", server)
+    gf("model", "add", "通义", "--url", "http://x/v1", "--model", "qwen", "--key", "k")
+    gf("data", "up", str(seed))
+    gf("wf", "add", "翻译流水线")
+    gf("use", "翻译流水线")
+    gf("node", "add", "input")
+    gf("node", "set", "input_1", "dataset=种子")
+    gf("node", "add", "llm")
+    gf("node", "set", "llm_synth_1", "prompt=Q:{{q}}", "model=通义", "out=a")
+    gf("node", "add", "output")
+    gf("link", "input_1", "llm_synth_1")
+    gf("link", "llm_synth_1", "output_1")
+    capsys.readouterr()
+    gf("run", "-f")
+    out = capsys.readouterr().out
+    assert "已启动" in out and "已完成" in out
+
+    export_path = tmp_path / "导出.jsonl"
+    gf("export", "1", "-o", str(export_path))
+    lines = [json.loads(l) for l in
+             export_path.read_text(encoding="utf-8").strip().splitlines()]
+    assert len(lines) == 2 and lines[0]["a"] == "答[Q:问0]"
+
+    capsys.readouterr()
+    gf("runs")
+    assert "翻译流水线" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        gf("cancel", "1")
+    assert "不可取消" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        gf("rerun", "1")
+    assert "没有失败行" in capsys.readouterr().err
+
+
+def test_watch_without_runs_dies(server, capsys):
+    login_and_wf(server)
+    with pytest.raises(SystemExit):
+        gf("watch")
+    assert "还没有运行记录" in capsys.readouterr().err

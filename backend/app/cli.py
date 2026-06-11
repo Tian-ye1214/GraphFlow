@@ -437,6 +437,73 @@ def cmd_data_rm(args):
     print(f"已删除数据集 #{ds_id}")
 
 
+def watch_run(cli: Cli, run_id: int):
+    lines = 0
+    while True:
+        d = cli.req("GET", f"/api/runs/{run_id}")
+        if lines:
+            print(f"\x1b[{lines}F\x1b[J", end="")  # 光标回退并清除旧进度表
+        rows = [f"  {s['node_id']:<18} {STATUS_LABELS.get(s['status'], s['status']):<4} "
+                f"{s['done']}/{s['total']}" + (f" 失败{s['failed']}" if s["failed"] else "")
+                for s in d["node_states"]]
+        print("\n".join([f"运行 #{run_id}  {STATUS_LABELS.get(d['status'], d['status'])}"] + rows))
+        lines = 1 + len(rows)
+        if d["status"] in ("completed", "failed", "cancelled"):
+            if d["error"]:
+                print(f"错误: {d['error']}")
+            return
+        time.sleep(1)
+
+
+def cmd_run(args):
+    cli = Cli()
+    r = cli.req("POST", "/api/runs", json={"workflow_id": cli.current_wf()})
+    print(f"运行 #{r['id']} 已启动")
+    if args.follow:
+        watch_run(cli, r["id"])
+
+
+def cmd_runs(args):
+    cli = Cli()
+    for r in cli.req("GET", "/api/runs"):
+        print(f"{r['id']:>4}  {r['workflow_name']}  "
+              f"{STATUS_LABELS.get(r['status'], r['status'])}  {r['created_at'][:19]}")
+
+
+def cmd_watch(args):
+    cli = Cli()
+    run_id = args.run_id
+    if run_id is None:
+        runs = cli.req("GET", "/api/runs", params={"workflow_id": cli.current_wf()})
+        if not runs:
+            die("当前工作流还没有运行记录")
+        run_id = runs[0]["id"]
+    watch_run(cli, run_id)
+
+
+def cmd_cancel(args):
+    cli = Cli()
+    cli.req("POST", f"/api/runs/{args.run_id}/cancel")
+    print(f"已请求取消运行 #{args.run_id}")
+
+
+def cmd_rerun(args):
+    cli = Cli()
+    cli.req("POST", f"/api/runs/{args.run_id}/rerun-failed")
+    print(f"运行 #{args.run_id} 失败行已重新排队")
+
+
+def cmd_export(args):
+    cli = Cli()
+    params = {"format": args.format}
+    if args.node:
+        params["node_id"] = args.node
+    r = cli.check(cli.http.get(f"/api/runs/{args.run_id}/export", params=params))
+    out = Path(args.output or f"run{args.run_id}.{args.format}")
+    out.write_bytes(r.content)
+    print(f"已导出 {out}（{len(r.content)} 字节）")
+
+
 def main(argv: list[str] | None = None):
     p = argparse.ArgumentParser(prog="gf", description="GraphFlow 命令行客户端")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -492,6 +559,32 @@ def main(argv: list[str] | None = None):
     s = data.add_parser("up"); s.add_argument("files", nargs="+"); s.set_defaults(func=cmd_data_up)
     s = data.add_parser("head"); s.add_argument("ref"); s.add_argument("n", nargs="?", type=int, default=5); s.set_defaults(func=cmd_data_head)
     s = data.add_parser("rm"); s.add_argument("ref"); s.set_defaults(func=cmd_data_rm)
+
+    s = sub.add_parser("run", help="运行当前工作流")
+    s.add_argument("-f", "--follow", action="store_true")
+    s.set_defaults(func=cmd_run)
+
+    s = sub.add_parser("runs", help="运行列表")
+    s.set_defaults(func=cmd_runs)
+
+    s = sub.add_parser("watch", help="跟随运行进度")
+    s.add_argument("run_id", nargs="?", type=int)
+    s.set_defaults(func=cmd_watch)
+
+    s = sub.add_parser("cancel", help="取消运行")
+    s.add_argument("run_id", type=int)
+    s.set_defaults(func=cmd_cancel)
+
+    s = sub.add_parser("rerun", help="重跑失败行")
+    s.add_argument("run_id", type=int)
+    s.set_defaults(func=cmd_rerun)
+
+    s = sub.add_parser("export", help="导出运行结果")
+    s.add_argument("run_id", type=int)
+    s.add_argument("-o", "--output")
+    s.add_argument("--format", default="jsonl", choices=["jsonl", "csv", "xlsx"])
+    s.add_argument("--node")
+    s.set_defaults(func=cmd_export)
 
     args = p.parse_args(argv)
     if sys.platform == "win32":
