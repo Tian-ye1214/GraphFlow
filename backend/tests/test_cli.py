@@ -151,3 +151,12 @@ def test_node_add_without_use_dies(server, capsys):
     with pytest.raises(SystemExit):
         gf("node", "add", "llm")
     assert "gf use" in capsys.readouterr().err
+
+
+def test_node_set_bad_int_dies(server, capsys):
+    login_and_wf(server)
+    gf("node", "add", "llm")
+    with pytest.raises(SystemExit) as e:
+        gf("node", "set", "llm_synth_1", "conc=8.5")
+    assert e.value.code == 1
+    assert "8.5" in capsys.readouterr().err

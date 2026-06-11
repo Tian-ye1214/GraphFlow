@@ -321,6 +321,8 @@ def main(argv: list[str] | None = None):
         args.func(args)
     except httpx.ConnectError:
         die("无法连接服务器，请确认 GraphFlow 已启动")
+    except ValueError as e:  # 如 conc=8.5 之类的数值转换错误
+        die(str(e))
     except KeyboardInterrupt:
         sys.exit(130)
 
