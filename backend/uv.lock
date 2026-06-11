@@ -386,11 +386,12 @@ wheels = [
 [[package]]
 name = "graphflow-backend"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
     { name = "cryptography" },
     { name = "fastapi", extra = ["standard"] },
+    { name = "httpx" },
     { name = "itsdangerous" },
     { name = "openai" },
     { name = "openpyxl" },
@@ -411,6 +412,7 @@ requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20" },
     { name = "cryptography", specifier = ">=43" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.115" },
+    { name = "httpx", specifier = ">=0.28" },
     { name = "itsdangerous", specifier = ">=2.2" },
     { name = "openai", specifier = ">=1.60" },
     { name = "openpyxl", specifier = ">=3.1" },
