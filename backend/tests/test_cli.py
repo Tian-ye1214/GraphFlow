@@ -92,3 +92,62 @@ def test_show_lists_nodes_and_edges(server, capsys):
     gf("show")
     out = capsys.readouterr().out
     assert "节点（0）" in out and "连线（0）" in out
+
+
+def test_node_add_set_show(server, capsys):
+    login_and_wf(server)
+    gf("node", "add", "llm")
+    capsys.readouterr()
+    gf("node", "set", "llm_synth_1", "prompt=Q:{{q}}", "conc=8", "temp=0.5", "out=a")
+    capsys.readouterr()
+    gf("node", "show", "llm_synth_1")
+    node = json.loads(capsys.readouterr().out)
+    assert node["config"]["user_prompt"] == "Q:{{q}}"
+    assert node["config"]["concurrency"] == 8
+    assert node["config"]["params"]["temperature"] == 0.5
+    assert node["config"]["output_column"] == "a"
+
+
+def test_node_auto_numbering(server, capsys):
+    login_and_wf(server)
+    gf("node", "add", "llm")
+    gf("node", "add", "llm")
+    capsys.readouterr()
+    gf("show")
+    out = capsys.readouterr().out
+    assert "llm_synth_1" in out and "llm_synth_2" in out
+
+
+def test_node_set_unknown_key_dies(server, capsys):
+    login_and_wf(server)
+    gf("node", "add", "llm")
+    with pytest.raises(SystemExit):
+        gf("node", "set", "llm_synth_1", "nosuch=1")
+    assert "未知配置键" in capsys.readouterr().err
+
+
+def test_link_unlink_and_rm_cleans_edges(server, capsys):
+    login_and_wf(server)
+    gf("node", "add", "input")
+    gf("node", "add", "llm")
+    gf("link", "input_1", "llm_synth_1")
+    capsys.readouterr()
+    gf("show")
+    assert "input_1 -> llm_synth_1" in capsys.readouterr().out
+    gf("unlink", "input_1", "llm_synth_1")
+    capsys.readouterr()
+    gf("show")
+    assert "input_1 -> llm_synth_1" not in capsys.readouterr().out
+    gf("link", "input_1", "llm_synth_1")
+    gf("node", "rm", "llm_synth_1")
+    capsys.readouterr()
+    gf("show")
+    out = capsys.readouterr().out
+    assert "llm_synth_1" not in out and "->" not in out
+
+
+def test_node_add_without_use_dies(server, capsys):
+    gf("login", "tester", "--server", server)
+    with pytest.raises(SystemExit):
+        gf("node", "add", "llm")
+    assert "gf use" in capsys.readouterr().err

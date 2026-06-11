@@ -151,6 +151,131 @@ def cmd_show(args):
         print(f"  {e['source']} -> {e['target']}")
 
 
+LLM_CONFIG_KEYS = {"system": "system_prompt", "prompt": "user_prompt", "out": "output_column",
+                   "mode": "output_mode", "fanout": "fanout_n", "conc": "concurrency",
+                   "retries": "retries"}
+LLM_PARAM_KEYS = {"temp": "temperature", "top_p": "top_p", "max_tokens": "max_tokens",
+                  "timeout": "timeout", "json_mode": "json_mode"}
+INT_KEYS = {"fanout_n", "concurrency", "retries", "max_tokens", "timeout"}
+FLOAT_KEYS = {"temperature", "top_p"}
+
+
+def convert(field: str, v: str):
+    if field in INT_KEYS:
+        return int(v)
+    if field in FLOAT_KEYS:
+        return float(v)
+    if field == "json_mode":
+        return v.lower() in ("true", "1", "yes")
+    return v
+
+
+def parse_kv(pairs: list[str]) -> dict:
+    out = {}
+    for p in pairs:
+        if "=" not in p:
+            die(f"参数格式应为 key=value: {p}")
+        k, v = p.split("=", 1)
+        out[k] = v
+    return out
+
+
+def find_node(graph: dict, node_id: str) -> dict:
+    for n in graph["nodes"]:
+        if n["id"] == node_id:
+            return n
+    die(f"节点 {node_id} 不存在")
+
+
+def cmd_node_add(args):
+    cli = Cli()
+    ntype = NODE_TYPES.get(args.type)
+    if ntype is None:
+        die(f"未知节点类型 {args.type}（可选: input/llm/auto/output）")
+    wf = cli.get_wf()
+    nodes = wf["graph"]["nodes"]
+    if args.id:
+        node_id = args.id
+        if any(n["id"] == node_id for n in nodes):
+            die(f"节点 {node_id} 已存在")
+    else:
+        i = 1
+        while any(n["id"] == f"{ntype}_{i}" for n in nodes):
+            i += 1
+        node_id = f"{ntype}_{i}"
+    nodes.append({"id": node_id, "type": ntype,
+                  "position": {"x": 80 + len(nodes) * 50, "y": 80 + len(nodes) * 40},
+                  "config": {}})
+    cli.put_graph(wf["id"], wf["graph"])
+    print(f"已添加节点 {node_id}")
+
+
+def cmd_node_set(args):
+    cli = Cli()
+    wf = cli.get_wf()
+    node = find_node(wf["graph"], args.id)
+    cfg = node["config"]
+    for k, v in parse_kv(args.pairs).items():
+        if k == "dataset":
+            cfg["dataset_ids"] = [cli.resolve("datasets", r) for r in v.split(",") if r]
+        elif k == "model":
+            cfg["model_config_id"] = cli.resolve("models", v)
+        elif k == "save_as":
+            cfg["save_as_dataset"] = bool(v)
+            cfg["dataset_name"] = v
+        elif k in LLM_CONFIG_KEYS:
+            cfg[LLM_CONFIG_KEYS[k]] = convert(LLM_CONFIG_KEYS[k], v)
+        elif k in LLM_PARAM_KEYS:
+            cfg.setdefault("params", {})[LLM_PARAM_KEYS[k]] = convert(LLM_PARAM_KEYS[k], v)
+        else:
+            die(f"未知配置键 {k}")
+    cli.put_graph(wf["id"], wf["graph"])
+    print(f"已更新 {args.id}: {json.dumps(cfg, ensure_ascii=False)}")
+
+
+def cmd_node_show(args):
+    cli = Cli()
+    node = find_node(cli.get_wf()["graph"], args.id)
+    print(json.dumps(node, ensure_ascii=False, indent=2))
+
+
+def cmd_node_rm(args):
+    cli = Cli()
+    wf = cli.get_wf()
+    graph = wf["graph"]
+    find_node(graph, args.id)
+    graph["nodes"] = [n for n in graph["nodes"] if n["id"] != args.id]
+    graph["edges"] = [e for e in graph["edges"] if args.id not in (e["source"], e["target"])]
+    cli.put_graph(wf["id"], graph)
+    print(f"已删除节点 {args.id} 及其连线")
+
+
+def cmd_link(args):
+    cli = Cli()
+    wf = cli.get_wf()
+    graph = wf["graph"]
+    find_node(graph, args.source)
+    find_node(graph, args.target)
+    if any(e["source"] == args.source and e["target"] == args.target for e in graph["edges"]):
+        die("连线已存在")
+    graph["edges"].append({"source": args.source, "target": args.target, "kind": "normal"})
+    cli.put_graph(wf["id"], graph)
+    print(f"已连线 {args.source} -> {args.target}")
+
+
+def cmd_unlink(args):
+    cli = Cli()
+    wf = cli.get_wf()
+    graph = wf["graph"]
+    before = len(graph["edges"])
+    graph["edges"] = [e for e in graph["edges"]
+                      if not (e["source"] == args.source and e["target"] == args.target)]
+    if len(graph["edges"]) == before:
+        die(f"不存在连线 {args.source} -> {args.target}")
+    cli.put_graph(wf["id"], graph)
+    print(f"已断开 {args.source} -> {args.target}")
+
+
 def main(argv: list[str] | None = None):
     p = argparse.ArgumentParser(prog="gf", description="GraphFlow 命令行客户端")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -174,6 +299,20 @@ def main(argv: list[str] | None = None):
 
     s = sub.add_parser("show", help="查看当前工作流图")
     s.set_defaults(func=cmd_show)
+
+    node = sub.add_parser("node", help="节点管理").add_subparsers(dest="action", required=True)
+    s = node.add_parser("add"); s.add_argument("type"); s.add_argument("id", nargs="?"); s.set_defaults(func=cmd_node_add)
+    s = node.add_parser("set"); s.add_argument("id"); s.add_argument("pairs", nargs="+"); s.set_defaults(func=cmd_node_set)
+    s = node.add_parser("show"); s.add_argument("id"); s.set_defaults(func=cmd_node_show)
+    s = node.add_parser("rm"); s.add_argument("id"); s.set_defaults(func=cmd_node_rm)
+
+    s = sub.add_parser("link", help="连线")
+    s.add_argument("source"); s.add_argument("target")
+    s.set_defaults(func=cmd_link)
+
+    s = sub.add_parser("unlink", help="断开连线")
+    s.add_argument("source"); s.add_argument("target")
+    s.set_defaults(func=cmd_unlink)
 
     args = p.parse_args(argv)
     if sys.platform == "win32":
