@@ -55,3 +55,40 @@ def test_st_without_login_dies(server, capsys):
         gf("st")
     assert e.value.code == 1
     assert "gf login" in capsys.readouterr().err
+
+
+def login_and_wf(server: str, name: str = "流"):
+    gf("login", "tester", "--server", server)
+    gf("wf", "add", name)
+    gf("use", name)
+
+
+def test_wf_lifecycle(server, capsys):
+    gf("login", "tester", "--server", server)
+    gf("wf", "add", "流A")
+    gf("use", "流A")
+    capsys.readouterr()
+    gf("st")
+    assert "流A" in capsys.readouterr().out
+    gf("wf", "ls")
+    assert "流A" in capsys.readouterr().out
+    gf("wf", "rm", "流A")
+    capsys.readouterr()
+    gf("wf", "ls")
+    assert "流A" not in capsys.readouterr().out
+
+
+def test_use_unknown_name_dies(server, capsys):
+    gf("login", "tester", "--server", server)
+    with pytest.raises(SystemExit) as e:
+        gf("use", "不存在的流")
+    assert e.value.code == 1
+    assert "找不到名为" in capsys.readouterr().err
+
+
+def test_show_lists_nodes_and_edges(server, capsys):
+    login_and_wf(server)
+    capsys.readouterr()
+    gf("show")
+    out = capsys.readouterr().out
+    assert "节点（0）" in out and "连线（0）" in out

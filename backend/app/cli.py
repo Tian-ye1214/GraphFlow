@@ -99,6 +99,58 @@ def cmd_st(args):
     print(line)
 
 
+def cmd_wf_ls(args):
+    cli = Cli()
+    for w in cli.req("GET", "/api/workflows"):
+        print(f"{w['id']:>4}  {w['name']}  {w['updated_at'][:19]}")
+
+
+def cmd_wf_add(args):
+    cli = Cli()
+    w = cli.req("POST", "/api/workflows", json={"name": args.name})
+    print(f"已创建工作流 {w['name']}（#{w['id']}）")
+
+
+def cmd_wf_rm(args):
+    cli = Cli()
+    wf_id = cli.resolve("workflows", args.ref)
+    cli.req("DELETE", f"/api/workflows/{wf_id}")
+    print(f"已删除工作流 #{wf_id}")
+
+
+def cmd_use(args):
+    cli = Cli()
+    wf_id = cli.resolve("workflows", args.ref)
+    wf = cli.req("GET", f"/api/workflows/{wf_id}")
+    cli.state["workflow_id"] = wf_id
+    save_state(cli.state)
+    print(f"当前工作流: {wf['name']}（#{wf_id}）")
+
+
+def summarize(n: dict) -> str:
+    c = n["config"]
+    if n["type"] == "input":
+        return f"数据集 {c.get('dataset_ids', [])}"
+    if n["type"] == "llm_synth":
+        return f"模型 #{c.get('model_config_id', '?')} -> {c.get('output_column', 'output')}"
+    if n["type"] == "auto_process":
+        return f"{len(c.get('operations', []))} 个操作"
+    return f"保存为数据集「{c['dataset_name']}」" if c.get("save_as_dataset") else ""
+
+
+def cmd_show(args):
+    cli = Cli()
+    wf = cli.get_wf()
+    graph = wf["graph"]
+    print(f"工作流 {wf['name']}（#{wf['id']}）")
+    print(f"节点（{len(graph['nodes'])}）:")
+    for n in graph["nodes"]:
+        print(f"  {n['id']}  [{NODE_LABELS[n['type']]}]  {summarize(n)}")
+    print(f"连线（{len(graph['edges'])}）:")
+    for e in graph["edges"]:
+        print(f"  {e['source']} -> {e['target']}")
+
+
 def main(argv: list[str] | None = None):
     p = argparse.ArgumentParser(prog="gf", description="GraphFlow 命令行客户端")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -110,6 +162,18 @@ def main(argv: list[str] | None = None):
 
     s = sub.add_parser("st", help="当前状态")
     s.set_defaults(func=cmd_st)
+
+    wf = sub.add_parser("wf", help="工作流管理").add_subparsers(dest="action", required=True)
+    s = wf.add_parser("ls"); s.set_defaults(func=cmd_wf_ls)
+    s = wf.add_parser("add"); s.add_argument("name"); s.set_defaults(func=cmd_wf_add)
+    s = wf.add_parser("rm"); s.add_argument("ref"); s.set_defaults(func=cmd_wf_rm)
+
+    s = sub.add_parser("use", help="设当前工作流")
+    s.add_argument("ref")
+    s.set_defaults(func=cmd_use)
+
+    s = sub.add_parser("show", help="查看当前工作流图")
+    s.set_defaults(func=cmd_show)
 
     args = p.parse_args(argv)
     if sys.platform == "win32":
