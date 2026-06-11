@@ -160,3 +160,32 @@ def test_node_set_bad_int_dies(server, capsys):
         gf("node", "set", "llm_synth_1", "conc=8.5")
     assert e.value.code == 1
     assert "8.5" in capsys.readouterr().err
+
+
+def test_op_lifecycle(server, capsys):
+    login_and_wf(server)
+    gf("node", "add", "auto")
+    gf("op", "add", "auto_process_1", "dedup", "q")
+    gf("op", "add", "auto_process_1", "filter", "q", "min_len", "5")
+    gf("op", "add", "auto_process_1", "shuffle")
+    capsys.readouterr()
+    gf("op", "ls", "auto_process_1")
+    out = capsys.readouterr().out
+    assert "1. 去重" in out and "2. 过滤" in out and "3. 打乱" in out
+    gf("node", "show", "auto_process_1")
+    node = json.loads(capsys.readouterr().out)
+    assert node["config"]["operations"][1] == {"op": "filter", "column": "q",
+                                               "mode": "min_len", "value": 5}
+    gf("op", "rm", "auto_process_1", "1")
+    capsys.readouterr()
+    gf("op", "ls", "auto_process_1")
+    out = capsys.readouterr().out
+    assert "去重" not in out and "1. 过滤" in out
+
+
+def test_op_on_non_auto_node_dies(server, capsys):
+    login_and_wf(server)
+    gf("node", "add", "llm")
+    with pytest.raises(SystemExit):
+        gf("op", "add", "llm_synth_1", "shuffle")
+    assert "不是自动处理节点" in capsys.readouterr().err

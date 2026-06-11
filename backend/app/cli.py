@@ -276,6 +276,79 @@ def cmd_unlink(args):
     print(f"已断开 {args.source} -> {args.target}")
 
 
+OP_LABELS = {"dedup": "去重", "filter": "过滤", "rename": "重命名", "drop": "删除列",
+             "concat": "拼接列", "cast": "类型转换", "sample": "随机采样", "shuffle": "打乱"}
+
+
+def build_op(op: str, params: list[str]) -> dict:
+    if op == "dedup":
+        return {"op": "dedup", "columns": params[0].split(",") if params else []}
+    if op == "filter":
+        if len(params) != 3:
+            die("用法: gf op add <节点> filter <列> <min_len|max_len|contains|not_contains|regex> <值>")
+        col, mode, value = params
+        return {"op": "filter", "column": col, "mode": mode,
+                "value": int(value) if mode in ("min_len", "max_len") else value}
+    if op == "rename":
+        if len(params) != 2:
+            die("用法: gf op add <节点> rename <原列> <新列>")
+        return {"op": "rename", "mapping": {params[0]: params[1]}}
+    if op == "drop":
+        if len(params) != 1:
+            die("用法: gf op add <节点> drop <列1,列2>")
+        return {"op": "drop", "columns": params[0].split(",")}
+    if op == "concat":
+        if len(params) < 2:
+            die("用法: gf op add <节点> concat <列1,列2> <目标列> [分隔符]")
+        return {"op": "concat", "columns": params[0].split(","), "target": params[1],
+                "sep": params[2] if len(params) > 2 else ""}
+    if op == "cast":
+        if len(params) != 2 or params[1] not in ("str", "int", "float"):
+            die("用法: gf op add <节点> cast <列> <str|int|float>")
+        return {"op": "cast", "column": params[0], "to": params[1]}
+    if op == "sample":
+        if len(params) != 1:
+            die("用法: gf op add <节点> sample <n>")
+        return {"op": "sample", "n": int(params[0])}
+    if op == "shuffle":
+        return {"op": "shuffle"}
+    die(f"未知操作 {op}（可选: dedup/filter/rename/drop/concat/cast/sample/shuffle）")
+
+
+def _auto_node(cli: Cli, node_id: str) -> tuple[dict, list]:
+    wf = cli.get_wf()
+    node = find_node(wf["graph"], node_id)
+    if node["type"] != "auto_process":
+        die(f"{node_id} 不是自动处理节点")
+    return wf, node["config"].setdefault("operations", [])
+
+
+def cmd_op_add(args):
+    cli = Cli()
+    wf, ops = _auto_node(cli, args.node_id)
+    ops.append(build_op(args.op, args.params))
+    cli.put_graph(wf["id"], wf["graph"])
+    print(f"已添加操作 #{len(ops)}: {json.dumps(ops[-1], ensure_ascii=False)}")
+
+
+def cmd_op_ls(args):
+    cli = Cli()
+    _, ops = _auto_node(cli, args.node_id)
+    for i, o in enumerate(ops, 1):
+        rest = {k: v for k, v in o.items() if k != "op"}
+        print(f"{i}. {OP_LABELS[o['op']]} {json.dumps(rest, ensure_ascii=False)}")
+
+
+def cmd_op_rm(args):
+    cli = Cli()
+    wf, ops = _auto_node(cli, args.node_id)
+    if not 1 <= args.index <= len(ops):
+        die(f"序号超出范围（1-{len(ops)}）")
+    removed = ops.pop(args.index - 1)
+    cli.put_graph(wf["id"], wf["graph"])
+    print(f"已删除操作: {OP_LABELS[removed['op']]}")
+
+
 def main(argv: list[str] | None = None):
     p = argparse.ArgumentParser(prog="gf", description="GraphFlow 命令行客户端")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -313,6 +386,11 @@ def main(argv: list[str] | None = None):
     s = sub.add_parser("unlink", help="断开连线")
     s.add_argument("source"); s.add_argument("target")
     s.set_defaults(func=cmd_unlink)
+
+    op = sub.add_parser("op", help="自动处理操作").add_subparsers(dest="action", required=True)
+    s = op.add_parser("add"); s.add_argument("node_id"); s.add_argument("op"); s.add_argument("params", nargs="*"); s.set_defaults(func=cmd_op_add)
+    s = op.add_parser("ls"); s.add_argument("node_id"); s.set_defaults(func=cmd_op_ls)
+    s = op.add_parser("rm"); s.add_argument("node_id"); s.add_argument("index", type=int); s.set_defaults(func=cmd_op_rm)
 
     args = p.parse_args(argv)
     if sys.platform == "win32":
