@@ -70,3 +70,16 @@ def topo_order(g: Graph) -> list[Node]:
 
 def upstream_ids(g: Graph, node_id: str) -> list[str]:
     return [e["source"] for e in g.edges if e["target"] == node_id and e["kind"] == "normal"]
+
+
+def descendants(g: Graph, node_id: str) -> set[str]:
+    """沿 normal 边可达的所有下游节点 id（不含自身）。"""
+    out: set[str] = set()
+    frontier = [node_id]
+    while frontier:
+        nid = frontier.pop()
+        for e in g.edges:
+            if e["kind"] == "normal" and e["source"] == nid and e["target"] not in out:
+                out.add(e["target"])
+                frontier.append(e["target"])
+    return out

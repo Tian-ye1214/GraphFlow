@@ -56,3 +56,12 @@ def test_upstream_ids():
 def test_parse_malformed_raises_graph_error():
     with pytest.raises(GraphError, match="缺少字段"):
         parse_graph({"nodes": [{"type": "input"}], "edges": []})
+
+
+def test_descendants():
+    from app.engine.graph import descendants
+    nodes = [("a", "input"), ("b", "llm_synth"), ("c", "auto_process"), ("d", "output")]
+    edges = [("a", "b", "normal"), ("b", "c", "normal"), ("c", "d", "normal")]
+    graph = g(nodes, edges)
+    assert descendants(graph, "b") == {"c", "d"}
+    assert descendants(graph, "d") == set()
