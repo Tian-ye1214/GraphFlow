@@ -221,3 +221,28 @@ def test_model_test_reports_result(server, capsys, monkeypatch):
     capsys.readouterr()
     gf("model", "test", "m")
     assert "连通正常" in capsys.readouterr().out
+
+
+def test_data_up_head_rm(server, capsys, tmp_path):
+    gf("login", "tester", "--server", server)
+    f = tmp_path / "种子.jsonl"
+    f.write_text('{"q": "问0"}\n{"q": "问1"}\n{"q": "问2"}\n', encoding="utf-8")
+    gf("data", "up", str(f))
+    assert "已上传 种子" in capsys.readouterr().out
+    gf("data", "ls")
+    out = capsys.readouterr().out
+    assert "种子" in out and "3 行" in out
+    gf("data", "head", "种子", "2")
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert len(lines) == 2 and json.loads(lines[0])["q"] == "问0"
+    gf("data", "rm", "种子")
+    capsys.readouterr()
+    gf("data", "ls")
+    assert "种子" not in capsys.readouterr().out
+
+
+def test_data_up_missing_file_dies(server, capsys):
+    gf("login", "tester", "--server", server)
+    with pytest.raises(SystemExit):
+        gf("data", "up", "不存在.jsonl")
+    assert "文件不存在" in capsys.readouterr().err
