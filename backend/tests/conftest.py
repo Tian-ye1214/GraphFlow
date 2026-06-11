@@ -13,6 +13,8 @@ async def session_factory(client):
 @pytest.fixture
 async def client(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
+    from app import events
+    events.subscribers.clear()
     from app import db
     await db.init_db()
     from app.main import create_app
