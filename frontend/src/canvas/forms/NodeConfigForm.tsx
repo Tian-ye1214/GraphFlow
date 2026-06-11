@@ -1,0 +1,229 @@
+import { useEffect, useState } from 'react'
+import { Button, Input, InputNumber, Radio, Select, Space, Switch } from 'antd'
+import { api } from '../../api/client'
+import type { Dataset, ModelConfig } from '../../api/types'
+
+export interface FormProps {
+  config: Record<string, any>
+  onChange: (config: Record<string, any>) => void
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ marginBottom: 4, color: '#666' }}>{label}</div>
+      {children}
+    </div>
+  )
+}
+
+function InputNodeForm({ config, onChange }: FormProps) {
+  const [datasets, setDatasets] = useState<Dataset[]>([])
+  useEffect(() => {
+    void api.get<Dataset[]>('/api/datasets').then(setDatasets)
+  }, [])
+  return (
+    <Field label="数据集（可多选，按行拼接）">
+      <Select
+        mode="multiple" style={{ width: '100%' }} value={config.dataset_ids ?? []}
+        onChange={(v) => onChange({ ...config, dataset_ids: v })}
+        options={datasets.map((d) => ({ value: d.id, label: `${d.name}（${d.row_count} 行）` }))}
+      />
+    </Field>
+  )
+}
+
+function LlmSynthForm({ config, onChange }: FormProps) {
+  const [models, setModels] = useState<ModelConfig[]>([])
+  useEffect(() => {
+    void api.get<ModelConfig[]>('/api/models').then(setModels)
+  }, [])
+  const patch = (p: object) => onChange({ ...config, ...p })
+  const params = config.params ?? {}
+  const patchParams = (p: object) => onChange({ ...config, params: { ...params, ...p } })
+  return (
+    <>
+      <Field label="模型">
+        <Select
+          style={{ width: '100%' }} value={config.model_config_id}
+          onChange={(v) => patch({ model_config_id: v })}
+          options={models.map((m) => ({ value: m.id, label: `${m.name}（${m.model_name}）` }))}
+        />
+      </Field>
+      <Field label="System Prompt">
+        <Input.TextArea rows={3} value={config.system_prompt ?? ''}
+                        onChange={(e) => patch({ system_prompt: e.target.value })} />
+      </Field>
+      <Field label="User Prompt（用 {{列名}} 引用上游数据列）">
+        <Input.TextArea rows={6} value={config.user_prompt ?? ''}
+                        onChange={(e) => patch({ user_prompt: e.target.value })} />
+      </Field>
+      <Field label="输出方式">
+        <Radio.Group value={config.output_mode ?? 'column'}
+                     onChange={(e) => patch({ output_mode: e.target.value })}>
+          <Radio.Button value="column">整段存到列</Radio.Button>
+          <Radio.Button value="json">解析 JSON 拆多列</Radio.Button>
+        </Radio.Group>
+      </Field>
+      {(config.output_mode ?? 'column') === 'column' && (
+        <Field label="输出列名">
+          <Input value={config.output_column ?? 'output'}
+                 onChange={(e) => patch({ output_column: e.target.value })} />
+        </Field>
+      )}
+      <Space wrap>
+        <Field label="扇出条数"><InputNumber min={1} value={config.fanout_n ?? 1}
+          onChange={(v) => patch({ fanout_n: v ?? 1 })} /></Field>
+        <Field label="节点并发"><InputNumber min={1} value={config.concurrency ?? 4}
+          onChange={(v) => patch({ concurrency: v ?? 4 })} /></Field>
+        <Field label="重试次数"><InputNumber min={1} value={config.retries ?? 3}
+          onChange={(v) => patch({ retries: v ?? 3 })} /></Field>
+      </Space>
+      <Space wrap>
+        <Field label="temperature"><InputNumber min={0} max={2} step={0.1} value={params.temperature}
+          onChange={(v) => patchParams({ temperature: v })} /></Field>
+        <Field label="top_p"><InputNumber min={0} max={1} step={0.05} value={params.top_p}
+          onChange={(v) => patchParams({ top_p: v })} /></Field>
+        <Field label="max_tokens"><InputNumber min={1} value={params.max_tokens}
+          onChange={(v) => patchParams({ max_tokens: v })} /></Field>
+        <Field label="超时(秒)"><InputNumber min={1} value={params.timeout ?? 120}
+          onChange={(v) => patchParams({ timeout: v ?? 120 })} /></Field>
+        <Field label="JSON 模式"><Switch checked={params.json_mode ?? false}
+          onChange={(v) => patchParams({ json_mode: v })} /></Field>
+      </Space>
+    </>
+  )
+}
+
+const OP_DEFAULTS: Record<string, Record<string, any>> = {
+  dedup: { op: 'dedup', columns: [] },
+  filter: { op: 'filter', column: '', mode: 'contains', value: '' },
+  rename: { op: 'rename', mapping: {} },
+  drop: { op: 'drop', columns: [] },
+  concat: { op: 'concat', target: '', columns: [], sep: '' },
+  cast: { op: 'cast', column: '', to: 'str' },
+  sample: { op: 'sample', n: 100 },
+  shuffle: { op: 'shuffle' },
+}
+const OP_LABELS: Record<string, string> = {
+  dedup: '去重', filter: '过滤', rename: '重命名', drop: '删除列',
+  concat: '拼接列', cast: '类型转换', sample: '随机采样', shuffle: '打乱',
+}
+const LEN_MODES = ['min_len', 'max_len']
+
+function OpFields({ op, update }: { op: Record<string, any>; update: (p: object) => void }) {
+  switch (op.op) {
+    case 'dedup':
+    case 'drop':
+      return <Select mode="tags" placeholder="列名（去重留空=全列）" style={{ width: '100%' }}
+                     value={op.columns} onChange={(v) => update({ columns: v })} />
+    case 'filter':
+      return (
+        <Space wrap>
+          <Input placeholder="列名" style={{ width: 100 }} value={op.column}
+                 onChange={(e) => update({ column: e.target.value })} />
+          <Select style={{ width: 120 }} value={op.mode} onChange={(v) => update({ mode: v })}
+                  options={[
+                    { value: 'min_len', label: '最小长度' }, { value: 'max_len', label: '最大长度' },
+                    { value: 'contains', label: '包含' }, { value: 'not_contains', label: '不包含' },
+                    { value: 'regex', label: '正则匹配' },
+                  ]} />
+          {LEN_MODES.includes(op.mode)
+            ? <InputNumber placeholder="长度" value={op.value} onChange={(v) => update({ value: v })} />
+            : <Input placeholder="值" style={{ width: 120 }} value={op.value}
+                     onChange={(e) => update({ value: e.target.value })} />}
+        </Space>
+      )
+    case 'rename': {
+      const [from, to] = Object.entries(op.mapping ?? {})[0] ?? ['', '']
+      return (
+        <Space>
+          <Input placeholder="原列名" style={{ width: 120 }} value={from}
+                 onChange={(e) => update({ mapping: { [e.target.value]: to } })} />
+          →
+          <Input placeholder="新列名" style={{ width: 120 }} value={to as string}
+                 onChange={(e) => update({ mapping: { [from]: e.target.value } })} />
+        </Space>
+      )
+    }
+    case 'concat':
+      return (
+        <Space wrap>
+          <Select mode="tags" placeholder="来源列" style={{ minWidth: 160 }}
+                  value={op.columns} onChange={(v) => update({ columns: v })} />
+          <Input placeholder="分隔符" style={{ width: 80 }} value={op.sep}
+                 onChange={(e) => update({ sep: e.target.value })} />
+          <Input placeholder="目标列" style={{ width: 100 }} value={op.target}
+                 onChange={(e) => update({ target: e.target.value })} />
+        </Space>
+      )
+    case 'cast':
+      return (
+        <Space>
+          <Input placeholder="列名" style={{ width: 120 }} value={op.column}
+                 onChange={(e) => update({ column: e.target.value })} />
+          <Select style={{ width: 90 }} value={op.to} onChange={(v) => update({ to: v })}
+                  options={['str', 'int', 'float'].map((t) => ({ value: t, label: t }))} />
+        </Space>
+      )
+    case 'sample':
+      return <InputNumber addonBefore="保留" addonAfter="条" value={op.n}
+                          onChange={(v) => update({ n: v })} />
+    default:
+      return null
+  }
+}
+
+function AutoProcessForm({ config, onChange }: FormProps) {
+  const ops: Record<string, any>[] = config.operations ?? []
+  const setOps = (next: Record<string, any>[]) => onChange({ ...config, operations: next })
+  return (
+    <>
+      {ops.map((op, i) => (
+        <div key={i} style={{ border: '1px solid #eee', borderRadius: 6, padding: 8, marginBottom: 8 }}>
+          <Space style={{ marginBottom: 8 }}>
+            <Select style={{ width: 130 }} value={op.op}
+                    onChange={(v) => setOps(ops.map((o, j) => (j === i ? { ...OP_DEFAULTS[v] } : o)))}
+                    options={Object.entries(OP_LABELS).map(([v, l]) => ({ value: v, label: l }))} />
+            <a onClick={() => setOps(ops.filter((_, j) => j !== i))}>删除</a>
+          </Space>
+          <OpFields op={op} update={(p) => setOps(ops.map((o, j) => (j === i ? { ...o, ...p } : o)))} />
+        </div>
+      ))}
+      <Button block onClick={() => setOps([...ops, { ...OP_DEFAULTS.dedup }])}>+ 添加操作</Button>
+    </>
+  )
+}
+
+function OutputNodeForm({ config, onChange }: FormProps) {
+  return (
+    <>
+      <Field label="同时保存为新数据集">
+        <Switch checked={config.save_as_dataset ?? false}
+                onChange={(v) => onChange({ ...config, save_as_dataset: v })} />
+      </Field>
+      {config.save_as_dataset && (
+        <Field label="数据集名称">
+          <Input value={config.dataset_name ?? ''}
+                 onChange={(e) => onChange({ ...config, dataset_name: e.target.value })} />
+        </Field>
+      )}
+      <div style={{ color: '#999' }}>导出文件在运行详情页选择格式下载。</div>
+    </>
+  )
+}
+
+export default function NodeConfigForm({ type, config, onChange }: FormProps & { type: string }) {
+  switch (type) {
+    case 'input':
+      return <InputNodeForm config={config} onChange={onChange} />
+    case 'llm_synth':
+      return <LlmSynthForm config={config} onChange={onChange} />
+    case 'auto_process':
+      return <AutoProcessForm config={config} onChange={onChange} />
+    case 'output':
+      return <OutputNodeForm config={config} onChange={onChange} />
+    default:
+      return null
+  }
+}
