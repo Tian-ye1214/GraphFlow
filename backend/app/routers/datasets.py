@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import get_current_user
 from app.config import settings
 from app.db import get_session
+from app.events import publish
 from app.models import Dataset, DatasetRow, User
 from app.services.file_parse import parse_file, union_columns
 
@@ -68,6 +69,7 @@ async def upload(files: list[UploadFile], user: User = Depends(get_current_user)
         ds = await create_dataset(session, user.id, Path(f.filename).stem, rows,
                                   original_filename=f.filename, file_path=str(file_path))
         results.append(_out(ds))
+        publish(user.id, "dataset", ds.id)
     return results
 
 
@@ -100,4 +102,5 @@ async def delete_dataset(ds_id: int, user: User = Depends(get_current_user),
         Path(ds.file_path).unlink(missing_ok=True)
     await session.delete(ds)
     await session.commit()
+    publish(user.id, "dataset", ds_id)
     return {"ok": True}

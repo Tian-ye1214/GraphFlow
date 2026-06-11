@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import get_current_user
 from app.config import settings
 from app.db import get_session, get_session_factory
+from app.events import publish
 from app.engine.graph import GraphError, descendants, parse_graph, validate_graph
 from app.engine.manager import manager
 from app.models import (Dataset, ModelConfig, Run, RunNodeState, RunRow, User,
@@ -63,6 +64,7 @@ async def create_run(body: RunCreate, user: User = Depends(get_current_user),
     session.add(run)
     await session.commit()
     manager.submit(run.id, user.id, user.max_llm_concurrency, get_session_factory())
+    publish(user.id, "run", run.id)
     return {"id": run.id, "status": run.status}
 
 
@@ -106,6 +108,7 @@ async def cancel_run(run_id: int, user: User = Depends(get_current_user),
     if run.status not in ("queued", "running"):
         raise HTTPException(status_code=409, detail=f"当前状态 {run.status} 不可取消")
     manager.cancel(run.id)
+    publish(user.id, "run", run.id)
     return {"ok": True}
 
 
@@ -138,6 +141,7 @@ async def rerun_failed(run_id: int, user: User = Depends(get_current_user),
     run.finished_at = None
     await session.commit()
     manager.submit(run.id, user.id, user.max_llm_concurrency, get_session_factory())
+    publish(user.id, "run", run.id)
     return {"ok": True}
 
 

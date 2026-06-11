@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import crypto
 from app.auth import get_current_user
 from app.db import get_session
+from app.events import publish
 from app.models import ModelConfig, User
 from app.services import llm
 
@@ -58,6 +59,7 @@ async def create_model(body: ModelConfigIn, user: User = Depends(get_current_use
     )
     session.add(mc)
     await session.commit()
+    publish(user.id, "model", mc.id)
     return _out(mc)
 
 
@@ -70,6 +72,7 @@ async def update_model(mc_id: int, body: ModelConfigIn, user: User = Depends(get
     if body.api_key:  # 留空表示不修改 key
         mc.api_key_enc = crypto.encrypt(body.api_key)
     await session.commit()
+    publish(user.id, "model", mc.id)
     return _out(mc)
 
 
@@ -79,6 +82,7 @@ async def delete_model(mc_id: int, user: User = Depends(get_current_user),
     mc = await _get_owned(mc_id, user, session)
     await session.delete(mc)
     await session.commit()
+    publish(user.id, "model", mc_id)
     return {"ok": True}
 
 

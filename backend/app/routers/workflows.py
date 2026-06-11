@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
 from app.db import get_session
+from app.events import publish
 from app.models import User, Workflow
 
 router = APIRouter(prefix="/api/workflows", tags=["workflows"])
@@ -49,6 +50,7 @@ async def create_workflow(body: WorkflowCreate, user: User = Depends(get_current
     wf = Workflow(user_id=user.id, name=body.name)
     session.add(wf)
     await session.commit()
+    publish(user.id, "workflow", wf.id)
     return _out(wf)
 
 
@@ -67,6 +69,7 @@ async def update_workflow(wf_id: int, body: WorkflowUpdate, user: User = Depends
     if body.graph is not None:
         wf.graph_json = json.dumps(body.graph, ensure_ascii=False)
     await session.commit()
+    publish(user.id, "workflow", wf.id)
     return _out(wf)
 
 
@@ -76,4 +79,5 @@ async def delete_workflow(wf_id: int, user: User = Depends(get_current_user),
     wf = await get_owned_workflow(wf_id, user, session)
     await session.delete(wf)
     await session.commit()
+    publish(user.id, "workflow", wf_id)
     return {"ok": True}
