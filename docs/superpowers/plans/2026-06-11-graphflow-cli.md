@@ -47,11 +47,17 @@
 
 - [ ] **Step 1: 写失败测试**
 
+> 注：httpx 的 ASGITransport 会先跑完整个 ASGI 应用再返回响应（整体缓冲），
+> 无法消费无限 SSE 流——`client.stream()` 会永久挂起。因此流式行为直接调用
+> 路由函数、迭代其 `body_iterator`（真实代码路径，仅绕开传输层）；
+> 真实 HTTP 流式链路由 Task 11 的手动冒烟覆盖。
+
 创建 `backend/tests/test_events.py`：
 
 ```python
-import asyncio
 import json
+
+from app.auth import make_session_cookie
 
 
 async def test_events_requires_auth(client):
@@ -61,37 +67,28 @@ async def test_events_requires_auth(client):
 
 async def test_stream_receives_published_event(auth_client):
     from app import events
+    from app.routers.events import event_stream
 
     me = (await auth_client.get("/api/me")).json()
-    async with auth_client.stream("GET", "/api/events") as resp:
-        assert resp.status_code == 200
-        events.publish(me["id"], "workflow", 1)
-        async for line in resp.aiter_lines():
-            if line.startswith("data: "):
-                assert json.loads(line[6:]) == {"entity": "workflow", "id": 1}
-                break
+    resp = await event_stream(gf_session=make_session_cookie(me["id"]))
+    assert resp.media_type == "text/event-stream"
+    events.publish(me["id"], "workflow", 1)
+    chunk = await anext(resp.body_iterator)
+    assert json.loads(chunk.removeprefix("data: ").strip()) == {"entity": "workflow", "id": 1}
+    await resp.body_iterator.aclose()
+    assert me["id"] not in events.subscribers  # 断开即注销
 
 
 async def test_events_isolated_per_user(auth_client):
     from app import events
+    from app.routers.events import event_stream
 
     a_id = (await auth_client.get("/api/me")).json()["id"]
-    async with auth_client.stream("GET", "/api/events"):
-        events.publish(a_id + 999, "workflow", 1)  # 发给别的用户
-        q = next(iter(events.subscribers[a_id]))
-        assert q.qsize() == 0
-
-
-async def test_disconnect_unsubscribes(auth_client):
-    from app import events
-
-    async with auth_client.stream("GET", "/api/events"):
-        assert events.subscribers
-    for _ in range(100):
-        if not events.subscribers:
-            break
-        await asyncio.sleep(0.01)
-    assert not events.subscribers
+    resp = await event_stream(gf_session=make_session_cookie(a_id))
+    events.publish(a_id + 999, "workflow", 1)  # 发给别的用户
+    q = next(iter(events.subscribers[a_id]))
+    assert q.qsize() == 0
+    await resp.body_iterator.aclose()
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -99,7 +96,7 @@ async def test_disconnect_unsubscribes(auth_client):
 ```
 uv run pytest tests/test_events.py -v
 ```
-预期：4 个测试 FAIL（`ModuleNotFoundError: No module named 'app.events'` 或 404）。
+预期：3 个测试 FAIL（`ModuleNotFoundError: No module named 'app.events'` 或 404）。
 
 - [ ] **Step 3: 实现 events.py**
 
@@ -191,7 +188,7 @@ from app.routers import auth, datasets, events, model_configs, runs, workflows
 ```
 uv run pytest tests/test_events.py -v
 ```
-预期：4 passed。若 `test_disconnect_unsubscribes` 在 ASGITransport 下不收敛（生成器未被取消），如实报告，不要静默放宽断言。
+预期：3 passed。
 
 - [ ] **Step 8: 提交**
 
@@ -213,31 +210,31 @@ git commit -m "feat: SSE 事件推送基础设施（/api/events）" -m "Co-Autho
 
 - [ ] **Step 1: 写失败测试**
 
-在 `backend/tests/test_events.py` 末尾追加：
+在 `backend/tests/test_events.py` 末尾追加（注册表级订阅：mutation 是否 publish 与 SSE 传输无关）：
 
 ```python
 async def test_mutations_push_events(auth_client):
-    async with auth_client.stream("GET", "/api/events") as resp:
-        lines = resp.aiter_lines()
+    from app import events
 
-        async def next_event():
-            async def read():
-                async for line in lines:
-                    if line.startswith("data: "):
-                        return json.loads(line[6:])
-            return await asyncio.wait_for(read(), 5)
+    me = (await auth_client.get("/api/me")).json()
+    q = events.subscribe(me["id"])
 
-        wf = (await auth_client.post("/api/workflows", json={"name": "流"})).json()
-        assert await next_event() == {"entity": "workflow", "id": wf["id"]}
-        await auth_client.put(f"/api/workflows/{wf['id']}", json={"name": "新名"})
-        assert await next_event() == {"entity": "workflow", "id": wf["id"]}
-        mc = (await auth_client.post("/api/models", json={
-            "name": "m", "model_name": "q", "base_url": "http://x/v1",
-            "api_key": "", "default_params": {}})).json()
-        assert await next_event() == {"entity": "model", "id": mc["id"]}
-        files = [("files", ("a.jsonl", b'{"q": 1}\n', "application/octet-stream"))]
-        ds = (await auth_client.post("/api/datasets/upload", files=files)).json()[0]
-        assert await next_event() == {"entity": "dataset", "id": ds["id"]}
+    def popped():
+        return json.loads(q.get_nowait())
+
+    wf = (await auth_client.post("/api/workflows", json={"name": "流"})).json()
+    assert popped() == {"entity": "workflow", "id": wf["id"]}
+    await auth_client.put(f"/api/workflows/{wf['id']}", json={"name": "新名"})
+    assert popped() == {"entity": "workflow", "id": wf["id"]}
+    mc = (await auth_client.post("/api/models", json={
+        "name": "m", "model_name": "q", "base_url": "http://x/v1",
+        "api_key": "", "default_params": {}})).json()
+    assert popped() == {"entity": "model", "id": mc["id"]}
+    files = [("files", ("a.jsonl", b'{"q": 1}\n', "application/octet-stream"))]
+    ds = (await auth_client.post("/api/datasets/upload", files=files)).json()[0]
+    assert popped() == {"entity": "dataset", "id": ds["id"]}
+    await auth_client.delete(f"/api/workflows/{wf['id']}")
+    assert popped() == {"entity": "workflow", "id": wf["id"]}
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -245,7 +242,7 @@ async def test_mutations_push_events(auth_client):
 ```
 uv run pytest tests/test_events.py::test_mutations_push_events -v
 ```
-预期：FAIL（5 秒后 `asyncio.TimeoutError`——没收到事件）。
+预期：FAIL（`asyncio.queues.QueueEmpty`——mutation 没有 publish）。
 
 - [ ] **Step 3: 四个路由接 publish**
 
