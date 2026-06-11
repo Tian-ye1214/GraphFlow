@@ -126,6 +126,28 @@ async def test_cancel_running(auth_client, monkeypatch):
     assert detail["status"] == "cancelled"
 
 
+async def test_export_node_id_path_traversal_neutralized(auth_client, monkeypatch):
+    from app.config import settings
+
+    patch_chat(monkeypatch)
+    wf_id = await setup_workflow(auth_client)
+    run_id = (await auth_client.post("/api/runs", json={"workflow_id": wf_id})).json()["id"]
+    await wait_run(auth_client, run_id)
+    exp = await auth_client.get(
+        f"/api/runs/{run_id}/export?node_id=..%2F..%2F..%2Fpwned&format=jsonl")
+    assert exp.status_code == 200
+    assert not (settings.data_dir / "pwned.jsonl").exists()  # 未逃逸 exports 目录
+
+
+async def test_export_rejects_unknown_format(auth_client, monkeypatch):
+    patch_chat(monkeypatch)
+    wf_id = await setup_workflow(auth_client)
+    run_id = (await auth_client.post("/api/runs", json={"workflow_id": wf_id})).json()["id"]
+    await wait_run(auth_client, run_id)
+    exp = await auth_client.get(f"/api/runs/{run_id}/export?format=zip")
+    assert exp.status_code == 422
+
+
 async def test_startup_resume(auth_client, monkeypatch, session_factory):
     from app.engine import manager as manager_mod
     from app.models import Run, User, Workflow, WorkflowVersion

@@ -1,4 +1,7 @@
+import asyncio
 import json
+from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -164,7 +167,8 @@ async def run_rows(run_id: int, node_id: str, status: str = "done",
 
 
 @router.get("/{run_id}/export")
-async def export_run(run_id: int, node_id: str | None = None, format: str = "jsonl",
+async def export_run(run_id: int, node_id: str | None = None,
+                     format: Literal["jsonl", "csv", "xlsx"] = "jsonl",
                      user: User = Depends(get_current_user),
                      session: AsyncSession = Depends(get_session)):
     run = await _get_owned_run(run_id, user, session)
@@ -178,6 +182,7 @@ async def export_run(run_id: int, node_id: str | None = None, format: str = "jso
     recs = (await session.execute(
         select(RunRow).where(RunRow.run_id == run.id, RunRow.node_id == node_id,
                              RunRow.status == "done").order_by(RunRow.row_idx))).scalars().all()
-    filename = f"run{run.id}_{node_id}.{format}"
-    path = export_rows(_flatten(recs), format, settings.data_dir / "exports" / filename)
+    filename = f"run{run.id}_{Path(node_id).name}.{format}"
+    path = await asyncio.to_thread(
+        export_rows, _flatten(recs), format, settings.data_dir / "exports" / filename)
     return FileResponse(path, filename=filename)
