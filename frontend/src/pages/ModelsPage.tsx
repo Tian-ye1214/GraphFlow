@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Button, Form, Input, InputNumber, Modal, Popconfirm, Space, Table, message } from 'antd'
 import { api } from '../api/client'
 import type { ModelConfig } from '../api/types'
+import { useEvents } from '../api/events'
 
 interface FormValues {
   name: string; model_name: string; base_url: string; api_key?: string
@@ -17,6 +18,10 @@ export default function ModelsPage() {
   useEffect(() => {
     void reload()
   }, [])
+
+  useEvents((e) => {
+    if (e.entity === 'model') void reload()
+  })
 
   const openEdit = (mc: ModelConfig | 'new') => {
     setEditing(mc)

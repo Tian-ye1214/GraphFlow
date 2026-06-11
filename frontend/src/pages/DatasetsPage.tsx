@@ -3,6 +3,7 @@ import { Drawer, Popconfirm, Space, Table, Upload, message } from 'antd'
 import { InboxOutlined } from '@ant-design/icons'
 import { api } from '../api/client'
 import type { Dataset, RowsPage } from '../api/types'
+import { useEvents } from '../api/events'
 
 export default function DatasetsPage() {
   const [list, setList] = useState<Dataset[]>([])
@@ -14,6 +15,10 @@ export default function DatasetsPage() {
   useEffect(() => {
     void reload()
   }, [])
+
+  useEvents((e) => {
+    if (e.entity === 'dataset') void reload()
+  })
 
   useEffect(() => {
     if (preview) void api.get<RowsPage>(`/api/datasets/${preview.id}/rows?page=${page}&page_size=20`).then(setRows)

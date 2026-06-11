@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Button, Drawer, Space, message } from 'antd'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Alert, Button, Drawer, Space, message } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   Background, Controls, ReactFlow, ReactFlowProvider, addEdge,
@@ -11,6 +11,8 @@ import type { Workflow } from '../api/types'
 import NodeConfigForm from '../canvas/forms/NodeConfigForm'
 import { nodeTypes } from '../canvas/nodeTypes'
 import { NODE_LABELS, fromFlow, toFlow } from '../canvas/serialize'
+import { useEvents } from '../api/events'
+import { graphFingerprint } from '../canvas/fingerprint'
 
 function nextId(type: string, existing: Node[]): string {
   for (let i = 1; ; i++) {
@@ -27,15 +29,28 @@ function Canvas() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const selected = nodes.find((n) => n.id === selectedId) ?? null
+  const [cliChanged, setCliChanged] = useState(false)
+  const baseline = useRef('')
+
+  const load = useCallback(async () => {
+    const w = await api.get<Workflow>(`/api/workflows/${id}`)
+    setWf(w)
+    const f = toFlow(w.graph)
+    setNodes(f.nodes)
+    setEdges(f.edges)
+    baseline.current = graphFingerprint(w.graph)
+    setCliChanged(false)
+  }, [id, setNodes, setEdges])
 
   useEffect(() => {
-    void api.get<Workflow>(`/api/workflows/${id}`).then((w) => {
-      setWf(w)
-      const f = toFlow(w.graph)
-      setNodes(f.nodes)
-      setEdges(f.edges)
-    })
-  }, [id, setNodes, setEdges])
+    void load()
+  }, [load])
+
+  useEvents((e) => {
+    if (e.entity !== 'workflow' || e.id !== Number(id)) return
+    if (graphFingerprint(fromFlow(nodes, edges)) === baseline.current) void load()
+    else setCliChanged(true)
+  })
 
   const onConnect = useCallback(
     (c: Connection) => setEdges((eds) => addEdge({ ...c, data: { kind: 'normal' } }, eds)),
@@ -50,7 +65,9 @@ function Canvas() {
     }])
 
   const save = async () => {
-    await api.put(`/api/workflows/${id}`, { graph: fromFlow(nodes, edges) })
+    const graph = fromFlow(nodes, edges)
+    baseline.current = graphFingerprint(graph)
+    await api.put(`/api/workflows/${id}`, { graph })
     message.success('已保存')
   }
 
@@ -69,6 +86,13 @@ function Canvas() {
 
   return (
     <div style={{ height: 'calc(100vh - 48px)' }}>
+      {cliChanged && (
+        <Alert
+          type="info" showIcon style={{ marginBottom: 8 }}
+          message="工作流已被 CLI 修改"
+          action={<Button size="small" type="primary" onClick={() => void load()}>加载最新版本</Button>}
+        />
+      )}
       <Space style={{ marginBottom: 8 }}>
         <b>{wf?.name}</b>
         {(Object.keys(NODE_LABELS) as (keyof typeof NODE_LABELS)[]).map((t) => (

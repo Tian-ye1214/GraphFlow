@@ -3,6 +3,7 @@ import { Button, Input, Modal, Popconfirm, Space, Table } from 'antd'
 import { Link } from 'react-router-dom'
 import { api } from '../api/client'
 import type { WorkflowSummary } from '../api/types'
+import { useEvents } from '../api/events'
 
 export default function WorkflowsPage() {
   const [list, setList] = useState<WorkflowSummary[]>([])
@@ -13,6 +14,10 @@ export default function WorkflowsPage() {
   useEffect(() => {
     void reload()
   }, [])
+
+  useEvents((e) => {
+    if (e.entity === 'workflow') void reload()
+  })
 
   const create = async () => {
     if (!name.trim()) return

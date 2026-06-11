@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Table, Tag } from 'antd'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
 import type { Run } from '../api/types'
+import { useEvents } from '../api/events'
 
 export const STATUS_COLORS: Record<string, string> = {
   queued: 'default', running: 'processing', completed: 'success',
@@ -17,9 +18,18 @@ export default function RunsPage() {
   const [params] = useSearchParams()
   const wfId = params.get('workflow_id')
 
+  const reload = useCallback(
+    () => api.get<Run[]>(`/api/runs${wfId ? `?workflow_id=${wfId}` : ''}`).then(setList),
+    [wfId],
+  )
+
   useEffect(() => {
-    void api.get<Run[]>(`/api/runs${wfId ? `?workflow_id=${wfId}` : ''}`).then(setList)
-  }, [wfId])
+    void reload()
+  }, [reload])
+
+  useEvents((e) => {
+    if (e.entity === 'run') void reload()
+  })
 
   return (
     <Table
