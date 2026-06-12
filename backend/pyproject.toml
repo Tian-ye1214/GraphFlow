@@ -13,6 +13,10 @@ dependencies = [
     "itsdangerous>=2.2",
     "pydantic-settings>=2.6",
     "httpx>=0.28",
+    "pydantic-ai>=1.80",
+    "ddgs>=9.14.4",
+    "pymupdf>=1.27.2.3",
+    "python-docx>=1.2.0",
 ]
 
 [dependency-groups]
