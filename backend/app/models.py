@@ -118,3 +118,24 @@ class RunRow(Base):
     error: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
     __table_args__ = (Index("ix_run_row_unit", "run_id", "node_id", "row_idx", unique=True),)
+
+
+class AgentSession(Base):
+    __tablename__ = "agent_sessions"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    title: Mapped[str] = mapped_column(default="")
+    models_json: Mapped[str] = mapped_column(Text)  # {"coordinator": 1, "manager": 1, "worker": 2}
+    history_json: Mapped[str] = mapped_column(Text, default="[]")  # pydantic-ai ModelMessage 全量历史
+    status: Mapped[str] = mapped_column(default="idle")  # idle / running
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class AgentMessage(Base):
+    __tablename__ = "agent_messages"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("agent_sessions.id"), index=True)
+    role: Mapped[str]  # user / assistant / tool
+    content_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
