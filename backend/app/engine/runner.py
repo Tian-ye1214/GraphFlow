@@ -147,7 +147,8 @@ async def _barrier_output(session_factory, user_id, node: Node, inputs) -> list[
                 rows.extend(json.loads(r.data_json) for r in recs)
         return rows
     if node.type == "auto_process":
-        return nodes.apply_operations(inputs, cfg.get("operations", []), seed=cfg.get("seed"))
+        return await nodes.apply_operations_with_agent(
+            inputs, cfg.get("operations", []), seed=cfg.get("seed"))
     if node.type == "output":
         if cfg.get("save_as_dataset"):
             async with session_factory() as s:

@@ -3,6 +3,7 @@ import json as _json
 import random
 import re
 
+from app.engine import pycode
 from app.models import ModelConfig
 from app.services import llm
 
@@ -81,13 +82,29 @@ _OPS = {"dedup": _dedup, "filter": _filter, "rename": _rename, "drop": _drop,
         "concat": _concat, "cast": _cast, "sample": _sample, "shuffle": _shuffle}
 
 
+def _apply_one(rows: list[dict], op: dict, rng) -> list[dict]:
+    fn = _OPS.get(op.get("op"))
+    if fn is None:
+        raise ValueError(f"未知操作: {op.get('op')}")
+    return fn(rows, op, rng)
+
+
 def apply_operations(rows: list[dict], operations: list[dict], seed: int | None = None) -> list[dict]:
     rng = random.Random(seed)
     for op in operations:
-        fn = _OPS.get(op.get("op"))
-        if fn is None:
-            raise ValueError(f"未知操作: {op.get('op')}")
-        rows = fn(rows, op, rng)
+        rows = _apply_one(rows, op, rng)
+    return rows
+
+
+async def apply_operations_with_agent(rows: list[dict], operations: list[dict],
+                                      seed: int | None = None) -> list[dict]:
+    """同 apply_operations，但支持 {"op": "agent", "code": ...}（子进程执行固化代码）。"""
+    rng = random.Random(seed)
+    for op in operations:
+        if op.get("op") == "agent":
+            rows = await pycode.run_process_code(op.get("code") or "", rows)
+        else:
+            rows = _apply_one(rows, op, rng)
     return rows
 
 

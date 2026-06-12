@@ -1,5 +1,6 @@
 import pytest
 
+from app.engine import nodes
 from app.engine.nodes import apply_operations
 
 ROWS = [{"q": "你好", "n": "1"}, {"q": "你好", "n": "2"}, {"q": "world", "n": "3"}]
@@ -65,3 +66,16 @@ def test_unknown_op_raises():
 def test_cast_none_raises_clear_error():
     with pytest.raises(ValueError, match="缺失值"):
         apply_operations([{"x": None}], [{"op": "cast", "column": "x", "to": "str"}])
+
+
+async def test_agent_op_mixed_chain():
+    rows = [{"a": "x"}, {"a": "x"}, {"a": "y"}]
+    ops = [{"op": "dedup", "columns": ["a"]},
+           {"op": "agent", "code": "def process(rows):\n    return [{**r, 'b': r['a'].upper()} for r in rows]"}]
+    out = await nodes.apply_operations_with_agent(rows, ops)
+    assert out == [{"a": "x", "b": "X"}, {"a": "y", "b": "Y"}]
+
+
+async def test_agent_op_empty_code_raises():
+    with pytest.raises(ValueError, match="未生成代码"):
+        await nodes.apply_operations_with_agent([{"a": 1}], [{"op": "agent", "code": ""}])
