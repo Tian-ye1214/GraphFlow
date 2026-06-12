@@ -25,6 +25,7 @@ DANGEROUS_PATTERNS = ["rm -rf /", "rm -rf /*", "mkfs.", "dd if=", ":(){:|:&};:",
                       "> /dev/sda", "chmod -R 777 /", "| sh", "| bash"]
 DANGEROUS_START_PATTERNS = ["eval ", "exec "]
 GF_DELETE_RE = re.compile(r"gf\s+(wf|data|model)\s+rm\b", re.IGNORECASE)
+GF_LOGIN_RE = re.compile(r"gf\s+login\b", re.IGNORECASE)
 BACKGROUND_RE = re.compile(r"\b(start|nohup|setsid)\b|&\s*$", re.IGNORECASE)
 
 
@@ -141,6 +142,8 @@ class AgentToolkit:
         if GF_DELETE_RE.search(cmd) and not self._confirm_delete:
             return ("删除操作需用户确认：请向用户说明将要删除的资源，"
                     "在回复末尾单独一行输出 [confirm_delete] <完整 gf 命令>，然后结束回合等待确认。")
+        if GF_LOGIN_RE.search(cmd):
+            return "会话已绑定当前用户，禁止用 gf login 切换身份；直接执行业务命令即可。"
         if cmd == "gf" or cmd.startswith("gf "):
             cmd = f'"{sys.executable}" -m app.cli{cmd[2:]}'
         # PYTHONIOENCODING：Windows 管道默认 cp936，gf 打印中文会乱码

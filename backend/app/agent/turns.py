@@ -16,7 +16,8 @@ from app.models import AgentMessage, AgentSession, ModelConfig
 
 
 def session_dir(session_id: int) -> Path:
-    return settings.data_dir / "agent" / str(session_id)
+    # 必须绝对：相对路径会被 gf 子进程按其 cwd 二次拼接（GF_STATE_FILE 失效→Agent 自行 login 成幽灵用户）
+    return (settings.data_dir / "agent" / str(session_id)).resolve()
 
 
 class AgentTurnManager:

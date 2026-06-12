@@ -98,3 +98,10 @@ async def test_wrapper_emits_events(tmp_path):
     assert events[1][1]["status"] == "ok"
     assert events[1][1]["agent_role"] == "worker_1"
     assert events[0][1]["tool"] == "ping"
+
+
+async def test_gf_login_intercepted(tk):
+    out = await tk.run_command("gf login bob")
+    assert "禁止" in out and "Return code" not in out  # 未起子进程
+    out = await tk.run_command("GF LOGIN bob")
+    assert "禁止" in out

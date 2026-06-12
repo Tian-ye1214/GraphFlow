@@ -133,3 +133,11 @@ async def test_resume_interrupted(client, session_factory):
         assert (await s.get(AgentSession, sid2)).status == "idle"
     msgs = await _messages(session_factory, sid2)
     assert msgs[-1][1]["text"] == "回合因服务重启中断"
+
+
+def test_session_dir_absolute_under_relative_data_dir(monkeypatch):
+    from pathlib import Path
+    monkeypatch.setattr(settings, "data_dir", Path("data"))  # 生产默认就是相对路径
+    p = turns.session_dir(7)
+    assert p.is_absolute()  # 相对路径会被 gf 子进程按其 cwd 二次拼接（已实际踩坑）
+    assert p.parts[-2:] == ("agent", "7")
