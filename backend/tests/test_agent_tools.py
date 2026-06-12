@@ -37,6 +37,8 @@ async def test_run_command_echo(tk):
 async def test_gf_delete_intercepted(tk):
     out = await tk.run_command("gf data rm 种子集")
     assert "需用户确认" in out
+    # Windows 对 PATH 上的 gf.exe 不区分大小写，拦截也必须不区分
+    assert "需用户确认" in await tk.run_command("GF data rm 种子集")
 
 
 async def test_gf_delete_allowed_with_confirm(tmp_path):

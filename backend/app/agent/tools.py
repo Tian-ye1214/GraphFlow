@@ -24,7 +24,7 @@ ROLE: ContextVar[str] = ContextVar("agent_role", default="coordinator")
 DANGEROUS_PATTERNS = ["rm -rf /", "rm -rf /*", "mkfs.", "dd if=", ":(){:|:&};:",
                       "> /dev/sda", "chmod -R 777 /", "| sh", "| bash"]
 DANGEROUS_START_PATTERNS = ["eval ", "exec "]
-GF_DELETE_RE = re.compile(r"gf\s+(wf|data|model)\s+rm\b")
+GF_DELETE_RE = re.compile(r"gf\s+(wf|data|model)\s+rm\b", re.IGNORECASE)
 BACKGROUND_RE = re.compile(r"\b(start|nohup|setsid)\b|&\s*$", re.IGNORECASE)
 
 
