@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { Layout, Menu, Spin } from 'antd'
+import { Button, Layout, Menu, Spin } from 'antd'
 import { BrowserRouter, Link, Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom'
 import LoginPage from './pages/LoginPage'
 import ModelsPage from './pages/ModelsPage'
@@ -12,7 +12,7 @@ import AgentDrawer from './agent/AgentDrawer'
 import { useAuth } from './stores/auth'
 
 function Shell() {
-  const { user, ready } = useAuth()
+  const { user, ready, logout } = useAuth()
   const location = useLocation()
   if (!ready) return <Spin style={{ display: 'block', marginTop: '20vh' }} />
   if (!user) return <Navigate to="/login" replace />
@@ -30,6 +30,11 @@ function Shell() {
             { key: '/runs', label: <Link to="/runs">运行记录</Link> },
           ]}
         />
+        <div style={{ position: 'absolute', bottom: 16, left: 16, right: 16,
+                      display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ color: '#666' }}>{user.display_name || user.username}</span>
+          <Button size="small" onClick={() => void logout()}>退出</Button>
+        </div>
       </Layout.Sider>
       <Layout.Content style={{ padding: 16 }}>
         <Outlet />

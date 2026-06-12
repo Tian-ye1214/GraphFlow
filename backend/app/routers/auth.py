@@ -27,6 +27,12 @@ async def login(body: LoginIn, response: Response, session: AsyncSession = Depen
     return _user_out(user)
 
 
+@router.post("/auth/logout")
+async def logout(response: Response):
+    response.delete_cookie(COOKIE_NAME)
+    return {"ok": True}
+
+
 @router.get("/me")
 async def me(user: User = Depends(get_current_user)):
     return _user_out(user)

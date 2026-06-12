@@ -7,6 +7,7 @@ interface AuthState {
   ready: boolean
   init: () => Promise<void>
   login: (username: string) => Promise<void>
+  logout: () => Promise<void>
 }
 
 export const useAuth = create<AuthState>((set) => ({
@@ -21,5 +22,9 @@ export const useAuth = create<AuthState>((set) => ({
   },
   login: async (username) => {
     set({ user: await api.post<UserInfo>('/api/auth/login', { username }) })
+  },
+  logout: async () => {
+    await api.post('/api/auth/logout')
+    set({ user: null })
   },
 }))
