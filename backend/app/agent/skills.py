@@ -2,7 +2,7 @@
 import os
 import re
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -26,7 +26,6 @@ class SkillMetadata:
 class Skill:
     metadata: SkillMetadata
     instructions: str = ""
-    resources: dict[str, str] = field(default_factory=dict)
 
     @property
     def name(self) -> str:
@@ -163,7 +162,7 @@ class SkillsToolkit:
         Parameters:
             skill_name: Skill 名称
             script_name: 脚本相对路径（仅限技能目录内）
-            args: 传给脚本的参数
+            args: 传给脚本的参数（按空格切分，不支持引号包含空格）
             timeout: 最长执行秒数，默认 300
         """
         skill = self._manager.skills.get(skill_name)
