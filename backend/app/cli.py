@@ -8,7 +8,7 @@ from pathlib import Path
 
 import httpx
 
-STATE_FILE = Path.home() / ".graphflow" / "cli.json"
+STATE_FILE = Path(os.environ["GF_STATE_FILE"]) if "GF_STATE_FILE" in os.environ else Path.home() / ".graphflow" / "cli.json"
 NODE_TYPES = {"input": "input", "llm": "llm_synth", "auto": "auto_process", "output": "output",
               "llm_synth": "llm_synth", "auto_process": "auto_process"}
 NODE_LABELS = {"input": "输入", "llm_synth": "LLM 合成", "auto_process": "自动处理", "output": "输出"}
