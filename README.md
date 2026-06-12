@@ -1,6 +1,6 @@
 # GraphFlow
 
-面向大模型训练数据合成的可视化跑数平台：画布拖拽编排「输入 → LLM 合成 → 自动处理 → 输出」管道，后台并发执行、断点续跑、失败行重跑、结果导出。
+面向大模型训练数据合成的可视化跑数平台：画布拖拽编排「输入 → LLM 合成 → 自动处理 → 输出」管道，后台并发执行、断点续跑、失败行重跑、结果导出，外加 `gf` 命令行与内置 Agent「红莲」。
 
 ## 开发（Windows / macOS / Linux）
 
@@ -41,6 +41,20 @@ uv run gf export 1 --format jsonl
 
 `gf --help` 与 `gf <子命令> --help` 查看全部命令。浏览器中已打开的页面会通过
 SSE 推送实时反映 CLI 的修改；画布上有未保存改动时不会被覆盖，而是显示提示条。
+完整命令与键名表见 `.claude/skills/gf-cli/`。
+
+## Agent 助手（红莲）
+
+页面右下角 ❦ 呼出对话抽屉：选模型配置 → 新建会话 → 直接说需求
+（如「帮我搭一个把 q 列翻译成英文的流水线并跑起来」）。Agent 通过 gf CLI
+操作你的资源，画布实时联动；回合在后台执行，关掉页面也会继续。
+
+- **目标模式**：给一个需要多轮推进的目标（如「首轮质检通过率调到 90%」），
+  Agent 自动循环「行动→检验→调整→续轮」直到宣告达成；上限
+  `GRAPHFLOW_AGENT_GOAL_MAX_ROUNDS`（默认 20），进行中可随时点【停止】。
+- **删除保护**：删工作流/数据集/模型前 Agent 必须征求确认（界面出现确认按钮），
+  未确认的删除命令会被硬拦截。
+- 会话工作目录在 `backend/data/agent/<会话id>/`，每个会话/Worker 持有独立 gf 状态。
 
 ## 测试
 
@@ -67,3 +81,4 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 |------|------|------|
 | `GRAPHFLOW_DATA_DIR` | `data` | 数据落盘目录 |
 | `GRAPHFLOW_SECRET_KEY` | `dev-secret-change-me` | 会话签名 + api_key 加密密钥，生产必改 |
+| `GRAPHFLOW_AGENT_GOAL_MAX_ROUNDS` | `20` | Agent 目标模式自动续轮上限 |

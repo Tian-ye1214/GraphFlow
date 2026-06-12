@@ -1,0 +1,128 @@
+import json
+import shutil
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
+from sqlalchemy import delete as sa_delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.agent.turns import session_dir, turn_manager
+from app.auth import get_current_user, make_session_cookie
+from app.db import get_session
+from app.events import publish
+from app.models import AgentMessage, AgentSession, ModelConfig, User
+
+router = APIRouter(prefix="/api/agent", tags=["agent"])
+
+ROLES = ("coordinator", "manager", "worker")
+
+
+class SessionIn(BaseModel):
+    model_config_id: int | None = None
+    models: dict[str, int] | None = None
+
+
+class MessageIn(BaseModel):
+    text: str
+
+
+def _out(sess: AgentSession) -> dict:
+    return {"id": sess.id, "title": sess.title, "status": sess.status,
+            "models": json.loads(sess.models_json),
+            "created_at": sess.created_at.isoformat(),
+            "updated_at": sess.updated_at.isoformat()}
+
+
+async def _get_owned(sid: int, user: User, session: AsyncSession) -> AgentSession:
+    sess = await session.get(AgentSession, sid)
+    if sess is None or sess.user_id != user.id:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return sess
+
+
+async def _check_models(models: dict, user: User, session: AsyncSession) -> None:
+    for role in ROLES:
+        mc = await session.get(ModelConfig, models.get(role) or 0)
+        if mc is None or mc.user_id != user.id:
+            raise HTTPException(status_code=422, detail=f"角色 {role} 的模型配置无效")
+
+
+@router.post("/sessions")
+async def create_session(body: SessionIn, request: Request,
+                         user: User = Depends(get_current_user),
+                         session: AsyncSession = Depends(get_session)):
+    models = body.models or {r: body.model_config_id for r in ROLES}
+    await _check_models(models, user, session)
+    sess = AgentSession(user_id=user.id, models_json=json.dumps(models))
+    session.add(sess)
+    await session.commit()
+    wd = session_dir(sess.id)
+    wd.mkdir(parents=True, exist_ok=True)
+    server = str(request.base_url).rstrip("/")
+    (wd / "cli.json").write_text(
+        json.dumps({"server": server, "cookie": make_session_cookie(user.id)}),
+        encoding="utf-8")
+    return _out(sess)
+
+
+@router.get("/sessions")
+async def list_sessions(user: User = Depends(get_current_user),
+                        session: AsyncSession = Depends(get_session)):
+    rows = (await session.execute(
+        select(AgentSession).where(AgentSession.user_id == user.id)
+        .order_by(AgentSession.id.desc()))).scalars().all()
+    return [_out(s) for s in rows]
+
+
+@router.get("/sessions/{sid}")
+async def get_session_detail(sid: int, user: User = Depends(get_current_user),
+                             session: AsyncSession = Depends(get_session)):
+    sess = await _get_owned(sid, user, session)
+    msgs = (await session.execute(
+        select(AgentMessage).where(AgentMessage.session_id == sid)
+        .order_by(AgentMessage.id))).scalars().all()
+    return {**_out(sess), "messages": [
+        {"id": m.id, "role": m.role, "content": json.loads(m.content_json),
+         "created_at": m.created_at.isoformat()} for m in msgs]}
+
+
+@router.post("/sessions/{sid}/messages")
+async def post_message(sid: int, body: MessageIn,
+                       user: User = Depends(get_current_user),
+                       session: AsyncSession = Depends(get_session)):
+    sess = await _get_owned(sid, user, session)
+    if sess.status == "running":
+        raise HTTPException(status_code=409, detail="回合进行中")
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="消息不能为空")
+    await _check_models(json.loads(sess.models_json), user, session)
+    session.add(AgentMessage(session_id=sid, role="user",
+                             content_json=json.dumps({"text": text}, ensure_ascii=False)))
+    if not sess.title:
+        sess.title = text[:30]
+    sess.status = "running"
+    await session.commit()
+    publish(user.id, "agent", sid, kind="message")
+    turn_manager.submit(sid, user.id, text)
+    return {"ok": True}
+
+
+@router.post("/sessions/{sid}/stop")
+async def stop_session(sid: int, user: User = Depends(get_current_user),
+                       session: AsyncSession = Depends(get_session)):
+    await _get_owned(sid, user, session)
+    turn_manager.request_stop(sid)
+    return {"ok": True}
+
+
+@router.delete("/sessions/{sid}")
+async def delete_session(sid: int, user: User = Depends(get_current_user),
+                         session: AsyncSession = Depends(get_session)):
+    await _get_owned(sid, user, session)
+    turn_manager.cancel(sid)
+    await session.execute(sa_delete(AgentMessage).where(AgentMessage.session_id == sid))
+    await session.execute(sa_delete(AgentSession).where(AgentSession.id == sid))
+    await session.commit()
+    shutil.rmtree(session_dir(sid), ignore_errors=True)
+    return {"ok": True}
