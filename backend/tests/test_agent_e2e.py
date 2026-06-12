@@ -118,7 +118,7 @@ async def test_gf_state_isolation_two_sessions(live, tmp_path):
         for name in ("流水线A", "流水线B"):
             await c.post("/api/workflows", json={"name": name})
 
-        outs = []
+        tks = []
         for i, wf in enumerate(("流水线A", "流水线B"), 1):
             wd = tmp_path / f"sess{i}"
             wd.mkdir()
@@ -126,7 +126,10 @@ async def test_gf_state_isolation_two_sessions(live, tmp_path):
                 json.dumps({"server": live, "cookie": cookie}), encoding="utf-8")
             tk = AgentToolkit(wd, wd / "cli.json", confirm_delete=False)
             assert "Return code: 0" in await tk.run_command(f"gf use {wf}", timeout=60)
-            outs.append(await tk.run_command("gf show", timeout=60))
+            tks.append(tk)
+
+        # 两次 use 之后再各自 show：若两份状态路径坍缩为同一个，后一次 use 会覆盖前者，这里必串台
+        outs = [await tk.run_command("gf show", timeout=60) for tk in tks]
 
         assert "流水线A" in outs[0] and "流水线B" not in outs[0]
         assert "流水线B" in outs[1] and "流水线A" not in outs[1]
