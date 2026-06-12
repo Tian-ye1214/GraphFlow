@@ -1,4 +1,4 @@
-"""任务清单 + Worker 并行波次编排（RedLotus WorkerOrchestrator 精简移植）。"""
+"""任务清单 + Worker 并行波次编排。"""
 import asyncio
 import json
 import re

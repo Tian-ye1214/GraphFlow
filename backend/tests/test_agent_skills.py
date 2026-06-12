@@ -1,5 +1,3 @@
-import json
-
 from app.agent.skills import SKILLS_DIR, SkillsManager, SkillsToolkit
 
 
