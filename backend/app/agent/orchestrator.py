@@ -1,6 +1,7 @@
 """任务清单 + Worker 并行波次编排（RedLotus WorkerOrchestrator 精简移植）。"""
 import asyncio
 import json
+import re
 import shutil
 from dataclasses import dataclass, field
 from enum import Enum
@@ -74,6 +75,8 @@ class TaskManager:
             if not isinstance(td, dict) or not str(td.get("description", "")).strip():
                 return f"第 {i + 1} 项缺少 description"
             tid = str(td.get("id", i + 1)).strip()
+            if not re.fullmatch(r"[\w-]+", tid):  # id 会进 worker 状态文件名
+                return f"任务 id 含非法字符: {tid}"
             if tid in seen:
                 return f"重复的任务 id: {tid}"
             seen.add(tid)
@@ -166,6 +169,11 @@ class TaskManager:
                 lines.append(f"  [{t.id}] {t.description}（重试 {t.retry_count} 次）")
                 if t.failure_history:
                     lines.append(f"      最后失败原因: {t.failure_history[-1]}")
+        leftover = [t for t in self.tasks.values()
+                    if t.status not in (TaskStatus.COMPLETED, TaskStatus.FAILED)]
+        if leftover:
+            lines.append(f"未执行任务（依赖未满足或波次用尽）: {len(leftover)}")
+            lines += [f"  [{t.id}] {t.description}" for t in leftover]
         return "\n".join(lines)
 
 
@@ -185,8 +193,9 @@ class _MessageBoard:
         msgs = [m for m in self._messages if m["worker_id"] != exclude_worker]
         if not msgs:
             return ""
+        icons = {"completed": "✅", "failed": "❌"}
         return "\n".join(
-            f"{'✅' if m['status'] == 'completed' else '🔄'} [{m['worker_id']}] {m['task']}\n   结果: {m['message']}"
+            f"{icons.get(m['status'], '🔄')} [{m['worker_id']}] {m['task']}\n   结果: {m['message']}"
             for m in msgs)
 
 
@@ -228,7 +237,7 @@ class WorkerOrchestrator:
     def _spawn_state(self, label) -> Path:
         main = self._workdir / "cli.json"
         state = self._workdir / f"worker_{label}_cli.json"
-        if main.exists():
+        if main.exists() and not state.exists():  # 重试沿用，保持与 Worker 记忆中的 gf use 一致
             shutil.copyfile(main, state)
         return state
 

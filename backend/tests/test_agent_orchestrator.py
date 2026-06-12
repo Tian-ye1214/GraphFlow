@@ -18,6 +18,8 @@ async def test_create_todo_validates():
     assert "循环依赖" in await tm.create_todo_list(json.dumps(
         [{"id": "1", "description": "a", "dependencies": ["2"]},
          {"id": "2", "description": "b", "dependencies": ["1"]}]))
+    assert "非法字符" in await tm.create_todo_list(json.dumps(
+        [{"id": "a/b", "description": "a"}]))  # id 进文件名，斜杠会越界
     out = await tm.create_todo_list(json.dumps(
         [{"id": "1", "description": "搜 A"}, {"id": "2", "description": "搜 B"},
          {"id": "3", "description": "写报告", "dependencies": ["1", "2"]}]))
