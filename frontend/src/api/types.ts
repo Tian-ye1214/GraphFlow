@@ -28,3 +28,18 @@ export interface Run {
 }
 export interface RunDetail extends Run { graph: WorkflowGraph; node_states: NodeState[] }
 export interface RowsPage { total: number; rows: Record<string, any>[] }
+
+export interface AgentToolContent {
+  tool: string; args_brief: string; agent_role: string
+  status?: 'ok' | 'error' | 'running'; output_brief?: string
+}
+export interface AgentMessageOut {
+  id: number; role: 'user' | 'assistant' | 'tool'
+  content: { text?: string } & Partial<AgentToolContent>
+  created_at: string
+}
+export interface AgentSessionSummary {
+  id: number; title: string; status: string
+  models: Record<string, number>; created_at: string; updated_at: string
+}
+export interface AgentSessionDetail extends AgentSessionSummary { messages: AgentMessageOut[] }

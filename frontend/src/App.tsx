@@ -8,6 +8,7 @@ import WorkflowsPage from './pages/WorkflowsPage'
 import CanvasPage from './pages/CanvasPage'
 import RunsPage from './pages/RunsPage'
 import RunDetailPage from './pages/RunDetailPage'
+import AgentDrawer from './agent/AgentDrawer'
 import { useAuth } from './stores/auth'
 
 function Shell() {
@@ -33,6 +34,7 @@ function Shell() {
       <Layout.Content style={{ padding: 16 }}>
         <Outlet />
       </Layout.Content>
+      <AgentDrawer />
     </Layout>
   )
 }
