@@ -1,7 +1,7 @@
 """AgentSystem：每个回合批次装配一次的三角色系统（coordinator 路由 + Manager 三阶段）。"""
 from pathlib import Path
 
-from pydantic_ai.messages import PartDeltaEvent, TextPartDelta
+from pydantic_ai.messages import PartDeltaEvent, PartStartEvent, TextPart, TextPartDelta
 
 from app.agent.factory import create_agent
 from app.agent.orchestrator import TaskManager, WorkerOrchestrator
@@ -45,7 +45,10 @@ class AgentSystem:
 
     async def _on_stream(self, ctx, events):
         async for ev in events:
-            if (isinstance(ev, PartDeltaEvent) and isinstance(ev.delta, TextPartDelta)
+            # 首块文本随 PartStartEvent 到达，只听 delta 会丢每段回复的开头
+            if isinstance(ev, PartStartEvent) and isinstance(ev.part, TextPart) and ev.part.content:
+                await self.emit("delta", ev.part.content)
+            elif (isinstance(ev, PartDeltaEvent) and isinstance(ev.delta, TextPartDelta)
                     and ev.delta.content_delta):
                 await self.emit("delta", ev.delta.content_delta)
 

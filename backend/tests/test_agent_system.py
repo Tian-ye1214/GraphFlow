@@ -19,6 +19,27 @@ def _system(tmp_path, coordinator, manager=None, worker=None):
         workdir=tmp_path, confirm_delete=False, emit=None)
 
 
+async def test_stream_emits_full_text(tmp_path):
+    async def stream_fn(messages, info):
+        yield "你好 "
+        yield "世界"
+
+    deltas = []
+
+    async def emit(kind, data=None):
+        if kind == "delta":
+            deltas.append(data)
+
+    echo = FunctionModel(lambda m, i: ModelResponse(parts=[TextPart("SUCCESS: ok")]))
+    system = AgentSystem(
+        models={"coordinator": FunctionModel(stream_function=stream_fn),
+                "manager": echo, "worker": echo},
+        workdir=tmp_path, confirm_delete=False, emit=emit)
+    _, output = await system.run_turn("hi", [])
+    assert output == "你好 世界"
+    assert "".join(deltas) == "你好 世界"  # 首块（PartStartEvent）不能丢
+
+
 async def test_direct_answer(tmp_path):
     model = FunctionModel(lambda m, i: ModelResponse(parts=[TextPart("直答")]))
     system = _system(tmp_path, model)
