@@ -334,3 +334,17 @@ def test_watch_without_runs_dies(server, capsys):
     with pytest.raises(SystemExit):
         gf("watch")
     assert "还没有运行记录" in capsys.readouterr().err
+
+
+def test_node_set_judge_models_and_pass_k(server, capsys):
+    login_and_wf(server)
+    gf("model", "add", "裁判甲", "--url", "http://x/v1", "--model", "q1", "--key", "k1")
+    gf("model", "add", "裁判乙", "--url", "http://x/v1", "--model", "q2", "--key", "k2")
+    gf("node", "add", "qc")
+    capsys.readouterr()
+    gf("node", "set", "qc_1", "judge_models=裁判甲,裁判乙", "pass_k=2")
+    capsys.readouterr()
+    gf("node", "show", "qc_1")
+    node = json.loads(capsys.readouterr().out)
+    assert node["config"]["judge_model_ids"] == [1, 2]
+    assert node["config"]["pass_k"] == 2

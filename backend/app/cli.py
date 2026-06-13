@@ -225,6 +225,10 @@ def cmd_node_set(args):
         elif k == "save_as":
             cfg["save_as_dataset"] = bool(v)
             cfg["dataset_name"] = v
+        elif k == "judge_models":
+            cfg["judge_model_ids"] = [cli.resolve("models", r) for r in v.split(",") if r]
+        elif k == "pass_k":
+            cfg["pass_k"] = int(v)
         elif k == "max_rounds":
             cfg["max_rounds"] = int(v)
         elif k in LLM_CONFIG_KEYS:
