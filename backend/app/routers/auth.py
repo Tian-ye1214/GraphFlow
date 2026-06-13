@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import COOKIE_MAX_AGE, COOKIE_NAME, auth_provider, get_current_user, make_session_cookie
+from app.auth import (COOKIE_MAX_AGE, COOKIE_NAME, auth_provider,
+                      get_current_user, get_real_user, make_session_cookie)
 from app.db import get_session
 from app.models import User
 
@@ -34,5 +35,7 @@ async def logout(response: Response):
 
 
 @router.get("/me")
-async def me(user: User = Depends(get_current_user)):
-    return _user_out(user)
+async def me(real: User = Depends(get_real_user), effective: User = Depends(get_current_user)):
+    return {**_user_out(effective), "is_admin": real.is_admin,
+            "real_username": real.username,
+            "acting_as": effective.username if effective.id != real.id else None}
