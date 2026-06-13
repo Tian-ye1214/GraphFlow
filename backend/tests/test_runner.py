@@ -242,24 +242,27 @@ async def test_barrier_crash_window_repairs_state(session_factory, monkeypatch):
     assert ns.status == "done" and ns.done == 1
 
 
-async def test_cancel_during_llm_node(session_factory, monkeypatch):
-    ev = asyncio.Event()
-    calls = []
+async def test_hard_interrupt_aborts_inflight(session_factory, monkeypatch):
+    started, release = asyncio.Event(), asyncio.Event()  # release 永不置位：只有硬中断能解开
 
     async def fake(mc, system, user, params=None, retries=3):
-        calls.append(user)
-        ev.set()  # 第一行处理中触发取消
+        started.set()
+        await release.wait()  # 阻塞在途；非取消则永远不返回
         return "ok", {"prompt_tokens": 1, "completion_tokens": 1}
 
     monkeypatch.setattr(llm, "chat", fake)
     graph = json.loads(json.dumps(GRAPH))
-    graph["nodes"][1]["config"]["concurrency"] = 1  # 串行，保证后续行未开始
+    graph["nodes"][1]["config"]["concurrency"] = 1
     run_id = await make_run(session_factory, graph=graph)
-    await runner.execute_run(run_id, session_factory, asyncio.Semaphore(8), ev)
+    cancel = asyncio.Event()
+    task = asyncio.create_task(
+        runner.execute_run(run_id, session_factory, asyncio.Semaphore(8), cancel))
+    await asyncio.wait_for(started.wait(), timeout=2)  # 行 0 已在途
+    cancel.set()
+    await asyncio.wait_for(task, timeout=2)  # 必须迅速结束（被中止），而非卡在 release 上
     run = await get_run(session_factory, run_id)
     assert run.status == "cancelled"
-    assert len(calls) == 1  # 仅第一行调用了 LLM
     async with session_factory() as s:
         recs = (await s.execute(select(RunRow).where(
             RunRow.run_id == run_id, RunRow.node_id == "gen"))).scalars().all()
-    assert len(recs) == 1 and recs[0].status == "done" and recs[0].row_idx == 0
+    assert all(r.status != "done" for r in recs)  # 在途行被中止，不落库

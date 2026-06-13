@@ -15,6 +15,25 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+async def _cancellable(coro, cancel_event: asyncio.Event):
+    """运行 coro，期间若 cancel_event 置位则立刻中止 coro（硬中断）；被中止时抛 CancelledError。
+    若 coro 自身完成（含抛业务异常）则正常返回/抛出，不受影响。"""
+    task = asyncio.ensure_future(coro)
+    waiter = asyncio.ensure_future(cancel_event.wait())
+    try:
+        done, _ = await asyncio.wait({task, waiter}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        waiter.cancel()
+    if task in done:
+        return task.result()
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    raise asyncio.CancelledError
+
+
 async def execute_run(run_id: int, session_factory: async_sessionmaker,
                       user_sem: asyncio.Semaphore, cancel_event: asyncio.Event) -> None:
     """运行入口：任何未捕获异常都落为 run.failed，不向上抛。"""
@@ -186,13 +205,17 @@ async def _run_llm_node(session_factory, run_id, user_id, node: Node, inputs,
             if cancel_event.is_set():
                 return
             try:
-                out_rows, usage = await nodes.run_llm_synth_row(cfg, inputs[idx], mc, user_sem)
-                await _write_unit(session_factory, run_id, node.id, idx, "done", out_rows, "",
-                                  usage=usage)
-                done_count += 1
+                out_rows, usage = await _cancellable(
+                    nodes.run_llm_synth_row(cfg, inputs[idx], mc, user_sem), cancel_event)
+            except asyncio.CancelledError:
+                return  # 硬中断：在途请求已 abort，该行不落库（保持 pending）
             except Exception as e:
                 await _write_unit(session_factory, run_id, node.id, idx, "failed", [], str(e))
                 failed_count += 1
+            else:
+                await _write_unit(session_factory, run_id, node.id, idx, "done", out_rows, "",
+                                  usage=usage)
+                done_count += 1
             await _set_node_state(session_factory, run_id, node.id, status="running",
                                   total=total, done=done_count, failed=failed_count)
 
