@@ -158,7 +158,7 @@ export default function AgentDrawer() {
     <>
       <FloatButton type="primary" style={{ right: 24, bottom: 24 }}
                    icon={<span>❦</span>} onClick={() => setOpen(true)} />
-      <Drawer open={open} onClose={() => setOpen(false)} width={440} mask={false}
+      <Drawer open={open} onClose={() => setOpen(false)} placement="bottom" height="45vh" mask={false}
               title={
                 <Space>
                   <Select size="small" style={{ width: 160 }} placeholder="选择会话"
