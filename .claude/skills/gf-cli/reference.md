@@ -29,11 +29,11 @@
 
 | 命令 | 说明 |
 |---|---|
-| `gf node add <类型> [自定义ID]` | 类型：`input`/`llm`/`auto`/`output`（也接受全名 `llm_synth`/`auto_process`）。缺省自动编号 `<全名>_<n>`；自定义 ID 重复会报错 |
+| `gf node add <类型> [自定义ID]` | 类型：`input`/`llm`/`auto`/`output`/`qc`（也接受全名 `llm_synth`/`auto_process`）。缺省自动编号 `<全名>_<n>`；自定义 ID 重复会报错 |
 | `gf node set <ID> key=value …` | 一次可多个键值对；值含空格/中文用引号包整段 `"prompt=把 {{q}} 翻译成英文"`；值里可以再有 `=`（只按第一个 `=` 切分）。键名表见 SKILL.md |
 | `gf node show <ID>` | 节点完整 JSON（含 position/config） |
 | `gf node rm <ID>` | 删节点并自动清掉相连的边 |
-| `gf link <源> <目标>` | 连线；重复连报「连线已存在」 |
+| `gf link <源> <目标> [--kind rescan]` | 连线（默认 normal 正向边）；`--kind rescan` 加质检回扫边（必须从 qc 节点出发）；重复连报「连线已存在」 |
 | `gf unlink <源> <目标>` | 断线；不存在报错 |
 
 ## op（自动处理节点的操作列表）
@@ -52,6 +52,19 @@
 | 打乱 | `shuffle` | `{op:shuffle}` |
 
 管理：`gf op ls <节点>`（带 1 起始序号）、`gf op rm <节点> <序号>`、`gf op add <节点> <操作> [参数…]`（追加到列表末尾）。
+
+## 质检回扫（qc 节点 + rescan 边）——支持的，不要回复"做不到"
+
+质检节点按规则判定每行通过/不通过；不通过的行带着失败原因经 **rescan 回扫边** 回到上游 LLM 节点重新生成，最多 N 轮，仍不过则丢弃。这就是「质检不通过 → 回到 LLM 重处理」的有界循环（有向有环图）。
+
+- 加节点：`gf node add qc`
+- 配置：`gf node set <qc> qc_col=<列> qc_mode=<模式> qc_value=<值> max_rounds=<N> [reason=<原因文本>] [reason_field=<取原因的列名>]`
+  - qc_mode 取值：`min_len`/`max_len`/`contains`/`not_contains`/`regex`/`not_empty`/`equals`。该列满足条件即通过，否则失败。
+  - 失败原因：`reason_field` 优先（逐行取该列，适合「LLM 自评打分/原因列」），否则用 `reason` 固定文案；原因会自动追加进回扫时 LLM 的 user prompt。
+- 回扫边：`gf link <qc> <上游LLM> --kind rescan`（正向边仍是 `gf link <上游LLM> <qc>`）
+
+典型「翻译 + 质检回扫」链：`input → llm(译) → qc(译文非空/够长) → output`，外加 `gf link qc_1 llm_synth_1 --kind rescan`。
+**语义质检**：在 qc 前放一个 LLM 节点输出「合格/原因」两列，qc 用 `qc_col=合格 qc_mode=equals qc_value=是 reason_field=原因` 判定。
 
 ## model（模型配置）
 

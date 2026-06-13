@@ -10,8 +10,9 @@ import httpx
 
 STATE_FILE = Path(os.environ.get("GF_STATE_FILE") or Path.home() / ".graphflow" / "cli.json")
 NODE_TYPES = {"input": "input", "llm": "llm_synth", "auto": "auto_process", "output": "output",
-              "llm_synth": "llm_synth", "auto_process": "auto_process"}
-NODE_LABELS = {"input": "输入", "llm_synth": "LLM 合成", "auto_process": "自动处理", "output": "输出"}
+              "qc": "qc", "llm_synth": "llm_synth", "auto_process": "auto_process"}
+NODE_LABELS = {"input": "输入", "llm_synth": "LLM 合成", "auto_process": "自动处理",
+               "output": "输出", "qc": "质检"}
 KIND_LABELS = {"workflows": "工作流", "datasets": "数据集", "models": "模型配置"}
 STATUS_LABELS = {"queued": "排队中", "running": "运行中", "completed": "已完成",
                  "failed": "失败", "cancelled": "已取消", "pending": "等待", "done": "完成"}
@@ -148,7 +149,8 @@ def cmd_show(args):
         print(f"  {n['id']}  [{NODE_LABELS[n['type']]}]  {summarize(n)}")
     print(f"连线（{len(graph['edges'])}）:")
     for e in graph["edges"]:
-        print(f"  {e['source']} -> {e['target']}")
+        arrow = "⟲回扫" if e.get("kind") == "rescan" else "->"
+        print(f"  {e['source']} {arrow} {e['target']}")
 
 
 LLM_CONFIG_KEYS = {"system": "system_prompt", "prompt": "user_prompt", "out": "output_column",
@@ -191,7 +193,7 @@ def cmd_node_add(args):
     cli = Cli()
     ntype = NODE_TYPES.get(args.type)
     if ntype is None:
-        die(f"未知节点类型 {args.type}（可选: input/llm/auto/output）")
+        die(f"未知节点类型 {args.type}（可选: input/llm/auto/output/qc）")
     wf = cli.get_wf()
     nodes = wf["graph"]["nodes"]
     if args.id:
@@ -223,6 +225,14 @@ def cmd_node_set(args):
         elif k == "save_as":
             cfg["save_as_dataset"] = bool(v)
             cfg["dataset_name"] = v
+        elif k in ("qc_col", "qc_mode", "qc_value"):
+            field = {"qc_col": "column", "qc_mode": "mode", "qc_value": "value"}[k]
+            val = int(v) if k == "qc_value" and v.lstrip("-").isdigit() else v
+            cfg.setdefault("condition", {})[field] = val
+        elif k == "max_rounds":
+            cfg["max_rounds"] = int(v)
+        elif k in ("reason", "reason_field"):
+            cfg[k] = v
         elif k in LLM_CONFIG_KEYS:
             cfg[LLM_CONFIG_KEYS[k]] = convert(LLM_CONFIG_KEYS[k], v)
         elif k in LLM_PARAM_KEYS:
@@ -254,13 +264,16 @@ def cmd_link(args):
     cli = Cli()
     wf = cli.get_wf()
     graph = wf["graph"]
-    find_node(graph, args.source)
+    src = find_node(graph, args.source)
     find_node(graph, args.target)
+    if args.kind == "rescan" and src["type"] != "qc":
+        die("rescan 回扫边必须从 qc 节点出发")
     if any(e["source"] == args.source and e["target"] == args.target for e in graph["edges"]):
         die("连线已存在")
-    graph["edges"].append({"source": args.source, "target": args.target, "kind": "normal"})
+    graph["edges"].append({"source": args.source, "target": args.target, "kind": args.kind})
     cli.put_graph(wf["id"], graph)
-    print(f"已连线 {args.source} -> {args.target}")
+    arrow = "⟲回扫" if args.kind == "rescan" else "->"
+    print(f"已连线 {args.source} {arrow} {args.target}")
 
 
 def cmd_unlink(args):
@@ -537,6 +550,7 @@ def main(argv: list[str] | None = None):
 
     s = sub.add_parser("link", help="连线")
     s.add_argument("source"); s.add_argument("target")
+    s.add_argument("--kind", choices=["normal", "rescan"], default="normal", help="rescan=质检回扫边")
     s.set_defaults(func=cmd_link)
 
     s = sub.add_parser("unlink", help="断开连线")

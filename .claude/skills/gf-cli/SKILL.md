@@ -50,6 +50,7 @@ uv run uvicorn app.main:app --port 8000      # 生产式（同时托管前端页
 | 扇出 / 并发 / 重试 | `fanout=` `conc=` `retries=` | fanout_n / concurrency / retries |
 | 采样参数 | `temp=` `top_p=` `max_tokens=` `timeout=` `json_mode=` | params.* |
 | 输出节点存为数据集 | `save_as=数据集名`（空串=关闭） | save_as_dataset + dataset_name |
+| 质检节点 qc | `qc_col=列` `qc_mode=模式` `qc_value=值` `max_rounds=N` `reason=文案` `reason_field=列` | condition.{column,mode,value} / max_rounds / reason / reason_field |
 
 ⚠️ `concurrency=2`、`output_column=a`、`dataset_id=1` 都是**错的**（报「未知配置键」）——键是短别名：`conc=2`、`out=a`、`dataset=1`。
 
@@ -68,6 +69,19 @@ gf op ls <节点>  /  gf op rm <节点> <序号>   # 序号 1 起始，见 op ls
 ```
 
 ⚠️ `op add auto_process_1 dedup col=q` 是错的——写 `dedup q`。
+
+## 质检回扫（支持，别回复"做不到"）
+
+「质检不通过 → 回到 LLM 重处理」的有界循环用 qc 节点 + rescan 回扫边实现：
+
+```
+gf node add qc
+gf node set qc_1 qc_col=a qc_mode=min_len qc_value=3 max_rounds=2 reason=译文太短
+gf link llm_synth_1 qc_1                 # 正向边
+gf link qc_1 llm_synth_1 --kind rescan   # 回扫边（必须从 qc 出发）
+```
+
+不通过的行带着失败原因回到上游 LLM 重新生成，最多 `max_rounds` 轮，仍不过则丢弃。qc_mode 可选 `min_len/max_len/contains/not_contains/regex/not_empty/equals`。语义质检：qc 前放一个 LLM 节点输出「合格/原因」列，qc 用 `qc_col=合格 qc_mode=equals qc_value=是 reason_field=原因`。详见 reference.md。
 
 ## 常见坑
 

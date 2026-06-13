@@ -146,6 +146,35 @@ def test_link_unlink_and_rm_cleans_edges(server, capsys):
     assert "llm_synth_1" not in out and "->" not in out
 
 
+def test_qc_node_set_and_rescan_link(server, capsys):
+    login_and_wf(server)
+    gf("node", "add", "llm")
+    gf("node", "add", "qc")
+    gf("node", "set", "qc_1", "qc_col=a", "qc_mode=min_len", "qc_value=3",
+       "max_rounds=2", "reason=太短")
+    capsys.readouterr()
+    gf("node", "show", "qc_1")
+    node = json.loads(capsys.readouterr().out)
+    assert node["type"] == "qc"
+    assert node["config"]["condition"] == {"column": "a", "mode": "min_len", "value": 3}
+    assert node["config"]["max_rounds"] == 2 and node["config"]["reason"] == "太短"
+    gf("link", "llm_synth_1", "qc_1")
+    capsys.readouterr()
+    gf("link", "qc_1", "llm_synth_1", "--kind", "rescan")
+    assert "回扫" in capsys.readouterr().out
+    gf("show")
+    assert "qc_1 ⟲回扫 llm_synth_1" in capsys.readouterr().out
+
+
+def test_rescan_from_non_qc_node_dies(server, capsys):
+    login_and_wf(server)
+    gf("node", "add", "llm")
+    gf("node", "add", "output")
+    with pytest.raises(SystemExit):
+        gf("link", "llm_synth_1", "output_1", "--kind", "rescan")
+    assert "qc 节点" in capsys.readouterr().err
+
+
 def test_node_add_without_use_dies(server, capsys):
     gf("login", "tester", "--server", server)
     with pytest.raises(SystemExit):
