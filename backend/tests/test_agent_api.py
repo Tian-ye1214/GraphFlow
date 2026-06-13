@@ -27,7 +27,7 @@ async def test_create_and_get_session(auth_client, mc_id, no_run):
     sid = r.json()["id"]
     assert r.json()["models"] == {"coordinator": mc_id, "manager": mc_id, "worker": mc_id}
     # cli.json 已生成：server 取自请求 base_url，cookie 可验签回本人
-    wd = turns.session_dir(sid)
+    wd = turns.session_dir("tester", sid)
     state = json.loads((wd / "cli.json").read_text(encoding="utf-8"))
     assert state["server"] == "http://test"
     assert parse_session_cookie(state["cookie"]) is not None
@@ -90,7 +90,7 @@ async def test_delete_cleans_workdir(auth_client, mc_id, no_run):
     sid = (await auth_client.post("/api/agent/sessions",
                                   json={"model_config_id": mc_id})).json()["id"]
     await auth_client.post(f"/api/agent/sessions/{sid}/messages", json={"text": "hi"})
-    wd = turns.session_dir(sid)
+    wd = turns.session_dir("tester", sid)
     assert wd.exists()
     r = await auth_client.delete(f"/api/agent/sessions/{sid}")
     assert r.status_code == 200

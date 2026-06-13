@@ -1,6 +1,7 @@
 """AgentTurnManager：后台回合执行、目标模式自动续轮、停止与重启恢复。"""
 import asyncio
 import json
+import re
 from pathlib import Path
 
 from pydantic_ai.messages import ModelMessagesTypeAdapter
@@ -15,9 +16,13 @@ from app.events import publish
 from app.models import AgentMessage, AgentSession, ModelConfig
 
 
-def session_dir(session_id: int) -> Path:
+def _safe(name: str) -> str:
+    return re.sub(r'[\\/:*?"<>|]', "_", name)
+
+
+def session_dir(username: str, session_id: int) -> Path:
     # 必须绝对：相对路径会被 gf 子进程按其 cwd 二次拼接（GF_STATE_FILE 失效→Agent 自行 login 成幽灵用户）
-    return (settings.data_dir / "agent" / str(session_id)).resolve()
+    return (settings.data_dir / "agent" / _safe(username) / str(session_id)).resolve()
 
 
 class AgentTurnManager:
@@ -63,9 +68,12 @@ class AgentTurnManager:
             history = ModelMessagesTypeAdapter.validate_json(sess.history_json)
             models = {role: await s.get(ModelConfig, mid)
                       for role, mid in json.loads(sess.models_json).items()}
+            from app.models import User
+            user = await s.get(User, user_id)
+            username = user.username
         emit = self._make_emit(session_id, user_id)
         EMIT.set(emit)
-        system = AgentSystem(models=models, workdir=session_dir(session_id),
+        system = AgentSystem(models=models, workdir=session_dir(username, session_id),
                              confirm_delete=text.startswith("确认"), emit=emit)
         rounds, capped, input_text = 0, False, text
         try:

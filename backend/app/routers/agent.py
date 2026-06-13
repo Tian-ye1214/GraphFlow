@@ -59,7 +59,7 @@ async def create_session(body: SessionIn, request: Request,
     sess = AgentSession(user_id=user.id, title=f"会话 {seq}", models_json=json.dumps(models))
     session.add(sess)
     await session.commit()
-    wd = session_dir(sess.id)
+    wd = session_dir(user.username, sess.id)
     wd.mkdir(parents=True, exist_ok=True)
     server = str(request.base_url).rstrip("/")
     (wd / "cli.json").write_text(
@@ -129,7 +129,7 @@ async def delete_session(sid: int, user: User = Depends(get_current_user),
     await session.execute(sa_delete(AgentMessage).where(AgentMessage.session_id == sid))
     await session.execute(sa_delete(AgentSession).where(AgentSession.id == sid))
     await session.commit()
-    shutil.rmtree(session_dir(sid), ignore_errors=True)
+    shutil.rmtree(session_dir(user.username, sid), ignore_errors=True)
     return {"ok": True}
 
 

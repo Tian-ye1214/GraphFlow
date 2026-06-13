@@ -28,8 +28,12 @@ class FakeSystem:
 
 @pytest.fixture
 async def sid(client, session_factory):
+    from app.models import User
     async with session_factory() as s:
-        sess = AgentSession(user_id=1, models_json="{}", status="running")
+        user = User(username="tester")
+        s.add(user)
+        await s.flush()
+        sess = AgentSession(user_id=user.id, models_json="{}", status="running")
         s.add(sess)
         await s.commit()
         return sess.id
@@ -138,6 +142,15 @@ async def test_resume_interrupted(client, session_factory):
 def test_session_dir_absolute_under_relative_data_dir(monkeypatch):
     from pathlib import Path
     monkeypatch.setattr(settings, "data_dir", Path("data"))  # 生产默认就是相对路径
-    p = turns.session_dir(7)
+    p = turns.session_dir("testuser", 7)
     assert p.is_absolute()  # 相对路径会被 gf 子进程按其 cwd 二次拼接（已实际踩坑）
-    assert p.parts[-2:] == ("agent", "7")
+    assert p.parts[-2:] == ("testuser", "7")
+
+
+def test_session_dir_uses_sanitized_username(monkeypatch, tmp_path):
+    from app.agent import turns
+    from app.config import settings
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    p = turns.session_dir("a/b:c", 7)
+    assert p.is_absolute()
+    assert p.parts[-2:] == ("a_b_c", "7")  # 用户名清洗非法字符，会话 id 作子目录
