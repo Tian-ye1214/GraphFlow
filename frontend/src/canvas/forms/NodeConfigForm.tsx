@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Button, Input, InputNumber, Radio, Select, Space, Switch } from 'antd'
+import { Button, Input, InputNumber, Radio, Select, Space, Switch, Table } from 'antd'
 import { api } from '../../api/client'
-import type { CodegenOut, Dataset, ModelConfig } from '../../api/types'
+import type { CodegenOut, Dataset, ModelConfig, RowsPage } from '../../api/types'
 
 export interface FormProps {
   config: Record<string, any>
@@ -17,19 +17,45 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   )
 }
 
+function DatasetHeadPreview({ ds }: { ds: Dataset }) {
+  const [rows, setRows] = useState<Record<string, any>[]>([])
+  useEffect(() => {
+    void api.get<RowsPage>(`/api/datasets/${ds.id}/rows?page=1&page_size=5`).then((r) => setRows(r.rows))
+  }, [ds.id])
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ color: '#666', marginBottom: 4 }}>{ds.name}（前 {rows.length} 行 / 共 {ds.row_count}）</div>
+      <Table
+        size="small" rowKey={(_r, i) => String(i)} pagination={false} dataSource={rows}
+        scroll={{ x: 'max-content' }}
+        columns={ds.columns.map((c) => ({
+          title: c, dataIndex: c, ellipsis: true,
+          render: (v: unknown) => (typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v ?? '')),
+        }))}
+      />
+    </div>
+  )
+}
+
 function InputNodeForm({ config, onChange }: FormProps) {
   const [datasets, setDatasets] = useState<Dataset[]>([])
   useEffect(() => {
     void api.get<Dataset[]>('/api/datasets').then(setDatasets)
   }, [])
+  const selected = (config.dataset_ids ?? [])
+    .map((id: number) => datasets.find((d) => d.id === id))
+    .filter(Boolean) as Dataset[]
   return (
-    <Field label="数据集（可多选，按行拼接）">
-      <Select
-        mode="multiple" style={{ width: '100%' }} value={config.dataset_ids ?? []}
-        onChange={(v) => onChange({ ...config, dataset_ids: v })}
-        options={datasets.map((d) => ({ value: d.id, label: `${d.name}（${d.row_count} 行）` }))}
-      />
-    </Field>
+    <>
+      <Field label="数据集（可多选，按行拼接）">
+        <Select
+          mode="multiple" style={{ width: '100%' }} value={config.dataset_ids ?? []}
+          onChange={(v) => onChange({ ...config, dataset_ids: v })}
+          options={datasets.map((d) => ({ value: d.id, label: `${d.name}（${d.row_count} 行）` }))}
+        />
+      </Field>
+      {selected.map((d) => <DatasetHeadPreview key={d.id} ds={d} />)}
+    </>
   )
 }
 
