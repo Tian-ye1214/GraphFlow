@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { Button, Layout, Menu, Spin } from 'antd'
+import { Alert, Button, Layout, Menu, Spin } from 'antd'
 import { BrowserRouter, Link, Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom'
 import LoginPage from './pages/LoginPage'
 import ModelsPage from './pages/ModelsPage'
@@ -8,11 +8,12 @@ import WorkflowsPage from './pages/WorkflowsPage'
 import CanvasPage from './pages/CanvasPage'
 import RunsPage from './pages/RunsPage'
 import RunDetailPage from './pages/RunDetailPage'
+import AdminPage from './pages/AdminPage'
 import AgentDrawer from './agent/AgentDrawer'
 import { useAuth } from './stores/auth'
 
 function Shell() {
-  const { user, ready, logout } = useAuth()
+  const { user, ready, logout, actAs } = useAuth()
   const location = useLocation()
   if (!ready) return <Spin style={{ display: 'block', marginTop: '20vh' }} />
   if (!user) return <Navigate to="/login" replace />
@@ -28,6 +29,7 @@ function Shell() {
             { key: '/datasets', label: <Link to="/datasets">数据集</Link> },
             { key: '/models', label: <Link to="/models">模型配置</Link> },
             { key: '/runs', label: <Link to="/runs">运行记录</Link> },
+            ...(user.is_admin ? [{ key: '/admin', label: <Link to="/admin">租户管理</Link> }] : []),
           ]}
         />
         <div style={{ position: 'absolute', bottom: 16, left: 16, right: 16,
@@ -37,6 +39,11 @@ function Shell() {
         </div>
       </Layout.Sider>
       <Layout.Content style={{ padding: 16 }}>
+        {user.acting_as && (
+          <Alert type="warning" showIcon style={{ marginBottom: 12 }}
+                 message={`正在以 ${user.acting_as} 身份操作`}
+                 action={<Button size="small" onClick={() => void actAs(null)}>返回管理员</Button>} />
+        )}
         <Outlet />
       </Layout.Content>
       <AgentDrawer />
@@ -61,6 +68,7 @@ export default function App() {
           <Route path="/models" element={<ModelsPage />} />
           <Route path="/runs" element={<RunsPage />} />
           <Route path="/runs/:id" element={<RunDetailPage />} />
+          <Route path="/admin" element={<AdminPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

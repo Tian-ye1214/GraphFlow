@@ -8,9 +8,10 @@ interface AuthState {
   init: () => Promise<void>
   login: (username: string) => Promise<void>
   logout: () => Promise<void>
+  actAs: (userId: number | null) => Promise<void>
 }
 
-export const useAuth = create<AuthState>((set) => ({
+export const useAuth = create<AuthState>((set, get) => ({
   user: null,
   ready: false,
   init: async () => {
@@ -21,10 +22,15 @@ export const useAuth = create<AuthState>((set) => ({
     }
   },
   login: async (username) => {
-    set({ user: await api.post<UserInfo>('/api/auth/login', { username }) })
+    await api.post<UserInfo>('/api/auth/login', { username })
+    await get().init()
   },
   logout: async () => {
     await api.post('/api/auth/logout')
     set({ user: null })
+  },
+  actAs: async (userId) => {
+    await api.post('/api/admin/act-as', { user_id: userId })
+    await get().init()
   },
 }))

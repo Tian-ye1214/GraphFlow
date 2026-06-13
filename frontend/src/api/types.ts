@@ -1,4 +1,10 @@
-export interface UserInfo { id: number; username: string; display_name: string }
+export interface UserInfo {
+  id: number; username: string; display_name: string
+  is_admin: boolean; acting_as: string | null; real_username: string
+}
+export interface AdminUser {
+  id: number; username: string; display_name: string; is_admin: boolean; created_at: string
+}
 
 export interface ModelConfig {
   id: number; name: string; model_name: string; base_url: string
