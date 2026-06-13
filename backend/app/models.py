@@ -120,6 +120,16 @@ class RunRow(Base):
     __table_args__ = (Index("ix_run_row_unit", "run_id", "node_id", "row_idx", unique=True),)
 
 
+class RunLog(Base):
+    __tablename__ = "run_logs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"), index=True)
+    node_id: Mapped[str] = mapped_column(default="")  # "" 表示运行级事件
+    level: Mapped[str] = mapped_column(default="info")  # info / error
+    message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class AgentSession(Base):
     __tablename__ = "agent_sessions"
     id: Mapped[int] = mapped_column(primary_key=True)
