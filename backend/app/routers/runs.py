@@ -166,6 +166,20 @@ async def delete_run(run_id: int, user: User = Depends(get_current_user),
     return {"ok": True}
 
 
+@router.post("/{run_id}/restore")
+async def restore_run_version(run_id: int, user: User = Depends(get_current_user),
+                              session: AsyncSession = Depends(get_session)):
+    run = await _get_owned_run(run_id, user, session)
+    ver = await session.get(WorkflowVersion, run.workflow_version_id)
+    wf = await session.get(Workflow, run.workflow_id)
+    if wf is None or wf.user_id != user.id:
+        raise HTTPException(status_code=404, detail="工作流不存在")
+    wf.graph_json = ver.graph_json
+    await session.commit()
+    publish(user.id, "workflow", wf.id)
+    return {"ok": True}
+
+
 @router.post("/{run_id}/cancel")
 async def cancel_run(run_id: int, user: User = Depends(get_current_user),
                      session: AsyncSession = Depends(get_session)):

@@ -119,6 +119,12 @@ def cmd_wf_rm(args):
     print(f"已删除工作流 #{wf_id}")
 
 
+def cmd_wf_restore(args):
+    cli = Cli()
+    cli.req("POST", f"/api/runs/{args.run_id}/restore")
+    print(f"已从运行 #{args.run_id} 的版本恢复工作流图")
+
+
 def cmd_use(args):
     cli = Cli()
     wf_id = cli.resolve("workflows", args.ref)
@@ -532,6 +538,7 @@ def main(argv: list[str] | None = None):
     s = wf.add_parser("ls"); s.set_defaults(func=cmd_wf_ls)
     s = wf.add_parser("add"); s.add_argument("name"); s.set_defaults(func=cmd_wf_add)
     s = wf.add_parser("rm"); s.add_argument("ref"); s.set_defaults(func=cmd_wf_rm)
+    s = wf.add_parser("restore"); s.add_argument("run_id", type=int); s.set_defaults(func=cmd_wf_restore)
 
     s = sub.add_parser("use", help="设当前工作流")
     s.add_argument("ref")
