@@ -113,19 +113,23 @@ async def compact(messages: list[ModelMessage], *, compactor_model, window: int,
   2. **首轮尾轮保护** —— 第一条用户消息（目标）+ 最近 `KEEP_TAIL` 条逐字保留，绝不丢目标。
   3. **逻辑清晰** —— compactor LLM 把中段凝练成明确的「已完成 / 待完成」结构化摘要。
 
-### 集成点：pydantic-ai `history_processor`
+### 集成点：`agent.run()` 调用前的 seam（不依赖已废弃 API）
 
-在 `factory.create_agent` 统一挂载，所有角色（coordinator / manager / worker）自动复用：
+pydantic-ai 1.107.0 已把 `Agent(history_processors=...)` 构造参数标记为废弃（转成 capabilities）。为版本无关且 KISS，**不挂 history_processor**，改为在每个 `agent.run(message_history=history)` 调用前调 `maybe_compact(history, ...)` 压缩历史列表。所有角色统一复用同一函数：
+
+- `system.run_turn`（coordinator / goal 主循环）
+- `system.execute_task_with_manager`（manager，每次 manager_agent.run 前）
+- `orchestrator._run_board_worker` / `execute_task_with_worker`（worker，每次 agent.run 前）
 
 ```python
-def create_agent(model, tools, instructions, *, compactor=None) -> Agent:
-    processors = [compactor] if compactor else None
-    return Agent(model, toolsets=[...], instructions=instructions,
-                 history_processors=processors)
+async def maybe_compact(history, *, compactor_mc, running_mc, emit=None) -> list:
+    window = await model_window(running_mc.model_name)   # OpenRouter 查窗口
+    if estimate_tokens(history) < 0.75 * window:
+        return history
+    ...
 ```
 
-- `compactor` 是一个已绑定好「compactor 模型 + 当前运行模型的窗口 + emit」的可调用对象（`partial(compact, ...)`）。
-- 测试传入 `TestModel`/`FunctionModel` 时 `compactor=None`，跳过压缩（不影响现有测试）。
+`compactor_mc` 默认复用 coordinator 模型；`running_mc` 为当前运行角色的模型（窗口取它）。测试传 `TestModel`/`FunctionModel`（非 ModelConfig）时跳过压缩，不影响现有测试。`maybe_compact` 是纯函数式入口，易单测。
 
 ### 窗口来源：`app/agent/model_meta.py`
 
