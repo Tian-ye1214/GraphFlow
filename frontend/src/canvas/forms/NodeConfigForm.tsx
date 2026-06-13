@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Button, Input, InputNumber, Radio, Select, Space, Switch } from 'antd'
 import { api } from '../../api/client'
-import type { Dataset, ModelConfig } from '../../api/types'
+import type { CodegenOut, Dataset, ModelConfig } from '../../api/types'
 
 export interface FormProps {
   config: Record<string, any>
@@ -104,10 +104,12 @@ const OP_DEFAULTS: Record<string, Record<string, any>> = {
   cast: { op: 'cast', column: '', to: 'str' },
   sample: { op: 'sample', n: 100 },
   shuffle: { op: 'shuffle' },
+  agent: { op: 'agent', instruction: '', code: '' },
 }
 const OP_LABELS: Record<string, string> = {
   dedup: '去重', filter: '过滤', rename: '重命名', drop: '删除列',
   concat: '拼接列', cast: '类型转换', sample: '随机采样', shuffle: '打乱',
+  agent: '智能处理',
 }
 const LEN_MODES = ['min_len', 'max_len']
 
@@ -174,7 +176,64 @@ function OpFields({ op, update }: { op: Record<string, any>; update: (p: object)
   }
 }
 
-function AutoProcessForm({ config, onChange }: FormProps) {
+function AgentOpFields({ op, update, workflowId, nodeId }: {
+  op: Record<string, any>; update: (p: object) => void
+  workflowId?: number; nodeId?: string
+}) {
+  const [models, setModels] = useState<ModelConfig[]>([])
+  const [modelSel, setModelSel] = useState<number>()
+  const [busy, setBusy] = useState(false)
+  const [preview, setPreview] = useState<Record<string, unknown>[] | null>(null)
+  const [info, setInfo] = useState('')
+  useEffect(() => {
+    void api.get<ModelConfig[]>('/api/models').then(setModels)
+  }, [])
+  const generate = async () => {
+    if (!modelSel || !workflowId || !nodeId) return
+    setBusy(true)
+    setInfo('')
+    try {
+      const r = await api.post<CodegenOut>('/api/agent/codegen', {
+        workflow_id: workflowId, node_id: nodeId,
+        instruction: op.instruction, model_config_id: modelSel,
+      })
+      update({ code: r.code })
+      setPreview(r.preview_rows)
+      if (r.error) setInfo(`试跑失败：${r.error}`)
+      else if (r.sample_source === 'none') setInfo('没有可用样本（先保存画布、运行一次更准），已跳过试跑')
+    } catch (e) {
+      setInfo((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div>
+      <Input.TextArea rows={2} value={op.instruction} placeholder="自然语言指令，如：把 q 列翻译成英文存到 q_en，删掉空行"
+                      onChange={(e) => update({ instruction: e.target.value })} />
+      <Space style={{ margin: '8px 0' }}>
+        <Select size="small" style={{ width: 150 }} placeholder="生成用模型" value={modelSel}
+                onChange={setModelSel} options={models.map((m) => ({ value: m.id, label: m.name }))} />
+        <Button size="small" loading={busy} disabled={!op.instruction || !modelSel}
+                onClick={() => void generate()}>生成代码</Button>
+      </Space>
+      {info && <div style={{ color: '#d46b08', fontSize: 12, marginBottom: 4 }}>{info}</div>}
+      {op.code && (
+        <Input.TextArea rows={8} style={{ fontFamily: 'monospace', fontSize: 12 }} value={op.code}
+                        onChange={(e) => update({ code: e.target.value })} />
+      )}
+      {preview && (
+        <pre style={{ fontSize: 12, background: '#fafafa', padding: 8, maxHeight: 160, overflow: 'auto' }}>
+          {JSON.stringify(preview, null, 2)}
+        </pre>
+      )}
+    </div>
+  )
+}
+
+function AutoProcessForm({ config, onChange, workflowId, nodeId }: FormProps & {
+  workflowId?: number; nodeId?: string
+}) {
   const ops: Record<string, any>[] = config.operations ?? []
   const setOps = (next: Record<string, any>[]) => onChange({ ...config, operations: next })
   return (
@@ -187,7 +246,10 @@ function AutoProcessForm({ config, onChange }: FormProps) {
                     options={Object.entries(OP_LABELS).map(([v, l]) => ({ value: v, label: l }))} />
             <a onClick={() => setOps(ops.filter((_, j) => j !== i))}>删除</a>
           </Space>
-          <OpFields op={op} update={(p) => setOps(ops.map((o, j) => (j === i ? { ...o, ...p } : o)))} />
+          {op.op === 'agent'
+            ? <AgentOpFields op={op} workflowId={workflowId} nodeId={nodeId}
+                             update={(p) => setOps(ops.map((o, j) => (j === i ? { ...o, ...p } : o)))} />
+            : <OpFields op={op} update={(p) => setOps(ops.map((o, j) => (j === i ? { ...o, ...p } : o)))} />}
         </div>
       ))}
       <Button block onClick={() => setOps([...ops, { ...OP_DEFAULTS.dedup }])}>+ 添加操作</Button>
@@ -213,14 +275,16 @@ function OutputNodeForm({ config, onChange }: FormProps) {
   )
 }
 
-export default function NodeConfigForm({ type, config, onChange }: FormProps & { type: string }) {
+export default function NodeConfigForm({ type, config, onChange, workflowId, nodeId }: FormProps & {
+  type: string; workflowId?: number; nodeId?: string
+}) {
   switch (type) {
     case 'input':
       return <InputNodeForm config={config} onChange={onChange} />
     case 'llm_synth':
       return <LlmSynthForm config={config} onChange={onChange} />
     case 'auto_process':
-      return <AutoProcessForm config={config} onChange={onChange} />
+      return <AutoProcessForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} />
     case 'output':
       return <OutputNodeForm config={config} onChange={onChange} />
     default:

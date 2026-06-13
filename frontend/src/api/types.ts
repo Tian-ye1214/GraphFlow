@@ -43,3 +43,10 @@ export interface AgentSessionSummary {
   models: Record<string, number>; created_at: string; updated_at: string
 }
 export interface AgentSessionDetail extends AgentSessionSummary { messages: AgentMessageOut[] }
+
+export interface CodegenOut {
+  code: string
+  preview_rows: Record<string, unknown>[] | null
+  sample_source: 'last_run' | 'dataset' | 'none'
+  error: string | null
+}

@@ -119,6 +119,8 @@ function Canvas() {
             type={selected.type!}
             config={(selected.data as { config: Record<string, any> }).config}
             onChange={updateConfig}
+            workflowId={Number(id)}
+            nodeId={selected.id}
           />
         )}
       </Drawer>
