@@ -51,7 +51,7 @@ async def create_run(body: RunCreate, user: User = Depends(get_current_user),
                 ds = await session.get(Dataset, ds_id)
                 if ds is None or ds.user_id != user.id:
                     raise HTTPException(status_code=422, detail=f"节点 {n.id}: 数据集不存在")
-        if n.type == "llm_synth":
+        if n.type in ("llm_synth", "qc"):
             mc = await session.get(ModelConfig, n.config.get("model_config_id"))
             if mc is None or mc.user_id != user.id:
                 raise HTTPException(status_code=422, detail=f"节点 {n.id}: 未选择有效的模型配置")

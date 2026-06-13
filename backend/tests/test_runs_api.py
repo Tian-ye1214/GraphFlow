@@ -148,6 +148,17 @@ async def test_export_rejects_unknown_format(auth_client, monkeypatch):
     assert exp.status_code == 422
 
 
+async def test_create_run_rejects_qc_without_model(auth_client):
+    graph = {"nodes": [
+        {"id": "input_1", "type": "input", "config": {"dataset_ids": []}},
+        {"id": "qc_1", "type": "qc", "config": {"user_prompt": "判:{{a}}"}},  # 缺 model_config_id
+    ], "edges": [{"source": "input_1", "target": "qc_1", "kind": "normal"}]}
+    wf = (await auth_client.post("/api/workflows", json={"name": "w"})).json()
+    await auth_client.put(f"/api/workflows/{wf['id']}", json={"graph": graph})
+    r = await auth_client.post("/api/runs", json={"workflow_id": wf["id"]})
+    assert r.status_code == 422 and "qc_1" in r.json()["detail"]
+
+
 async def test_startup_resume(auth_client, monkeypatch, session_factory):
     from app.engine import manager as manager_mod
     from app.models import Run, User, Workflow, WorkflowVersion
