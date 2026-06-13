@@ -6,11 +6,12 @@ from pydantic import BaseModel
 from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent.codegen import gather_sample_rows, generate_with_repair
 from app.agent.turns import session_dir, turn_manager
 from app.auth import get_current_user, make_session_cookie
 from app.db import get_session
 from app.events import publish
-from app.models import AgentMessage, AgentSession, ModelConfig, User
+from app.models import AgentMessage, AgentSession, ModelConfig, User, Workflow
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
@@ -126,3 +127,26 @@ async def delete_session(sid: int, user: User = Depends(get_current_user),
     await session.commit()
     shutil.rmtree(session_dir(sid), ignore_errors=True)
     return {"ok": True}
+
+
+class CodegenIn(BaseModel):
+    workflow_id: int
+    node_id: str
+    instruction: str
+    model_config_id: int
+
+
+@router.post("/codegen")
+async def codegen(body: CodegenIn, user: User = Depends(get_current_user),
+                  session: AsyncSession = Depends(get_session)):
+    wf = await session.get(Workflow, body.workflow_id)
+    if wf is None or wf.user_id != user.id:
+        raise HTTPException(status_code=404, detail="工作流不存在")
+    mc = await session.get(ModelConfig, body.model_config_id)
+    if mc is None or mc.user_id != user.id:
+        raise HTTPException(status_code=422, detail="模型配置无效")
+    if not body.instruction.strip():
+        raise HTTPException(status_code=422, detail="指令不能为空")
+    sample_rows, source = await gather_sample_rows(session, body.workflow_id, body.node_id)
+    code, preview, error = await generate_with_repair(mc, body.instruction, sample_rows)
+    return {"code": code, "preview_rows": preview, "sample_source": source, "error": error}

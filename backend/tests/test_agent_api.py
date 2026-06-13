@@ -91,3 +91,30 @@ async def test_cross_user_isolation(auth_client, mc_id, no_run):
     assert (await auth_client.post(f"/api/agent/sessions/{sid}/messages",
                                    json={"text": "x"})).status_code == 404
     assert (await auth_client.get("/api/agent/sessions")).json() == []
+
+
+async def test_codegen_endpoint(auth_client, mc_id, monkeypatch):
+    from app.routers import agent as agent_router
+
+    async def fake(model, instruction, sample_rows):
+        assert instruction == "去重"
+        return "def process(rows):\n    return rows", [], None
+
+    monkeypatch.setattr(agent_router, "generate_with_repair", fake)
+    wid = (await auth_client.post("/api/workflows", json={"name": "w1"})).json()["id"]
+    r = await auth_client.post("/api/agent/codegen", json={
+        "workflow_id": wid, "node_id": "auto_process_1",
+        "instruction": "去重", "model_config_id": mc_id})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["code"].startswith("def process") and body["sample_source"] == "none"
+
+
+async def test_codegen_ownership(auth_client, mc_id):
+    r = await auth_client.post("/api/agent/codegen", json={
+        "workflow_id": 9999, "node_id": "x", "instruction": "y", "model_config_id": mc_id})
+    assert r.status_code == 404
+    wid = (await auth_client.post("/api/workflows", json={"name": "w2"})).json()["id"]
+    r = await auth_client.post("/api/agent/codegen", json={
+        "workflow_id": wid, "node_id": "x", "instruction": "y", "model_config_id": 9999})
+    assert r.status_code == 422
