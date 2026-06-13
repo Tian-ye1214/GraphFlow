@@ -129,5 +129,7 @@ async def test_generate_node_config_rejects_unknown_type():
 
 def test_instructions_guide_grouped_dedup():
     from app.agent.codegen import INSTRUCTIONS
+    assert "def process(rows: list[dict]) -> list[dict]" in INSTRUCTIONS  # 核心契约未被改没
     assert "pandas" in INSTRUCTIONS
-    assert "分组" in INSTRUCTIONS  # 引导「先按 session 分组再去重」一类复杂处理
+    assert "groupby" in INSTRUCTIONS  # 分组处理示例在位
+    assert "分组" in INSTRUCTIONS
