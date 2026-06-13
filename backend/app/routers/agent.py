@@ -147,6 +147,6 @@ async def codegen(body: CodegenIn, user: User = Depends(get_current_user),
         raise HTTPException(status_code=422, detail="模型配置无效")
     if not body.instruction.strip():
         raise HTTPException(status_code=422, detail="指令不能为空")
-    sample_rows, source = await gather_sample_rows(session, body.workflow_id, body.node_id)
+    sample_rows, source = await gather_sample_rows(session, body.workflow_id, body.node_id, user.id)
     code, preview, error = await generate_with_repair(mc, body.instruction, sample_rows)
     return {"code": code, "preview_rows": preview, "sample_source": source, "error": error}

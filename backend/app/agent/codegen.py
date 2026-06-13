@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent.factory import create_agent
 from app.engine.graph import Graph, parse_graph, upstream_ids
 from app.engine.pycode import run_process_code
-from app.models import DatasetRow, Run, RunRow, Workflow, WorkflowVersion
+from app.models import Dataset, DatasetRow, Run, RunRow, Workflow, WorkflowVersion
 
 SAMPLE_N = 5
 MAX_REPAIR_ROUNDS = 3
@@ -57,7 +57,7 @@ async def generate_with_repair(model, instruction: str, sample_rows: list[dict])
         return code, None, str(e)
 
 
-async def gather_sample_rows(s: AsyncSession, workflow_id: int, node_id: str):
+async def gather_sample_rows(s: AsyncSession, workflow_id: int, node_id: str, user_id: int):
     """按优先级取样本：最近一次运行的上游输出 → 上游 input 数据集头部 → 无。返回 (rows, source)。"""
     run = (await s.execute(select(Run).where(Run.workflow_id == workflow_id)
                            .order_by(Run.id.desc()))).scalars().first()
@@ -67,7 +67,7 @@ async def gather_sample_rows(s: AsyncSession, workflow_id: int, node_id: str):
         if rows:
             return rows[:SAMPLE_N], "last_run"
     wf = await s.get(Workflow, workflow_id)
-    rows = await _upstream_dataset_rows(s, parse_graph(wf.graph_json), node_id)
+    rows = await _upstream_dataset_rows(s, parse_graph(wf.graph_json), node_id, user_id)
     if rows:
         return rows[:SAMPLE_N], "dataset"
     return [], "none"
@@ -88,7 +88,7 @@ async def _upstream_run_rows(s, run_id: int, graph: Graph, node_id: str) -> list
     return out
 
 
-async def _upstream_dataset_rows(s, graph: Graph, node_id: str) -> list[dict]:
+async def _upstream_dataset_rows(s, graph: Graph, node_id: str, user_id: int) -> list[dict]:
     by_id = {n.id: n for n in graph.nodes}
     if node_id not in by_id:
         return []
@@ -104,6 +104,9 @@ async def _upstream_dataset_rows(s, graph: Graph, node_id: str) -> list[dict]:
                 dataset_ids.extend(by_id[uid].config.get("dataset_ids", []))
     out: list[dict] = []
     for ds_id in dataset_ids:
+        ds = await s.get(Dataset, ds_id)
+        if ds is None or ds.user_id != user_id:  # 资源归属校验（会话隔离）：不取他人/不存在数据集
+            continue
         recs = (await s.execute(select(DatasetRow).where(DatasetRow.dataset_id == ds_id)
                                 .order_by(DatasetRow.idx).limit(SAMPLE_N))).scalars().all()
         out.extend(json.loads(r.data_json) for r in recs)

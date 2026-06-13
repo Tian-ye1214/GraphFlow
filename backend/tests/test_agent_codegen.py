@@ -62,7 +62,7 @@ async def test_sample_from_dataset_fallback(client, session_factory):
         wf = Workflow(user_id=1, name="w", graph_json=_graph(ds.id))
         s.add(wf)
         await s.commit()
-        rows, source = await codegen.gather_sample_rows(s, wf.id, "auto_process_1")
+        rows, source = await codegen.gather_sample_rows(s, wf.id, "auto_process_1", user_id=1)
     assert source == "dataset" and len(rows) == 5 and rows[0] == {"q": 0}
 
 
@@ -80,7 +80,7 @@ async def test_sample_prefers_last_run(client, session_factory):
         s.add(RunRow(run_id=run.id, node_id="input_1", row_idx=0, status="done",
                      data_json=json.dumps([{"q": "来自上次运行"}])))
         await s.commit()
-        rows, source = await codegen.gather_sample_rows(s, wf.id, "auto_process_1")
+        rows, source = await codegen.gather_sample_rows(s, wf.id, "auto_process_1", user_id=1)
     assert source == "last_run" and rows == [{"q": "来自上次运行"}]
 
 
@@ -89,5 +89,20 @@ async def test_sample_none_when_node_missing(client, session_factory):
         wf = Workflow(user_id=1, name="w")
         s.add(wf)
         await s.commit()
-        rows, source = await codegen.gather_sample_rows(s, wf.id, "不存在的节点")
+        rows, source = await codegen.gather_sample_rows(s, wf.id, "不存在的节点", user_id=1)
+    assert source == "none" and rows == []
+
+
+async def test_sample_skips_foreign_dataset(client, session_factory):
+    """攻击者(user2)的工作流图引用他人(user1)私有数据集 id，取样必须不泄露其行。"""
+    async with session_factory() as s:
+        victim = Dataset(user_id=1, name="私有")
+        s.add(victim)
+        await s.commit()
+        s.add_all([DatasetRow(dataset_id=victim.id, idx=i, data_json=json.dumps({"secret": i}))
+                   for i in range(8)])
+        wf = Workflow(user_id=2, name="attacker", graph_json=_graph(victim.id))
+        s.add(wf)
+        await s.commit()
+        rows, source = await codegen.gather_sample_rows(s, wf.id, "auto_process_1", user_id=2)
     assert source == "none" and rows == []
