@@ -13,7 +13,7 @@ from app.agent.tools import EMIT
 from app.config import settings
 from app.db import get_session_factory
 from app.events import publish
-from app.models import AgentMessage, AgentSession, ModelConfig
+from app.models import AgentMessage, AgentSession, ModelConfig, User
 
 
 def _safe(name: str) -> str:
@@ -68,7 +68,6 @@ class AgentTurnManager:
             history = ModelMessagesTypeAdapter.validate_json(sess.history_json)
             models = {role: await s.get(ModelConfig, mid)
                       for role, mid in json.loads(sess.models_json).items()}
-            from app.models import User
             user = await s.get(User, user_id)
             username = user.username
         emit = self._make_emit(session_id, user_id)
