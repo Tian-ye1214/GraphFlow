@@ -204,3 +204,23 @@ async def test_run_emits_node_and_run_logs(auth_client, monkeypatch, session_fac
     assert any("节点 gen 开始" in m for m in msgs)
     assert any("节点 gen 完成" in m for m in msgs)
     assert any("运行结束" in m for m in msgs)
+
+
+async def test_run_logs_endpoint(auth_client, monkeypatch):
+    patch_chat(monkeypatch)
+    wf_id = await setup_workflow(auth_client)
+    run_id = (await auth_client.post("/api/runs", json={"workflow_id": wf_id})).json()["id"]
+    await wait_run(auth_client, run_id)
+    logs = (await auth_client.get(f"/api/runs/{run_id}/logs")).json()
+    assert any("运行开始" in l["message"] for l in logs)
+    assert all({"created_at", "node_id", "level", "message"} <= set(l) for l in logs)
+
+
+async def test_run_logs_foreign_rejected(auth_client, monkeypatch):
+    patch_chat(monkeypatch)
+    wf_id = await setup_workflow(auth_client)
+    run_id = (await auth_client.post("/api/runs", json={"workflow_id": wf_id})).json()["id"]
+    await wait_run(auth_client, run_id)
+    await auth_client.post("/api/auth/login", json={"username": "intruder"})
+    r = await auth_client.get(f"/api/runs/{run_id}/logs")
+    assert r.status_code == 404

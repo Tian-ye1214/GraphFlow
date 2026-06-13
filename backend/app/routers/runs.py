@@ -15,7 +15,7 @@ from app.db import get_session, get_session_factory
 from app.events import publish
 from app.engine.graph import GraphError, descendants, parse_graph, validate_graph
 from app.engine.manager import manager
-from app.models import (Dataset, ModelConfig, Run, RunNodeState, RunRow, User,
+from app.models import (Dataset, ModelConfig, Run, RunLog, RunNodeState, RunRow, User,
                         Workflow, WorkflowVersion)
 from app.routers.workflows import get_owned_workflow
 from app.services.export import export_rows
@@ -100,6 +100,16 @@ async def run_detail(run_id: int, user: User = Depends(get_current_user),
     return {**_run_out(run, wf.name if wf else ""), "graph": json.loads(ver.graph_json),
             "node_states": [{"node_id": s.node_id, "status": s.status, "total": s.total,
                              "done": s.done, "failed": s.failed} for s in states]}
+
+
+@router.get("/{run_id}/logs")
+async def run_logs(run_id: int, user: User = Depends(get_current_user),
+                   session: AsyncSession = Depends(get_session)):
+    await _get_owned_run(run_id, user, session)
+    logs = (await session.execute(
+        select(RunLog).where(RunLog.run_id == run_id).order_by(RunLog.id))).scalars().all()
+    return [{"created_at": l.created_at.isoformat(), "node_id": l.node_id,
+             "level": l.level, "message": l.message} for l in logs]
 
 
 @router.post("/{run_id}/cancel")
