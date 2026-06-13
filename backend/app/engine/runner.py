@@ -88,8 +88,9 @@ async def _execute(run_id, session_factory, user_sem, cancel_event):
         else:
             await _run_barrier_node(session_factory, run_id, user_id, node, inputs)
         done, failed = await _node_counts(session_factory, run_id, node.id)
+        prefix = "✓" if not failed else "✗" if not done else "⚠"
         await _log(session_factory, run_id, node.id,
-                   f"✓ 节点 {node.id} 完成（done={done} failed={failed}）",
+                   f"{prefix} 节点 {node.id} 完成（done={done} failed={failed}）",
                    "error" if failed else "info")
         if cancel_event.is_set():
             return await _finish(session_factory, run_id, "cancelled")
