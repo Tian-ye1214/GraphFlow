@@ -147,6 +147,10 @@ class AgentTurnManager:
                 metric = await rs.first_round_rate(sf, run_id)
                 publish(user_id, "agent", session_id, kind="goal_metric",
                         data={"round": round_i, "metric": metric, "run_id": run_id})
+                if session_id in self.stop_flags:
+                    await self._add_message(session_id, user_id, "assistant",
+                                            {"text": f"目标模式已被用户停止（第 {round_i} 轮）"})
+                    break
                 d = gl.decide(metric=metric, threshold=threshold, best=best,
                               no_improve=no_improve, no_improve_k=settings.goal_no_improve_k)
                 best, no_improve = d.new_best, d.new_no_improve
