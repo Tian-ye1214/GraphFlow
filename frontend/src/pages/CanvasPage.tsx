@@ -61,6 +61,17 @@ function Canvas() {
     [setEdges],
   )
 
+  // 节点/连线变动后防抖自动保存：指纹与 baseline 不同才真正 PUT（初次 load 设了 baseline，故不触发）
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const graph = fromFlow(nodes, edges)
+      if (graphFingerprint(graph) === baseline.current) return
+      baseline.current = graphFingerprint(graph)
+      void api.put(`/api/workflows/${id}`, { graph })
+    }, 800)
+    return () => clearTimeout(t)
+  }, [nodes, edges, id])
+
   const addNode = (type: keyof typeof NODE_LABELS) =>
     setNodes((ns) => [...ns, {
       id: nextId(type, ns), type,
