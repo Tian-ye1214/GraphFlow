@@ -1,2 +1,4 @@
 *.sh text eol=lf
 *.bat text eol=crlf
+*.xlsx binary
+*.xls binary
