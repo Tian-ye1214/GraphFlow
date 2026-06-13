@@ -7,7 +7,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.engine import nodes
 from app.engine.graph import Graph, Node, parse_graph, topo_order, upstream_ids, validate_graph
-from app.models import DatasetRow, ModelConfig, Run, RunLog, RunNodeState, RunRow, WorkflowVersion
+from app.models import (DatasetRow, ModelConfig, QcFailure, QcMetric, Run, RunLog,
+                        RunNodeState, RunRow, WorkflowVersion)
 from app.routers.datasets import create_dataset
 
 
@@ -250,19 +251,22 @@ async def _run_llm_node(session_factory, run_id, user_id, node: Node, inputs,
 
 async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Node, inputs,
                        user_sem, cancel_event):
-    """质检节点：逐行用 LLM 判定通过/不通过；不通过的行带原因经 rescan 回扫边的 LLM 重生成，
-    再复判，最多 max_rounds 轮，仍不过的行丢弃。仅持久化最终通过行（含各轮 token 汇总）。"""
+    """质检节点：N 个判定模型 K-of-N 判定；不通过行带原因经 rescan 回扫重生，最多 max_rounds 轮。
+    首轮通过数写 QcMetric；最终仍失败样本写 QcFailure；仅持久化最终通过行。"""
     cfg = node.config
+    judge_ids = cfg.get("judge_model_ids") or (
+        [cfg["model_config_id"]] if cfg.get("model_config_id") else [])
+    pass_k = cfg.get("pass_k", 1)
     async with session_factory() as s:
         rec = (await s.execute(select(RunRow).where(
             RunRow.run_id == run_id, RunRow.node_id == node.id, RunRow.row_idx == 0
         ))).scalar_one_or_none()
-        jmc = await s.get(ModelConfig, cfg.get("model_config_id"))
+        jmcs = [await s.get(ModelConfig, jid) for jid in judge_ids]
     if rec is not None and rec.status == "done":
         await _set_node_state(session_factory, run_id, node.id, status="done",
                               total=len(inputs), done=len(inputs), failed=0)
         return
-    if jmc is None or jmc.user_id != user_id:
+    if not jmcs or any(m is None or m.user_id != user_id for m in jmcs):
         raise ValueError(f"质检节点 {node.id}: 判定模型配置不存在")
     await _set_node_state(session_factory, run_id, node.id, status="running",
                           total=len(inputs), done=0, failed=0)
@@ -277,18 +281,23 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
     async def judge_all(rows):
         async def judge(row):
             async with sem:
-                return await _cancellable(nodes.run_qc_judge_row(cfg, row, jmc, user_sem), cancel_event)
+                return await _cancellable(
+                    nodes.run_qc_judge_row(cfg, row, jmcs, pass_k, user_sem), cancel_event)
         passed_, failed_ = [], []
-        for row, (ok, reason, u) in zip(rows, await asyncio.gather(*[judge(r) for r in rows])):
+        for row, (ok, reason, u, per_model) in zip(rows, await asyncio.gather(*[judge(r) for r in rows])):
             fold(u)
             if ok:
                 passed_.append(row)
             else:
-                failed_.append({**row, "_qc_reason": reason})
+                failed_.append({**row, "_qc_reason": reason, "_qc_per_model": per_model})
         return passed_, failed_
 
     try:
         passed, failed = await judge_all(inputs)
+        async with session_factory() as s:        # 首轮指标落库
+            s.add(QcMetric(run_id=run_id, node_id=node.id,
+                           total=len(inputs), first_round_pass=len(passed)))
+            await s.commit()
         rounds = 0
         target_id = next((e["target"] for e in graph.edges
                           if e["kind"] == "rescan" and e["source"] == node.id), None)
@@ -315,8 +324,17 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
                 passed.extend(fresh_pass)
                 await _set_node_state(session_factory, run_id, node.id, status="running",
                                       total=len(inputs), done=len(passed), failed=len(failed))
+        if failed:                                # 最终仍失败样本落库
+            async with session_factory() as s:
+                for fr in failed:
+                    sample = {k: v for k, v in fr.items() if not k.startswith("_qc")}
+                    s.add(QcFailure(run_id=run_id, node_id=node.id,
+                                    sample_json=json.dumps(sample, ensure_ascii=False),
+                                    reasons_json=json.dumps(fr.get("_qc_per_model", []),
+                                                            ensure_ascii=False)))
+                await s.commit()
     except asyncio.CancelledError:
-        return  # 硬中断：不落库
+        return
     except Exception as e:
         await _write_unit(session_factory, run_id, node.id, 0, "failed", [], str(e))
         await _set_node_state(session_factory, run_id, node.id, status="failed",
