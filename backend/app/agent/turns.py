@@ -107,6 +107,70 @@ class AgentTurnManager:
             publish(user_id, "agent", session_id, kind="turn_done")
 
 
+    def submit_goal(self, session_id: int, user_id: int, workflow_id: int, goal_text: str) -> None:
+        self.stop_flags.discard(session_id)
+        task = asyncio.create_task(self._run_goal(session_id, user_id, workflow_id, goal_text))
+        self.tasks[session_id] = task
+        task.add_done_callback(lambda _: self.tasks.pop(session_id, None))
+
+    async def _run_goal(self, session_id, user_id, workflow_id, goal_text):
+        from app.agent import goal_loop as gl
+        from app.engine.manager import manager
+        from app.services import run_service as rs
+        sf = get_session_factory()
+        async with sf() as s:
+            sess = await s.get(AgentSession, session_id)
+            history = ModelMessagesTypeAdapter.validate_json(sess.history_json)
+            models = {role: await s.get(ModelConfig, mid)
+                      for role, mid in json.loads(sess.models_json).items()}
+            models.setdefault("compactor", models.get("coordinator"))
+            user = await s.get(User, user_id)
+            username = user.username
+        emit = self._make_emit(session_id, user_id)
+        EMIT.set(emit)
+        system = AgentSystem(models=models, workdir=session_dir(username, session_id),
+                             confirm_delete=False, emit=emit)
+        threshold = rs.parse_threshold(goal_text)
+        best, no_improve, round_i = -1.0, 0, 0
+        input_text = gl.first_round_prompt(goal_text)
+        try:
+            while True:
+                history, output = await system.run_turn(input_text, history)
+                signal, cleaned = parse_goal(output)
+                await self._add_message(session_id, user_id, "assistant", {"text": cleaned})
+                if signal == "DONE" or session_id in self.stop_flags:
+                    break
+                run_id = await rs.enqueue_run(sf, user_id, workflow_id)
+                round_i += 1
+                publish(user_id, "agent", session_id, kind="goal_round", data=round_i)
+                await manager.wait(run_id)
+                metric = await rs.first_round_rate(sf, run_id)
+                publish(user_id, "agent", session_id, kind="goal_metric",
+                        data={"round": round_i, "metric": metric, "run_id": run_id})
+                d = gl.decide(metric=metric, threshold=threshold, best=best,
+                              no_improve=no_improve, no_improve_k=settings.goal_no_improve_k)
+                best, no_improve = d.new_best, d.new_no_improve
+                if d.stop:
+                    await self._add_message(session_id, user_id, "assistant", {"text": d.reason})
+                    break
+                if round_i >= settings.agent_goal_max_rounds:
+                    await self._add_message(session_id, user_id, "assistant",
+                                            {"text": f"已达轮数兜底上限（{settings.agent_goal_max_rounds}）"})
+                    break
+                failures = await rs.sample_failures(sf, run_id, n=20)
+                input_text = gl.build_round_prompt(goal_text, metric, failures, run_id)
+        except Exception as e:
+            await self._add_message(session_id, user_id, "assistant", {"text": f"目标模式出错: {e}"})
+        finally:
+            async with sf() as s:
+                sess = await s.get(AgentSession, session_id)
+                if sess is not None:
+                    sess.history_json = ModelMessagesTypeAdapter.dump_json(history).decode()
+                    sess.status = "idle"
+                    await s.commit()
+            publish(user_id, "agent", session_id, kind="turn_done")
+
+
 turn_manager = AgentTurnManager()
 
 

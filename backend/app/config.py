@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
     secret_key: str = "dev-secret-change-me"
     agent_goal_max_rounds: int = 20
+    goal_no_improve_k: int = 2  # 目标模式：连续无提升轮数早停阈值
     admin_users: str = ""  # 逗号分隔的管理员用户名白名单
 
     @property
