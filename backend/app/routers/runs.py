@@ -15,8 +15,8 @@ from app.db import get_session, get_session_factory
 from app.events import publish
 from app.engine.graph import GraphError, descendants, parse_graph, validate_graph
 from app.engine.manager import manager
-from app.models import (Dataset, ModelConfig, Run, RunLog, RunNodeState, RunRow, User,
-                        Workflow, WorkflowVersion)
+from app.models import (Dataset, ModelConfig, QcFailure, QcMetric, Run, RunLog, RunNodeState,
+                        RunRow, User, Workflow, WorkflowVersion)
 from app.routers.workflows import get_owned_workflow
 from app.services.export import export_rows
 
@@ -112,6 +112,30 @@ async def run_logs(run_id: int, user: User = Depends(get_current_user),
              "level": l.level, "message": l.message} for l in logs]
 
 
+@router.get("/{run_id}/qc-metrics")
+async def run_qc_metrics(run_id: int, user: User = Depends(get_current_user),
+                         session: AsyncSession = Depends(get_session)):
+    await _get_owned_run(run_id, user, session)
+    rows = (await session.execute(
+        select(QcMetric).where(QcMetric.run_id == run_id).order_by(QcMetric.id))).scalars().all()
+    return [{"node_id": m.node_id, "total": m.total, "first_round_pass": m.first_round_pass,
+             "first_round_rate": (m.first_round_pass / m.total) if m.total else 0.0} for m in rows]
+
+
+@router.get("/{run_id}/qc-failures")
+async def run_qc_failures(run_id: int, node_id: str | None = None, limit: int = 200,
+                          user: User = Depends(get_current_user),
+                          session: AsyncSession = Depends(get_session)):
+    await _get_owned_run(run_id, user, session)
+    stmt = select(QcFailure).where(QcFailure.run_id == run_id)
+    if node_id is not None:
+        stmt = stmt.where(QcFailure.node_id == node_id)
+    rows = (await session.execute(stmt.order_by(QcFailure.id).limit(limit))).scalars().all()
+    return [{"node_id": f.node_id, "sample": json.loads(f.sample_json),
+             "reasons": json.loads(f.reasons_json), "created_at": f.created_at.isoformat()}
+            for f in rows]
+
+
 @router.delete("/{run_id}")
 async def delete_run(run_id: int, user: User = Depends(get_current_user),
                      session: AsyncSession = Depends(get_session)):
@@ -122,6 +146,8 @@ async def delete_run(run_id: int, user: User = Depends(get_current_user),
     await session.execute(sa_delete(RunRow).where(RunRow.run_id == run_id))
     await session.execute(sa_delete(RunNodeState).where(RunNodeState.run_id == run_id))
     await session.execute(sa_delete(RunLog).where(RunLog.run_id == run_id))
+    await session.execute(sa_delete(QcMetric).where(QcMetric.run_id == run_id))
+    await session.execute(sa_delete(QcFailure).where(QcFailure.run_id == run_id))
     await session.execute(sa_delete(Run).where(Run.id == run_id))
     await session.execute(sa_delete(WorkflowVersion).where(WorkflowVersion.id == ver_id))
     await session.commit()

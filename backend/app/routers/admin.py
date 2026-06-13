@@ -10,7 +10,8 @@ from app.auth import ACT_AS_COOKIE, COOKIE_MAX_AGE, make_act_as_cookie, require_
 from app.config import settings
 from app.db import get_session
 from app.models import (AgentMessage, AgentSession, Dataset, DatasetRow, ModelConfig,
-                        Run, RunLog, RunNodeState, RunRow, User, Workflow, WorkflowVersion)
+                        QcFailure, QcMetric, Run, RunLog, RunNodeState, RunRow, User,
+                        Workflow, WorkflowVersion)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -92,6 +93,8 @@ async def delete_user(user_id: int, admin: User = Depends(require_admin),
         await session.execute(sa_delete(RunRow).where(RunRow.run_id.in_(run_ids)))
         await session.execute(sa_delete(RunNodeState).where(RunNodeState.run_id.in_(run_ids)))
         await session.execute(sa_delete(RunLog).where(RunLog.run_id.in_(run_ids)))
+        await session.execute(sa_delete(QcMetric).where(QcMetric.run_id.in_(run_ids)))
+        await session.execute(sa_delete(QcFailure).where(QcFailure.run_id.in_(run_ids)))
     await session.execute(sa_delete(Run).where(Run.user_id == user_id))
     if wf_ids:
         await session.execute(sa_delete(WorkflowVersion).where(WorkflowVersion.workflow_id.in_(wf_ids)))
