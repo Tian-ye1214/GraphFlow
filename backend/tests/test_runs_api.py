@@ -160,6 +160,25 @@ async def test_create_run_rejects_qc_without_model(auth_client):
     assert "qc_1" in r.json()["detail"]
 
 
+async def test_create_run_validates_qc_judge_models(auth_client):
+    # Create a real (owned) model config so the legacy model_config_id check passes,
+    # but set judge_model_ids to a nonexistent id — the new check must reject it.
+    mc = (await auth_client.post("/api/models", json={
+        "name": "jm", "model_name": "qwen", "base_url": "http://x/v1",
+        "api_key": "k", "default_params": {}})).json()
+    graph = {"nodes": [
+        {"id": "input_1", "type": "input", "config": {"dataset_ids": []}},
+        {"id": "qc_1", "type": "qc",
+         "config": {"model_config_id": mc["id"],
+                    "judge_model_ids": [999999], "pass_k": 1, "user_prompt": "判:{{a}}"}},
+    ], "edges": [{"source": "input_1", "target": "qc_1", "kind": "normal"}]}
+    wf = (await auth_client.post("/api/workflows", json={"name": "w"})).json()
+    await auth_client.put(f"/api/workflows/{wf['id']}", json={"graph": graph})
+    r = await auth_client.post("/api/runs", json={"workflow_id": wf["id"]})
+    assert r.status_code == 422
+    assert "qc_1" in r.json()["detail"]
+
+
 async def test_startup_resume(auth_client, monkeypatch, session_factory):
     from app.engine import manager as manager_mod
     from app.models import Run, User, Workflow, WorkflowVersion

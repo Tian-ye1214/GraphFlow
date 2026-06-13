@@ -51,11 +51,20 @@ async def create_run(body: RunCreate, user: User = Depends(get_current_user),
                 ds = await session.get(Dataset, ds_id)
                 if ds is None or ds.user_id != user.id:
                     raise HTTPException(status_code=422, detail=f"节点 {n.id}: 数据集不存在")
-        if n.type in ("llm_synth", "qc"):
+        if n.type == "llm_synth":
             mc_id = n.config.get("model_config_id")
             mc = await session.get(ModelConfig, mc_id) if mc_id else None
             if mc is None or mc.user_id != user.id:
                 raise HTTPException(status_code=422, detail=f"节点 {n.id}: 未选择有效的模型配置")
+        if n.type == "qc":
+            ids = n.config.get("judge_model_ids") or (
+                [n.config["model_config_id"]] if n.config.get("model_config_id") else [])
+            if not ids:
+                raise HTTPException(status_code=422, detail=f"节点 {n.id}: 未选择判定模型")
+            for jid in ids:
+                mc = await session.get(ModelConfig, jid)
+                if mc is None or mc.user_id != user.id:
+                    raise HTTPException(status_code=422, detail=f"节点 {n.id}: 判定模型无效")
     max_ver = (await session.execute(select(func.max(WorkflowVersion.version)).where(
         WorkflowVersion.workflow_id == wf.id))).scalar() or 0
     ver = WorkflowVersion(workflow_id=wf.id, version=max_ver + 1, graph_json=wf.graph_json)
