@@ -257,6 +257,52 @@ function AutoProcessForm({ config, onChange, workflowId, nodeId }: FormProps & {
   )
 }
 
+function QcForm({ config, onChange }: FormProps) {
+  const cond = config.condition ?? {}
+  const patchCond = (p: object) => onChange({ ...config, condition: { ...cond, ...p } })
+  return (
+    <>
+      <Field label="质检条件（满足=通过；不满足=带原因回扫给上游 LLM 重生成）">
+        <Space wrap>
+          <Input placeholder="列名" style={{ width: 100 }} value={cond.column ?? ''}
+                 onChange={(e) => patchCond({ column: e.target.value })} />
+          <Select style={{ width: 120 }} value={cond.mode ?? 'not_empty'}
+                  onChange={(v) => patchCond({ mode: v })}
+                  options={[
+                    { value: 'not_empty', label: '非空' }, { value: 'min_len', label: '最小长度' },
+                    { value: 'max_len', label: '最大长度' }, { value: 'contains', label: '包含' },
+                    { value: 'not_contains', label: '不包含' }, { value: 'regex', label: '正则匹配' },
+                    { value: 'equals', label: '等于' },
+                  ]} />
+          {LEN_MODES.includes(cond.mode)
+            ? <InputNumber placeholder="长度" value={cond.value} onChange={(v) => patchCond({ value: v })} />
+            : cond.mode === 'not_empty'
+              ? null
+              : <Input placeholder="值" style={{ width: 120 }} value={cond.value ?? ''}
+                       onChange={(e) => patchCond({ value: e.target.value })} />}
+        </Space>
+      </Field>
+      <Space wrap>
+        <Field label="最多回扫轮数">
+          <InputNumber min={0} value={config.max_rounds ?? 3}
+                       onChange={(v) => onChange({ ...config, max_rounds: v ?? 3 })} />
+        </Field>
+        <Field label="原因取自列（语义质检用，可空）">
+          <Input style={{ width: 150 }} placeholder="如 质检原因" value={config.reason_field ?? ''}
+                 onChange={(e) => onChange({ ...config, reason_field: e.target.value })} />
+        </Field>
+      </Space>
+      <Field label="失败原因文案（无原因列时统一用）">
+        <Input value={config.reason ?? ''} placeholder="如：译文为空或太短"
+               onChange={(e) => onChange({ ...config, reason: e.target.value })} />
+      </Field>
+      <div style={{ color: '#999', fontSize: 12 }}>
+        把质检节点底部的橙色圆点拖回上游 LLM 节点，形成回扫边。不通过的行满 N 轮仍不过则丢弃。
+      </div>
+    </>
+  )
+}
+
 function OutputNodeForm({ config, onChange }: FormProps) {
   return (
     <>
@@ -285,6 +331,8 @@ export default function NodeConfigForm({ type, config, onChange, workflowId, nod
       return <LlmSynthForm config={config} onChange={onChange} />
     case 'auto_process':
       return <AutoProcessForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} />
+    case 'qc':
+      return <QcForm config={config} onChange={onChange} />
     case 'output':
       return <OutputNodeForm config={config} onChange={onChange} />
     default:

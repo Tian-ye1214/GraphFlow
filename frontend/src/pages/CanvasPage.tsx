@@ -10,7 +10,7 @@ import { api } from '../api/client'
 import type { Workflow } from '../api/types'
 import NodeConfigForm from '../canvas/forms/NodeConfigForm'
 import { nodeTypes } from '../canvas/nodeTypes'
-import { NODE_LABELS, fromFlow, toFlow } from '../canvas/serialize'
+import { NODE_LABELS, RESCAN_EDGE, fromFlow, toFlow } from '../canvas/serialize'
 import { useEvents } from '../api/events'
 import { graphFingerprint } from '../canvas/fingerprint'
 
@@ -53,7 +53,11 @@ function Canvas() {
   })
 
   const onConnect = useCallback(
-    (c: Connection) => setEdges((eds) => addEdge({ ...c, data: { kind: 'normal' } }, eds)),
+    (c: Connection) => {
+      const rescan = c.sourceHandle === 'rescan'
+      setEdges((eds) => addEdge(
+        { ...c, data: { kind: rescan ? 'rescan' : 'normal' }, ...(rescan ? RESCAN_EDGE : {}) }, eds))
+    },
     [setEdges],
   )
 

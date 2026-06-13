@@ -6,7 +6,11 @@ export const NODE_LABELS: Record<GraphNode['type'], string> = {
   llm_synth: 'LLM 合成',
   auto_process: '自动处理',
   output: '输出',
+  qc: '质检',
 }
+
+// 回扫边的视觉样式（橙色虚线 + 流动），CanvasPage 新建边与 toFlow 加载边共用
+export const RESCAN_EDGE = { animated: true, style: { stroke: '#fa8c16', strokeDasharray: '6 3' } }
 
 export function toFlow(graph: WorkflowGraph): { nodes: Node[]; edges: Edge[] } {
   return {
@@ -15,7 +19,9 @@ export function toFlow(graph: WorkflowGraph): { nodes: Node[]; edges: Edge[] } {
     })),
     edges: graph.edges.map((e, i) => ({
       id: `e${i}_${e.source}_${e.target}`, source: e.source, target: e.target,
+      sourceHandle: e.kind === 'rescan' ? 'rescan' : undefined,
       data: { kind: e.kind ?? 'normal' },
+      ...(e.kind === 'rescan' ? RESCAN_EDGE : {}),
     })),
   }
 }

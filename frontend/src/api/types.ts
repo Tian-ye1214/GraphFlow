@@ -13,7 +13,7 @@ export interface Dataset {
 export interface WorkflowSummary { id: number; name: string; updated_at: string }
 
 export interface GraphNode {
-  id: string; type: 'input' | 'llm_synth' | 'auto_process' | 'output'
+  id: string; type: 'input' | 'llm_synth' | 'auto_process' | 'output' | 'qc'
   position: { x: number; y: number }; config: Record<string, any>
 }
 export interface GraphEdge { source: string; target: string; kind: 'normal' | 'rescan' }
