@@ -40,7 +40,7 @@ async def make_run(session_factory, graph=None, rows=3) -> int:
         for n in g["nodes"]:
             if n["type"] == "input":
                 n["config"]["dataset_ids"] = [ds.id]
-            if n["type"] == "llm_synth":
+            if n["type"] in ("llm_synth", "qc"):
                 n["config"]["model_config_id"] = mc.id
         wf = Workflow(user_id=u.id, name="wf", graph_json=json.dumps(g))
         s.add(wf)
@@ -83,8 +83,7 @@ RESCAN_GRAPH = {
          "config": {"model_config_id": 0, "user_prompt": "Q:{{q}}", "output_column": "a",
                     "concurrency": 4, "retries": 1}},
         {"id": "qc", "type": "qc",
-         "config": {"condition": {"column": "a", "mode": "not_contains", "value": "bad"},
-                    "max_rounds": 2}},
+         "config": {"model_config_id": 0, "user_prompt": "判定:{{a}}", "max_rounds": 2}},
         {"id": "out", "type": "output", "config": {}},
     ],
     "edges": [{"source": "in", "target": "gen", "kind": "normal"},
@@ -94,21 +93,30 @@ RESCAN_GRAPH = {
 }
 
 
-async def test_rescan_regenerates_failed_rows(session_factory, monkeypatch):
-    def fn(user):  # 问1 首次生成坏值；带着质检原因回扫重生成则修好
-        if "问1" in user and "质检未通过" not in user:
+def _rescan_fn(persistent):
+    def fn(user):
+        if user.startswith("判定:"):  # 质检判定调用：含 bad 即不通过
+            bad = "bad" in user
+            return json.dumps({"pass": not bad, "reason": "含bad" if bad else ""}), \
+                {"prompt_tokens": 1, "completion_tokens": 1}
+        # 生成调用：问1 首次（或 persistent 时永远）产坏值
+        first = "质检未通过" not in user
+        if "问1" in user and (persistent or first):
             return "bad答", {"prompt_tokens": 1, "completion_tokens": 1}
         return "good答", {"prompt_tokens": 1, "completion_tokens": 1}
+    return fn
 
-    patch_chat(monkeypatch, fn)
+
+async def test_rescan_regenerates_failed_rows(session_factory, monkeypatch):
+    patch_chat(monkeypatch, _rescan_fn(persistent=False))
     run_id = await make_run(session_factory, graph=RESCAN_GRAPH)
     await run_it(session_factory, run_id)
     run = await get_run(session_factory, run_id)
     assert run.status == "completed"
     out_rows = await runner._node_outputs(session_factory, run_id, "qc")
     assert len(out_rows) == 3 and all("bad" not in r["a"] for r in out_rows)
-    # 回扫轮的 token 计入统计：3 行首轮 + 1 行回扫一次 = 4 次调用
-    assert json.loads(run.stats_json) == {"prompt_tokens": 4, "completion_tokens": 4}
+    # gen 首轮 3 行(3) + qc 折叠：判定 3 首轮+1 复判=4，回扫重生成 1 → qc usage 5；合计 8
+    assert json.loads(run.stats_json) == {"prompt_tokens": 8, "completion_tokens": 8}
     async with session_factory() as s:
         qc_rec = (await s.execute(select(RunRow).where(
             RunRow.run_id == run_id, RunRow.node_id == "qc"))).scalar_one()
@@ -116,12 +124,7 @@ async def test_rescan_regenerates_failed_rows(session_factory, monkeypatch):
 
 
 async def test_rescan_drops_persistent_failures(session_factory, monkeypatch):
-    def fn(user):  # 问1 永远坏：回扫 max_rounds 轮后被丢弃
-        if "问1" in user:
-            return "bad答", {"prompt_tokens": 1, "completion_tokens": 1}
-        return "good答", {"prompt_tokens": 1, "completion_tokens": 1}
-
-    patch_chat(monkeypatch, fn)
+    patch_chat(monkeypatch, _rescan_fn(persistent=True))
     run_id = await make_run(session_factory, graph=RESCAN_GRAPH)
     await run_it(session_factory, run_id)
     out_rows = await runner._node_outputs(session_factory, run_id, "qc")
