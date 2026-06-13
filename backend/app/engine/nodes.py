@@ -121,7 +121,7 @@ def render_template(template: str, row: dict) -> str:
 async def run_llm_synth_row(config: dict, row: dict, mc: ModelConfig,
                             user_sem: asyncio.Semaphore) -> tuple[list[dict], dict]:
     """处理一条输入行：扇出 fanout_n 次调用，返回 (输出行列表, usage 汇总)。失败抛异常由 runner 记为行失败。"""
-    base = {k: v for k, v in row.items() if k != "_qc_reason"}
+    base = {k: v for k, v in row.items() if not k.startswith("_qc")}
     system = render_template(config.get("system_prompt", ""), base)
     user = render_template(config.get("user_prompt", ""), base)
     if row.get("_qc_reason"):
@@ -157,18 +157,33 @@ async def run_llm_synth_row(config: dict, row: dict, mc: ModelConfig,
     return out_rows, usage_total
 
 
-async def run_qc_judge_row(config: dict, row: dict, mc: ModelConfig,
-                           user_sem: asyncio.Semaphore) -> tuple[bool, str, dict]:
-    """质检判定一行：渲染判定提示词 → LLM（强制 json 模式）→ 解析 {"pass","reason"}。
-    返回 (是否通过, 原因, usage)。复用 render_template + llm.chat（与 LLM 合成节点同原语）。"""
-    base = {k: v for k, v in row.items() if k != "_qc_reason"}
+async def run_qc_judge_row(config: dict, row: dict, mcs: list[ModelConfig], pass_k: int,
+                           user_sem: asyncio.Semaphore) -> tuple[bool, str, dict, list]:
+    """多模型 K-of-N 质检判定：N 个模型共用提示词并发判定，≥pass_k 个通过即整行通过。
+    返回 (是否通过, 聚合理由, usage 汇总, per_model 列表)。"""
+    base = {k: v for k, v in row.items() if not k.startswith("_qc")}
     system = render_template(config.get("system_prompt", ""), base)
     user = render_template(config.get("user_prompt", ""), base)
     params = {**config.get("params", {}), "json_mode": True}
-    async with user_sem:
-        text, usage = await llm.chat(mc, system, user, params=params,
-                                     retries=config.get("retries", 3))
-    verdict = _json.loads(text)
-    if "pass" not in verdict:
-        raise ValueError("质检判定未返回 pass 字段")
-    return bool(verdict["pass"]), str(verdict.get("reason") or "未通过质检"), usage
+    retries = config.get("retries", 3)
+
+    async def judge_one(mc: ModelConfig):
+        async with user_sem:
+            text, usage = await llm.chat(mc, system, user, params=params, retries=retries)
+        verdict = _json.loads(text)
+        if "pass" not in verdict:
+            raise ValueError("质检判定未返回 pass 字段")
+        return mc.id, bool(verdict["pass"]), str(verdict.get("reason") or "未通过质检"), usage
+
+    results = await asyncio.gather(*[judge_one(mc) for mc in mcs])
+    usage_total = {"prompt_tokens": 0, "completion_tokens": 0}
+    per_model, n_pass, dissent = [], 0, []
+    for mc_id, ok, reason, usage in results:
+        usage_total["prompt_tokens"] += usage["prompt_tokens"]
+        usage_total["completion_tokens"] += usage["completion_tokens"]
+        per_model.append({"model_config_id": mc_id, "pass": ok, "reason": reason})
+        if ok:
+            n_pass += 1
+        else:
+            dissent.append(reason)
+    return n_pass >= pass_k, ("；".join(dissent) if dissent else "通过"), usage_total, per_model
