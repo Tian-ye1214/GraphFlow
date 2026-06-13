@@ -161,3 +161,13 @@ async def test_node_assist_guards(auth_client, monkeypatch):
         "workflow_id": 99999, "node_id": "n", "node_type": "qc",
         "instruction": "x", "model_config_id": mc["id"]})
     assert r3.status_code == 404
+    # 空指令 → 422
+    r4 = await auth_client.post("/api/agent/node-assist", json={
+        "workflow_id": wf["id"], "node_id": "llm_synth_1", "node_type": "llm_synth",
+        "instruction": "   ", "model_config_id": mc["id"]})
+    assert r4.status_code == 422
+    # 不存在/非自己的模型 → 422
+    r5 = await auth_client.post("/api/agent/node-assist", json={
+        "workflow_id": wf["id"], "node_id": "llm_synth_1", "node_type": "llm_synth",
+        "instruction": "翻译", "model_config_id": 999999})
+    assert r5.status_code == 422
