@@ -43,7 +43,10 @@ async def _get_owned(sid: int, user: User, session: AsyncSession) -> AgentSessio
 
 
 async def _check_models(models: dict, user: User, session: AsyncSession) -> None:
-    for role in ROLES:
+    roles = ["coordinator", "manager", "worker"]
+    if "compactor" in models:
+        roles.append("compactor")
+    for role in roles:
         mc = await session.get(ModelConfig, models.get(role) or 0)
         if mc is None or mc.user_id != user.id:
             raise HTTPException(status_code=422, detail=f"角色 {role} 的模型配置无效")
@@ -54,6 +57,7 @@ async def create_session(body: SessionIn, request: Request,
                          user: User = Depends(get_current_user),
                          session: AsyncSession = Depends(get_session)):
     models = body.models or {r: body.model_config_id for r in ROLES}
+    models.setdefault("compactor", models["coordinator"])
     await _check_models(models, user, session)
     seq = (await session.scalar(select(func.count()).select_from(AgentSession)
                                 .where(AgentSession.user_id == user.id))) + 1

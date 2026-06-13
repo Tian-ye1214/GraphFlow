@@ -25,7 +25,7 @@ async def test_create_and_get_session(auth_client, mc_id, no_run):
     r = await auth_client.post("/api/agent/sessions", json={"model_config_id": mc_id})
     assert r.status_code == 200
     sid = r.json()["id"]
-    assert r.json()["models"] == {"coordinator": mc_id, "manager": mc_id, "worker": mc_id}
+    assert r.json()["models"] == {"coordinator": mc_id, "manager": mc_id, "worker": mc_id, "compactor": mc_id}
     # cli.json 已生成：server 取自请求 base_url，cookie 可验签回本人
     wd = turns.session_dir("tester", sid)  # 用户名须与 auth_client 登录名一致
     state = json.loads((wd / "cli.json").read_text(encoding="utf-8"))
@@ -35,6 +35,22 @@ async def test_create_and_get_session(auth_client, mc_id, no_run):
     assert [s["id"] for s in r.json()] == [sid]
     r = await auth_client.get(f"/api/agent/sessions/{sid}")
     assert r.json()["messages"] == []
+
+
+async def test_session_defaults_compactor_to_coordinator(auth_client, session_factory):
+    import json
+    from sqlalchemy import select
+    from app.models import AgentSession, ModelConfig, User
+    async with session_factory() as s:
+        uid = (await s.execute(select(User).where(User.username == "tester"))).scalar_one().id
+        mc = ModelConfig(user_id=uid, name="m", base_url="http://x", api_key_enc="")
+        s.add(mc); await s.commit(); mid = mc.id
+    r = await auth_client.post("/api/agent/sessions", json={"model_config_id": mid})
+    assert r.status_code == 200
+    async with session_factory() as s:
+        sess = (await s.execute(select(AgentSession).order_by(AgentSession.id.desc()))).scalars().first()
+        models = json.loads(sess.models_json)
+    assert models["compactor"] == mid
 
 
 async def test_session_title_numbered_per_user(client, no_run):

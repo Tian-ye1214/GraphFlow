@@ -68,6 +68,7 @@ class AgentTurnManager:
             history = ModelMessagesTypeAdapter.validate_json(sess.history_json)
             models = {role: await s.get(ModelConfig, mid)
                       for role, mid in json.loads(sess.models_json).items()}
+            models.setdefault("compactor", models.get("coordinator"))
             user = await s.get(User, user_id)
             username = user.username
         emit = self._make_emit(session_id, user_id)

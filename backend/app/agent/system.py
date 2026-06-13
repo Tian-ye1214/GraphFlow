@@ -3,6 +3,7 @@ from pathlib import Path
 
 from pydantic_ai.messages import PartDeltaEvent, PartStartEvent, TextPart, TextPartDelta
 
+from app.agent.compactor import maybe_compact, resolve_compactor_model
 from app.agent.factory import create_agent
 from app.agent.orchestrator import TaskManager, WorkerOrchestrator
 from app.agent.prompts import (get_coordinator_system_prompt, get_manager_system_prompt,
@@ -27,6 +28,7 @@ class AgentSystem:
             task_manager=self.task_manager, worker_model=models["worker"],
             workdir=self.workdir, make_tools=self._make_tools,
             skills_manager=self.skills_manager)
+        self._compactor_mc = resolve_compactor_model(models)
 
     def _make_tools(self, state_file: Path) -> list:
         tk = AgentToolkit(self.workdir, state_file, self._confirm_delete)
@@ -37,8 +39,11 @@ class AgentSystem:
         """跑一轮 coordinator，返回 (新的全量历史, 输出文本)。"""
         tools = [self.execute_task_with_manager, self.execute_task_with_worker]
         tools += self._make_tools(self._main_state)
-        agent = create_agent(self.models["coordinator"], tools,
-                             get_coordinator_system_prompt(self.skills_manager))
+        coord = self.models["coordinator"]
+        if self._compactor_mc is not None:
+            history = await maybe_compact(history, compactor_mc=self._compactor_mc,
+                                          running_mc=coord, emit=self.emit)
+        agent = create_agent(coord, tools, get_coordinator_system_prompt(self.skills_manager))
         result = await agent.run(text, message_history=history,
                                  event_stream_handler=self._on_stream if self.emit else None)
         return result.all_messages(), str(result.output or "")
