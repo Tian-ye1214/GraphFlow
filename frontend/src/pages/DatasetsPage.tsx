@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Drawer, Popconfirm, Space, Table, Upload, message } from 'antd'
-import { InboxOutlined } from '@ant-design/icons'
+import { Button, Drawer, Popconfirm, Space, Table, Upload, message } from 'antd'
+import { UploadOutlined } from '@ant-design/icons'
 import { api } from '../api/client'
 import type { Dataset, RowsPage } from '../api/types'
 import { useEvents } from '../api/events'
@@ -38,19 +38,19 @@ export default function DatasetsPage() {
 
   return (
     <>
-      <Upload.Dragger
-        multiple
-        accept=".jsonl,.json,.csv,.xlsx,.xls"
-        beforeUpload={(_, fileList) => {
-          void doUpload(fileList as unknown as File[])
-          return false
-        }}
-        showUploadList={false}
-        style={{ marginBottom: 16 }}
-      >
-        <p className="ant-upload-drag-icon"><InboxOutlined /></p>
-        <p>拖拽或点击上传（支持 JSONL / JSON / CSV / Excel，可多选）</p>
-      </Upload.Dragger>
+      <Space style={{ marginBottom: 16 }}>
+        <Upload
+          multiple
+          accept=".jsonl,.json,.csv,.xlsx,.xls"
+          beforeUpload={(_, fileList) => {
+            void doUpload(fileList as unknown as File[])
+            return false
+          }}
+          showUploadList={false}
+        >
+          <Button type="primary" icon={<UploadOutlined />}>上传数据集（JSONL / JSON / CSV / Excel，可多选）</Button>
+        </Upload>
+      </Space>
       <Table
         rowKey="id"
         dataSource={list}
