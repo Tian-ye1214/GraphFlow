@@ -225,14 +225,8 @@ def cmd_node_set(args):
         elif k == "save_as":
             cfg["save_as_dataset"] = bool(v)
             cfg["dataset_name"] = v
-        elif k in ("qc_col", "qc_mode", "qc_value"):
-            field = {"qc_col": "column", "qc_mode": "mode", "qc_value": "value"}[k]
-            val = int(v) if k == "qc_value" and v.lstrip("-").isdigit() else v
-            cfg.setdefault("condition", {})[field] = val
         elif k == "max_rounds":
             cfg["max_rounds"] = int(v)
-        elif k in ("reason", "reason_field"):
-            cfg[k] = v
         elif k in LLM_CONFIG_KEYS:
             cfg[LLM_CONFIG_KEYS[k]] = convert(LLM_CONFIG_KEYS[k], v)
         elif k in LLM_PARAM_KEYS:

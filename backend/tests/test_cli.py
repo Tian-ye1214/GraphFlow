@@ -150,14 +150,14 @@ def test_qc_node_set_and_rescan_link(server, capsys):
     login_and_wf(server)
     gf("node", "add", "llm")
     gf("node", "add", "qc")
-    gf("node", "set", "qc_1", "qc_col=a", "qc_mode=min_len", "qc_value=3",
-       "max_rounds=2", "reason=太短")
+    gf("node", "set", "qc_1", "system=你是质检员", "prompt=判定:{{a}}", "max_rounds=2")
     capsys.readouterr()
     gf("node", "show", "qc_1")
     node = json.loads(capsys.readouterr().out)
     assert node["type"] == "qc"
-    assert node["config"]["condition"] == {"column": "a", "mode": "min_len", "value": 3}
-    assert node["config"]["max_rounds"] == 2 and node["config"]["reason"] == "太短"
+    assert node["config"]["system_prompt"] == "你是质检员"
+    assert node["config"]["user_prompt"] == "判定:{{a}}"
+    assert node["config"]["max_rounds"] == 2
     gf("link", "llm_synth_1", "qc_1")
     capsys.readouterr()
     gf("link", "qc_1", "llm_synth_1", "--kind", "rescan")
