@@ -50,3 +50,8 @@ export interface CodegenOut {
   sample_source: 'last_run' | 'dataset' | 'none'
   error: string | null
 }
+
+export interface NodeAssistOut {
+  config: Record<string, any>
+  sample_source: 'last_run' | 'dataset' | 'none'
+}

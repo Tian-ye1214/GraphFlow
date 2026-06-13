@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Button, Input, InputNumber, Radio, Select, Space, Switch, Table } from 'antd'
 import { api } from '../../api/client'
-import type { CodegenOut, Dataset, ModelConfig, RowsPage } from '../../api/types'
+import type { CodegenOut, Dataset, ModelConfig, NodeAssistOut, RowsPage } from '../../api/types'
 
 export interface FormProps {
   config: Record<string, any>
@@ -59,7 +59,52 @@ function InputNodeForm({ config, onChange }: FormProps) {
   )
 }
 
-function LlmSynthForm({ config, onChange }: FormProps) {
+function NodeAssist({ nodeType, workflowId, nodeId, onApply }: {
+  nodeType: string; workflowId?: number; nodeId?: string
+  onApply: (config: Record<string, any>) => void
+}) {
+  const [models, setModels] = useState<ModelConfig[]>([])
+  const [modelSel, setModelSel] = useState<number>()
+  const [instruction, setInstruction] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [info, setInfo] = useState('')
+  useEffect(() => {
+    void api.get<ModelConfig[]>('/api/models').then(setModels)
+  }, [])
+  const run = async () => {
+    if (!modelSel || !workflowId || !nodeId) return
+    setBusy(true)
+    setInfo('')
+    try {
+      const r = await api.post<NodeAssistOut>('/api/agent/node-assist', {
+        workflow_id: workflowId, node_id: nodeId, node_type: nodeType,
+        instruction, model_config_id: modelSel,
+      })
+      onApply(r.config)
+      if (r.sample_source === 'none') setInfo('没有可用样本（先保存画布、运行一次更准）')
+    } catch (e) {
+      setInfo((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div style={{ border: '1px dashed #d9d9d9', borderRadius: 6, padding: 8, marginBottom: 12 }}>
+      <div style={{ color: '#722ed1', marginBottom: 4 }}>RedLotus 助手：描述需求，自动写提示词</div>
+      <Input.TextArea rows={2} value={instruction} placeholder="如：把 q 列翻译成英文存到 q_en"
+                      onChange={(e) => setInstruction(e.target.value)} />
+      <Space style={{ marginTop: 8 }}>
+        <Select size="small" style={{ width: 150 }} placeholder="生成用模型" value={modelSel}
+                onChange={setModelSel} options={models.map((m) => ({ value: m.id, label: m.name }))} />
+        <Button size="small" loading={busy} disabled={!instruction || !modelSel}
+                onClick={() => void run()}>让 RedLotus 配置</Button>
+      </Space>
+      {info && <div style={{ color: '#d46b08', fontSize: 12, marginTop: 4 }}>{info}</div>}
+    </div>
+  )
+}
+
+function LlmSynthForm({ config, onChange, workflowId, nodeId }: FormProps & { workflowId?: number; nodeId?: string }) {
   const [models, setModels] = useState<ModelConfig[]>([])
   useEffect(() => {
     void api.get<ModelConfig[]>('/api/models').then(setModels)
@@ -69,6 +114,8 @@ function LlmSynthForm({ config, onChange }: FormProps) {
   const patchParams = (p: object) => onChange({ ...config, params: { ...params, ...p } })
   return (
     <>
+      <NodeAssist nodeType="llm_synth" workflowId={workflowId} nodeId={nodeId}
+                  onApply={(c) => onChange({ ...config, ...c })} />
       <Field label="模型">
         <Select
           style={{ width: '100%' }} value={config.model_config_id}
@@ -283,47 +330,37 @@ function AutoProcessForm({ config, onChange, workflowId, nodeId }: FormProps & {
   )
 }
 
-function QcForm({ config, onChange }: FormProps) {
-  const cond = config.condition ?? {}
-  const patchCond = (p: object) => onChange({ ...config, condition: { ...cond, ...p } })
+function QcForm({ config, onChange, workflowId, nodeId }: FormProps & {
+  workflowId?: number; nodeId?: string
+}) {
+  const [models, setModels] = useState<ModelConfig[]>([])
+  useEffect(() => {
+    void api.get<ModelConfig[]>('/api/models').then(setModels)
+  }, [])
+  const patch = (p: object) => onChange({ ...config, ...p })
   return (
     <>
-      <Field label="质检条件（满足=通过；不满足=带原因回扫给上游 LLM 重生成）">
-        <Space wrap>
-          <Input placeholder="列名" style={{ width: 100 }} value={cond.column ?? ''}
-                 onChange={(e) => patchCond({ column: e.target.value })} />
-          <Select style={{ width: 120 }} value={cond.mode ?? 'not_empty'}
-                  onChange={(v) => patchCond({ mode: v })}
-                  options={[
-                    { value: 'not_empty', label: '非空' }, { value: 'min_len', label: '最小长度' },
-                    { value: 'max_len', label: '最大长度' }, { value: 'contains', label: '包含' },
-                    { value: 'not_contains', label: '不包含' }, { value: 'regex', label: '正则匹配' },
-                    { value: 'equals', label: '等于' },
-                  ]} />
-          {LEN_MODES.includes(cond.mode)
-            ? <InputNumber placeholder="长度" value={cond.value} onChange={(v) => patchCond({ value: v })} />
-            : cond.mode === 'not_empty'
-              ? null
-              : <Input placeholder="值" style={{ width: 120 }} value={cond.value ?? ''}
-                       onChange={(e) => patchCond({ value: e.target.value })} />}
-        </Space>
+      <NodeAssist nodeType="qc" workflowId={workflowId} nodeId={nodeId}
+                  onApply={(c) => onChange({ ...config, ...c })} />
+      <Field label="判定模型">
+        <Select style={{ width: '100%' }} value={config.model_config_id}
+                onChange={(v) => patch({ model_config_id: v })}
+                options={models.map((m) => ({ value: m.id, label: `${m.name}（${m.model_name}）` }))} />
       </Field>
-      <Space wrap>
-        <Field label="最多回扫轮数">
-          <InputNumber min={0} value={config.max_rounds ?? 3}
-                       onChange={(v) => onChange({ ...config, max_rounds: v ?? 3 })} />
-        </Field>
-        <Field label="原因取自列（语义质检用，可空）">
-          <Input style={{ width: 150 }} placeholder="如 质检原因" value={config.reason_field ?? ''}
-                 onChange={(e) => onChange({ ...config, reason_field: e.target.value })} />
-        </Field>
-      </Space>
-      <Field label="失败原因文案（无原因列时统一用）">
-        <Input value={config.reason ?? ''} placeholder="如：译文为空或太短"
-               onChange={(e) => onChange({ ...config, reason: e.target.value })} />
+      <Field label='System Prompt（判定规则；要求模型只输出 {"pass":true|false,"reason":"..."}）'>
+        <Input.TextArea rows={3} value={config.system_prompt ?? ''}
+                        onChange={(e) => patch({ system_prompt: e.target.value })} />
+      </Field>
+      <Field label="User Prompt（用 {{列名}} 引用上游数据列）">
+        <Input.TextArea rows={5} value={config.user_prompt ?? ''}
+                        onChange={(e) => patch({ user_prompt: e.target.value })} />
+      </Field>
+      <Field label="最多回扫轮数">
+        <InputNumber min={0} value={config.max_rounds ?? 3}
+                     onChange={(v) => patch({ max_rounds: v ?? 3 })} />
       </Field>
       <div style={{ color: '#999', fontSize: 12 }}>
-        把质检节点底部的橙色圆点拖回上游 LLM 节点，形成回扫边。不通过的行满 N 轮仍不过则丢弃。
+        把质检节点底部的橙色圆点拖回上游 LLM 节点形成回扫边；不通过的行带原因重生成，满 N 轮仍不过则丢弃。
       </div>
     </>
   )
@@ -354,11 +391,11 @@ export default function NodeConfigForm({ type, config, onChange, workflowId, nod
     case 'input':
       return <InputNodeForm config={config} onChange={onChange} />
     case 'llm_synth':
-      return <LlmSynthForm config={config} onChange={onChange} />
+      return <LlmSynthForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} />
     case 'auto_process':
       return <AutoProcessForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} />
     case 'qc':
-      return <QcForm config={config} onChange={onChange} />
+      return <QcForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} />
     case 'output':
       return <OutputNodeForm config={config} onChange={onChange} />
     default:
