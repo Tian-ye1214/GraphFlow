@@ -113,7 +113,7 @@ export default function RunDetailPage() {
         <div style={{ maxHeight: 220, overflow: 'auto', fontFamily: 'monospace', fontSize: 12 }}>
           {logs.map((l, i) => (
             <div key={i} style={{ color: l.level === 'error' ? '#ff4d4f' : '#555' }}>
-              [{l.created_at}] {l.message}
+              [{l.created_at}] {l.level.toUpperCase()} {l.message}
             </div>
           ))}
           {!logs.length && <span style={{ color: '#999' }}>暂无日志</span>}
