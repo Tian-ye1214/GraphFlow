@@ -111,7 +111,6 @@ async def apply_operations_with_agent(rows: list[dict], operations: list[dict],
     return rows
 
 
-
 TEMPLATE_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 
 

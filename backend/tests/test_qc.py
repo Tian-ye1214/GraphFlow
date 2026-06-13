@@ -27,7 +27,7 @@ async def test_qc_judge_pass(monkeypatch):
     monkeypatch.setattr(llm, "chat", fake)
     ok, reason, _ = await nodes.run_qc_judge_row(
         {"user_prompt": "判:{{a}}"}, {"a": "x"}, None, asyncio.Semaphore(1))
-    assert ok is True and reason == "未通过质检"  # reason 缺省给通用文案
+    assert ok is True and reason == "未通过质检"  # reason 字段缺失→默认通用文案（pass=True 时不使用）
 
 
 async def test_qc_judge_missing_pass_raises(monkeypatch):
