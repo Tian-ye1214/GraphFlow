@@ -11,8 +11,10 @@ from app.agent.codegen import gather_sample_rows, generate_with_repair
 from app.agent.turns import session_dir, turn_manager
 from app.auth import get_current_user, make_session_cookie
 from app.db import get_session
+from app.engine.graph import parse_graph
 from app.events import publish
 from app.models import AgentMessage, AgentSession, ModelConfig, User, Workflow
+from app.services.run_service import workflow_has_qc
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
@@ -123,6 +125,35 @@ async def stop_session(sid: int, user: User = Depends(get_current_user),
                        session: AsyncSession = Depends(get_session)):
     await _get_owned(sid, user, session)
     turn_manager.request_stop(sid)
+    return {"ok": True}
+
+
+class GoalIn(BaseModel):
+    workflow_id: int
+    goal_text: str
+
+
+@router.post("/sessions/{sid}/goal")
+async def start_goal(sid: int, body: GoalIn, user: User = Depends(get_current_user),
+                     session: AsyncSession = Depends(get_session)):
+    sess = await _get_owned(sid, user, session)
+    if sess.status == "running":
+        raise HTTPException(status_code=409, detail="回合进行中")
+    text = body.goal_text.strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="目标不能为空")
+    wf = await session.get(Workflow, body.workflow_id)
+    if wf is None or wf.user_id != user.id:
+        raise HTTPException(status_code=404, detail="工作流不存在")
+    if not workflow_has_qc(parse_graph(wf.graph_json)):
+        raise HTTPException(status_code=422, detail="目标工作流需包含质检节点才能度量首轮质检通过率")
+    await _check_models(json.loads(sess.models_json), user, session)
+    session.add(AgentMessage(session_id=sid, role="user",
+                             content_json=json.dumps({"text": f"[目标模式] {text}"}, ensure_ascii=False)))
+    sess.status = "running"
+    await session.commit()
+    publish(user.id, "agent", sid, kind="message")
+    turn_manager.submit_goal(sid, user.id, body.workflow_id, text)
     return {"ok": True}
 
 
