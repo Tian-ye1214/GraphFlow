@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from app.agent.turns import resume_interrupted
 from app.db import get_session_factory, init_db
 from app.engine.manager import resume_unfinished
-from app.routers import agent, auth, datasets, events, model_configs, runs, workflows
+from app.routers import admin, agent, auth, datasets, events, model_configs, runs, workflows
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -24,6 +24,7 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(title="GraphFlow", lifespan=lifespan)
     app.include_router(auth.router)
+    app.include_router(admin.router)
     app.include_router(model_configs.router)
     app.include_router(datasets.router)
     app.include_router(workflows.router)
