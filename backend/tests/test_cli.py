@@ -166,6 +166,14 @@ def test_qc_node_set_and_rescan_link(server, capsys):
     assert "qc_1 ⟲回扫 llm_synth_1" in capsys.readouterr().out
 
 
+def test_qc_col_key_now_dies(server, capsys):
+    login_and_wf(server)
+    gf("node", "add", "qc")
+    with pytest.raises(SystemExit):
+        gf("node", "set", "qc_1", "qc_col=a")
+    assert "未知配置键" in capsys.readouterr().err
+
+
 def test_rescan_from_non_qc_node_dies(server, capsys):
     login_and_wf(server)
     gf("node", "add", "llm")
