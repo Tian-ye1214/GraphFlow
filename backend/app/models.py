@@ -131,6 +131,26 @@ class RunLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class QcMetric(Base):
+    __tablename__ = "qc_metrics"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"), index=True)
+    node_id: Mapped[str] = mapped_column(default="")
+    total: Mapped[int] = mapped_column(default=0)
+    first_round_pass: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class QcFailure(Base):
+    __tablename__ = "qc_failures"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"), index=True)
+    node_id: Mapped[str] = mapped_column(default="")
+    sample_json: Mapped[str] = mapped_column(Text, default="")
+    reasons_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class AgentSession(Base):
     __tablename__ = "agent_sessions"
     id: Mapped[int] = mapped_column(primary_key=True)
