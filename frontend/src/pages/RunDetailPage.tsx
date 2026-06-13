@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Card, Popconfirm, Progress, Select, Space, Table, Tabs, Tag, message } from 'antd'
 import { useParams } from 'react-router-dom'
 import { api } from '../api/client'
-import type { RowsPage, RunDetail, RunLogEntry } from '../api/types'
+import type { QcFailureEntry, RowsPage, RunDetail, RunLogEntry } from '../api/types'
 import { formatRunLog } from './runLog'
 import { NODE_LABELS } from '../canvas/serialize'
 import { STATUS_COLORS, STATUS_LABELS } from './RunsPage'
@@ -19,6 +19,7 @@ export default function RunDetailPage() {
   const [failed, setFailed] = useState<RowsPage>({ total: 0, rows: [] })
   const [format, setFormat] = useState('jsonl')
   const [logs, setLogs] = useState<RunLogEntry[]>([])
+  const [qcFailures, setQcFailures] = useState<QcFailureEntry[]>([])
   const refreshLogs = useCallback(
     () => api.get<RunLogEntry[]>(`/api/runs/${id}/logs`).then(setLogs), [id])
   useEffect(() => { void refreshLogs() }, [refreshLogs])
@@ -55,6 +56,10 @@ export default function RunDetailPage() {
     void api.get<RowsPage>(`/api/runs/${id}/rows?node_id=${node}&page=${page}&page_size=20`).then(setRows)
     void api.get<RowsPage>(`/api/runs/${id}/rows?node_id=${node}&status=failed&page=${failedPage}&page_size=20`).then(setFailed)
   }, [run?.status, node, page, failedPage, id, isActive])
+  useEffect(() => {
+    if (!run || isActive) return
+    void api.get<QcFailureEntry[]>(`/api/runs/${id}/qc-failures`).then(setQcFailures)
+  }, [run?.status, id, isActive])
 
   const nodeLabel = useCallback((nid: string) => {
     const n = run?.graph.nodes.find((g) => g.id === nid)
@@ -119,6 +124,25 @@ export default function RunDetailPage() {
           {!logs.length && <span style={{ color: '#999' }}>暂无日志</span>}
         </div>
       </Card>
+      {!isActive && qcFailures.length > 0 && (
+        <Card size="small" title={`质检失败样本（${qcFailures.length}）`} style={{ marginBottom: 16 }}
+              extra={<Button size="small" onClick={() => {
+                const blob = new Blob([JSON.stringify(qcFailures, null, 2)], { type: 'application/json' })
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement('a'); a.href = url; a.download = `run${id}_qc_failures.json`; a.click()
+                URL.revokeObjectURL(url)
+              }}>下载</Button>}>
+          <Table rowKey={(_, i) => String(i)} dataSource={qcFailures} size="small"
+                 pagination={{ pageSize: 10 }}
+                 columns={[
+                   { title: '样本', dataIndex: 'sample', ellipsis: true,
+                     render: (v: object) => JSON.stringify(v) },
+                   { title: '各模型理由', dataIndex: 'reasons',
+                     render: (rs: QcFailureEntry['reasons']) =>
+                       rs.map((r) => `${r.pass ? '✓' : '✗'} ${r.reason}`).join('；') },
+                 ]} />
+        </Card>
+      )}
       {!isActive && (
         <>
           <Space style={{ marginBottom: 8 }}>

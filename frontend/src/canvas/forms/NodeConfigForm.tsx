@@ -348,10 +348,14 @@ function QcForm({ config, onChange, workflowId, nodeId }: FormProps & {
     <>
       <NodeAssist nodeType="qc" workflowId={workflowId} nodeId={nodeId}
                   onApply={(c) => onChange({ ...config, ...c })} />
-      <Field label="判定模型">
-        <Select style={{ width: '100%' }} value={config.model_config_id}
-                onChange={(v) => patch({ model_config_id: v })}
+      <Field label="判定模型（多选，N 个模型同提示词判定）">
+        <Select mode="multiple" style={{ width: '100%' }}
+                value={config.judge_model_ids ?? (config.model_config_id ? [config.model_config_id] : [])}
+                onChange={(v) => patch({ judge_model_ids: v })}
                 options={models.map((m) => ({ value: m.id, label: `${m.name}（${m.model_name}）` }))} />
+      </Field>
+      <Field label="至少通过数 K（≥K 个模型通过即输出）">
+        <InputNumber min={1} value={config.pass_k ?? 1} onChange={(v) => patch({ pass_k: v ?? 1 })} />
       </Field>
       <Field label='System Prompt（判定规则；要求模型只输出 {"pass":true|false,"reason":"..."}）'>
         <Input.TextArea rows={3} value={config.system_prompt ?? ''}
