@@ -325,7 +325,13 @@ function AutoProcessForm({ config, onChange, workflowId, nodeId }: FormProps & {
             : <OpFields op={op} update={(p) => setOps(ops.map((o, j) => (j === i ? { ...o, ...p } : o)))} />}
         </div>
       ))}
-      <Button block onClick={() => setOps([...ops, { ...OP_DEFAULTS.dedup }])}>+ 添加操作</Button>
+      <Space direction="vertical" style={{ width: '100%' }}>
+        <Button block onClick={() => setOps([...ops, { ...OP_DEFAULTS.dedup }])}>+ 添加操作</Button>
+        <Button block type="dashed" onClick={() => setOps([...ops, { ...OP_DEFAULTS.agent }])}>
+          ✨ 用 AI 写处理代码
+        </Button>
+        <div style={{ color: '#999', fontSize: 12 }}>复杂处理（如按 session 分组去重）建议用 AI 写代码。</div>
+      </Space>
     </>
   )
 }
