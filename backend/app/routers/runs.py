@@ -112,6 +112,25 @@ async def run_logs(run_id: int, user: User = Depends(get_current_user),
              "level": l.level, "message": l.message} for l in logs]
 
 
+@router.delete("/{run_id}")
+async def delete_run(run_id: int, user: User = Depends(get_current_user),
+                     session: AsyncSession = Depends(get_session)):
+    run = await _get_owned_run(run_id, user, session)
+    if run.status in ("queued", "running"):
+        raise HTTPException(status_code=409, detail="运行中，请先取消再删除")
+    ver_id = run.workflow_version_id
+    await session.execute(sa_delete(RunRow).where(RunRow.run_id == run_id))
+    await session.execute(sa_delete(RunNodeState).where(RunNodeState.run_id == run_id))
+    await session.execute(sa_delete(RunLog).where(RunLog.run_id == run_id))
+    await session.execute(sa_delete(Run).where(Run.id == run_id))
+    await session.execute(sa_delete(WorkflowVersion).where(WorkflowVersion.id == ver_id))
+    await session.commit()
+    for p in (settings.data_dir / "exports").glob(f"run{run_id}_*"):
+        p.unlink(missing_ok=True)
+    publish(user.id, "run", run_id)
+    return {"ok": True}
+
+
 @router.post("/{run_id}/cancel")
 async def cancel_run(run_id: int, user: User = Depends(get_current_user),
                      session: AsyncSession = Depends(get_session)):

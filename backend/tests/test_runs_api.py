@@ -224,3 +224,38 @@ async def test_run_logs_foreign_rejected(auth_client, monkeypatch):
     await auth_client.post("/api/auth/login", json={"username": "intruder"})
     r = await auth_client.get(f"/api/runs/{run_id}/logs")
     assert r.status_code == 404
+
+
+async def test_delete_run_cascades(auth_client, monkeypatch, session_factory):
+    from sqlalchemy import func, select
+    from app.models import Run, RunLog, RunNodeState, RunRow, WorkflowVersion
+    patch_chat(monkeypatch)
+    wf_id = await setup_workflow(auth_client)
+    run_id = (await auth_client.post("/api/runs", json={"workflow_id": wf_id})).json()["id"]
+    detail = await wait_run(auth_client, run_id)
+    async with session_factory() as s:
+        ver_id = (await s.execute(
+            select(Run.workflow_version_id).where(Run.id == run_id))).scalar()
+    assert (await auth_client.delete(f"/api/runs/{run_id}")).status_code == 200
+    assert (await auth_client.get(f"/api/runs/{run_id}")).status_code == 404
+    async with session_factory() as s:
+        for model in (RunRow, RunNodeState, RunLog):
+            cnt = (await s.execute(
+                select(func.count()).select_from(model).where(model.run_id == run_id))).scalar()
+            assert cnt == 0
+        ver = (await s.execute(
+            select(func.count()).select_from(WorkflowVersion)
+            .where(WorkflowVersion.id == ver_id))).scalar()
+        assert ver == 0
+
+
+async def test_delete_running_rejected(auth_client, monkeypatch):
+    async def slow(mc, system, user, params=None, retries=3):
+        await asyncio.sleep(0.3)
+        return "ok", {"prompt_tokens": 0, "completion_tokens": 0}
+    monkeypatch.setattr(llm, "chat", slow)
+    wf_id = await setup_workflow(auth_client)
+    run_id = (await auth_client.post("/api/runs", json={"workflow_id": wf_id})).json()["id"]
+    assert (await auth_client.delete(f"/api/runs/{run_id}")).status_code == 409
+    await auth_client.post(f"/api/runs/{run_id}/cancel")
+    await wait_run(auth_client, run_id)
