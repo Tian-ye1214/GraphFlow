@@ -43,7 +43,10 @@ export default function AdminPage() {
             title: '操作', key: 'act',
             render: (_: unknown, u: AdminUser) => (
               <Space>
-                <Button size="small" onClick={async () => { await actAs(u.id); message.success(`已切换为 ${u.username}`) }}>
+                <Button size="small" onClick={async () => {
+                  try { await actAs(u.id); message.success(`已切换为 ${u.username}`) }
+                  catch (e) { message.error((e as Error).message) }
+                }}>
                   以此身份操作
                 </Button>
                 <Popconfirm title="删除该用户及其全部资源？" onConfirm={async () => {
