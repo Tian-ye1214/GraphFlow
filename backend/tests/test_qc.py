@@ -1,37 +1,39 @@
 import asyncio
+import json
+
+import pytest
 
 from app.engine import nodes
 from app.services import llm
 
 
-def test_qc_split_pass_fail():
-    rows = [{"a": "good"}, {"a": ""}, {"a": "x"}]
-    cfg = {"condition": {"column": "a", "mode": "not_empty", "value": None}}
-    passed, failed = nodes.qc_split(rows, cfg)
-    assert passed == [{"a": "good"}, {"a": "x"}]
-    assert failed == [{"a": "", "_qc_reason": "列「a」未通过质检（not_empty）"}]
-
-
-def test_qc_split_reason_field():
-    rows = [{"a": "1", "judge": "fail", "why": "太短"},
-            {"a": "2", "judge": "pass", "why": ""}]
-    cfg = {"condition": {"column": "judge", "mode": "equals", "value": "pass"},
-           "reason_field": "why"}
-    passed, failed = nodes.qc_split(rows, cfg)
-    assert [r["a"] for r in passed] == ["2"]
-    assert failed[0]["_qc_reason"] == "太短"
-
-
-async def test_reason_injected_into_prompt_and_stripped(monkeypatch):
-    captured = {}
-
+async def test_qc_judge_parses_verdict(monkeypatch):
     async def fake(mc, system, user, params=None, retries=3):
-        captured["user"] = user
-        return "新结果", {"prompt_tokens": 1, "completion_tokens": 1}
+        assert params and params.get("json_mode") is True  # 判定强制 json 模式
+        assert "译文:hello" in user  # 用 base 渲染（剥离 _qc_reason）
+        return json.dumps({"pass": False, "reason": "不是中文"}), {"prompt_tokens": 2, "completion_tokens": 3}
 
     monkeypatch.setattr(llm, "chat", fake)
-    cfg = {"user_prompt": "Q:{{q}}", "output_column": "a"}
-    row = {"q": "问", "a": "旧", "_qc_reason": "字段缺失"}
-    out, usage = await nodes.run_llm_synth_row(cfg, row, None, asyncio.Semaphore(1))
-    assert "Q:问" in captured["user"] and "字段缺失" in captured["user"]
-    assert out == [{"q": "问", "a": "新结果"}]  # _qc_reason 不进提示模板变量也不留在输出
+    ok, reason, usage = await nodes.run_qc_judge_row(
+        {"user_prompt": "译文:{{a}}"}, {"a": "hello", "_qc_reason": "旧"}, None, asyncio.Semaphore(1))
+    assert ok is False and reason == "不是中文"
+    assert usage == {"prompt_tokens": 2, "completion_tokens": 3}
+
+
+async def test_qc_judge_pass(monkeypatch):
+    async def fake(mc, system, user, params=None, retries=3):
+        return json.dumps({"pass": True}), {"prompt_tokens": 1, "completion_tokens": 1}
+
+    monkeypatch.setattr(llm, "chat", fake)
+    ok, reason, _ = await nodes.run_qc_judge_row(
+        {"user_prompt": "判:{{a}}"}, {"a": "x"}, None, asyncio.Semaphore(1))
+    assert ok is True and reason == "未通过质检"  # reason 缺省给通用文案
+
+
+async def test_qc_judge_missing_pass_raises(monkeypatch):
+    async def fake(mc, system, user, params=None, retries=3):
+        return json.dumps({"reason": "x"}), {"prompt_tokens": 1, "completion_tokens": 1}
+
+    monkeypatch.setattr(llm, "chat", fake)
+    with pytest.raises(ValueError):
+        await nodes.run_qc_judge_row({"user_prompt": "p"}, {"a": "x"}, None, asyncio.Semaphore(1))

@@ -111,22 +111,6 @@ async def apply_operations_with_agent(rows: list[dict], operations: list[dict],
     return rows
 
 
-def qc_split(rows: list[dict], config: dict) -> tuple[list[dict], list[dict]]:
-    """规则质检：按 condition（{column, mode, value}）判定每行通过/不通过。
-    返回 (passed, failed)；failed 行注入 _qc_reason（取 reason_field 列，否则 config['reason']）。"""
-    cond = config["condition"]
-    col, mode, value = cond["column"], cond["mode"], cond["value"]
-    reason_field = config.get("reason_field")
-    default_reason = config.get("reason") or f"列「{col}」未通过质检（{mode}）"
-    passed, failed = [], []
-    for r in rows:
-        if _predicate(str(r.get(col, "")), mode, value):
-            passed.append(r)
-        else:
-            reason = str(r[reason_field]) if reason_field and r.get(reason_field) else default_reason
-            failed.append({**r, "_qc_reason": reason})
-    return passed, failed
-
 
 TEMPLATE_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 
@@ -172,3 +156,20 @@ async def run_llm_synth_row(config: dict, row: dict, mc: ModelConfig,
         else:
             out_rows.append({**base, config.get("output_column", "output"): text})
     return out_rows, usage_total
+
+
+async def run_qc_judge_row(config: dict, row: dict, mc: ModelConfig,
+                           user_sem: asyncio.Semaphore) -> tuple[bool, str, dict]:
+    """质检判定一行：渲染判定提示词 → LLM（强制 json 模式）→ 解析 {"pass","reason"}。
+    返回 (是否通过, 原因, usage)。复用 render_template + llm.chat（与 LLM 合成节点同原语）。"""
+    base = {k: v for k, v in row.items() if k != "_qc_reason"}
+    system = render_template(config.get("system_prompt", ""), base)
+    user = render_template(config.get("user_prompt", ""), base)
+    params = {**config.get("params", {}), "json_mode": True}
+    async with user_sem:
+        text, usage = await llm.chat(mc, system, user, params=params,
+                                     retries=config.get("retries", 3))
+    verdict = _json.loads(text)
+    if "pass" not in verdict:
+        raise ValueError("质检判定未返回 pass 字段")
+    return bool(verdict["pass"]), str(verdict.get("reason") or "未通过质检"), usage
