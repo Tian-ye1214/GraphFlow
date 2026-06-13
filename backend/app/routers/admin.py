@@ -74,6 +74,7 @@ async def delete_user(user_id: int, admin: User = Depends(require_admin),
     if target is None:
         raise HTTPException(status_code=404, detail="用户不存在")
     username = target.username
+    # --- 收集子资源 ID（级联用）---
     ds_ids = (await session.execute(
         select(Dataset.id).where(Dataset.user_id == user_id))).scalars().all()
     run_ids = (await session.execute(
@@ -82,6 +83,7 @@ async def delete_user(user_id: int, admin: User = Depends(require_admin),
         select(Workflow.id).where(Workflow.user_id == user_id))).scalars().all()
     sess_ids = (await session.execute(
         select(AgentSession.id).where(AgentSession.user_id == user_id))).scalars().all()
+    # --- 级联删除：子表 → 父表 → User ---
     if ds_ids:
         await session.execute(sa_delete(DatasetRow).where(DatasetRow.dataset_id.in_(ds_ids)))
     await session.execute(sa_delete(Dataset).where(Dataset.user_id == user_id))
