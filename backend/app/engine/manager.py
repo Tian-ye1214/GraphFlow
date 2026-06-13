@@ -13,6 +13,7 @@ class RunManager:
     def __init__(self):
         self.user_sems: dict[int, asyncio.Semaphore] = {}
         self.cancel_events: dict[int, asyncio.Event] = {}
+        self.done_events: dict[int, asyncio.Event] = {}
         self.tasks: dict[int, asyncio.Task] = {}
 
     def user_sem(self, user_id: int, capacity: int) -> asyncio.Semaphore:
@@ -23,20 +24,33 @@ class RunManager:
     def submit(self, run_id: int, user_id: int, capacity: int,
                session_factory: async_sessionmaker) -> None:
         ev = asyncio.Event()
+        done = asyncio.Event()
         self.cancel_events[run_id] = ev
+        self.done_events[run_id] = done
         task = asyncio.create_task(
             execute_run(run_id, session_factory, self.user_sem(user_id, capacity), ev))
         self.tasks[run_id] = task
-        task.add_done_callback(lambda _: self._cleanup(run_id))
+
+        def _on_done(_):
+            done.set()
+            self._cleanup(run_id)
+        task.add_done_callback(_on_done)
 
     def _cleanup(self, run_id: int) -> None:
         self.cancel_events.pop(run_id, None)
+        self.done_events.pop(run_id, None)
         self.tasks.pop(run_id, None)
 
     def cancel(self, run_id: int) -> None:
         ev = self.cancel_events.get(run_id)
         if ev:
             ev.set()
+
+    async def wait(self, run_id: int) -> None:
+        """等待某次运行到达终态。未知/已结束 run 立即返回。"""
+        done = self.done_events.get(run_id)
+        if done is not None:
+            await done.wait()
 
 
 manager = RunManager()

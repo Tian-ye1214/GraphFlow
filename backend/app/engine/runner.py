@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.engine import nodes
 from app.engine.graph import Graph, Node, parse_graph, topo_order, upstream_ids, validate_graph
+from app.events import publish
 from app.models import (DatasetRow, ModelConfig, QcFailure, QcMetric, Run, RunLog,
                         RunNodeState, RunRow, WorkflowVersion)
 from app.routers.datasets import create_dataset
@@ -101,6 +102,7 @@ async def _execute(run_id, session_factory, user_sem, cancel_event):
 async def _finish(session_factory, run_id, status):
     async with session_factory() as s:
         run = await s.get(Run, run_id)
+        user_id = run.user_id
         sums = (await s.execute(
             select(func.coalesce(func.sum(RunRow.prompt_tokens), 0),
                    func.coalesce(func.sum(RunRow.completion_tokens), 0))
@@ -111,6 +113,7 @@ async def _finish(session_factory, run_id, status):
         await s.commit()
     await _log(session_factory, run_id, "",
                f"运行结束：{status}（prompt={sums[0]} completion={sums[1]}）")
+    publish(user_id, "run", run_id)
 
 
 async def _node_outputs(session_factory, run_id, node_id) -> list[dict]:
