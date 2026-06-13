@@ -125,3 +125,9 @@ async def test_generate_node_config_rejects_unknown_type():
     model = FunctionModel(lambda m, i: ModelResponse(parts=[TextPart("{}")]))
     with pytest.raises(KeyError):
         await codegen.generate_node_config(model, "input", "x", [])
+
+
+def test_instructions_guide_grouped_dedup():
+    from app.agent.codegen import INSTRUCTIONS
+    assert "pandas" in INSTRUCTIONS
+    assert "分组" in INSTRUCTIONS  # 引导「先按 session 分组再去重」一类复杂处理

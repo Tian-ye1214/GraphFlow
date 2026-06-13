@@ -42,3 +42,21 @@ async def test_timeout_kills(monkeypatch):
     code = "import time\ndef process(rows):\n    time.sleep(60)\n    return rows"
     with pytest.raises(ValueError, match="超时"):
         await run_process_code(code, ROWS)
+
+
+async def test_pandas_grouped_dedup_runs_in_subprocess():
+    rows = [
+        {"session": "s1", "q": "a"}, {"session": "s1", "q": "a"},
+        {"session": "s1", "q": "b"}, {"session": "s2", "q": "a"},
+    ]
+    code = (
+        "import pandas as pd\n"
+        "def process(rows):\n"
+        "    df = pd.DataFrame(rows)\n"
+        "    df = df.drop_duplicates(subset=['session', 'q'])\n"
+        "    return df.to_dict('records')\n"
+    )
+    out = await run_process_code(code, rows)
+    assert out == [
+        {"session": "s1", "q": "a"}, {"session": "s1", "q": "b"}, {"session": "s2", "q": "a"},
+    ]
