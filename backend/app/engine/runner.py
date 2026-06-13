@@ -47,6 +47,9 @@ async def _execute(run_id, session_factory, user_sem, cancel_event):
         if node.type == "llm_synth":
             await _run_llm_node(session_factory, run_id, user_id, node, inputs,
                                 user_sem, cancel_event)
+        elif node.type == "qc":
+            await _run_qc_node(session_factory, run_id, user_id, graph, node, inputs,
+                               user_sem, cancel_event)
         else:
             await _run_barrier_node(session_factory, run_id, user_id, node, inputs)
         if cancel_event.is_set():
@@ -87,7 +90,7 @@ async def _node_inputs(session_factory, run_id, graph: Graph, node: Node) -> lis
 
 
 async def _write_unit(session_factory, run_id, node_id, row_idx, status, out_rows, error,
-                      usage: dict | None = None):
+                      usage: dict | None = None, qc_round: int = 0):
     async with session_factory() as s:
         rec = (await s.execute(select(RunRow).where(
             RunRow.run_id == run_id, RunRow.node_id == node_id, RunRow.row_idx == row_idx
@@ -99,6 +102,7 @@ async def _write_unit(session_factory, run_id, node_id, row_idx, status, out_row
         rec.data_json = json.dumps(out_rows, ensure_ascii=False)
         rec.error = error
         rec.attempt = (rec.attempt or 0) + 1
+        rec.qc_round = qc_round
         if usage:
             rec.prompt_tokens = usage["prompt_tokens"]
             rec.completion_tokens = usage["completion_tokens"]
@@ -196,3 +200,56 @@ async def _run_llm_node(session_factory, run_id, user_id, node: Node, inputs,
     if not cancel_event.is_set():
         await _set_node_state(session_factory, run_id, node.id, status="done",
                               total=total, done=done_count, failed=failed_count)
+
+
+async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Node, inputs,
+                       user_sem, cancel_event):
+    """质检节点：规则判定每行通过/不通过；不通过的行带原因经 rescan 回扫边的 LLM 重新生成，
+    最多 max_rounds 轮，仍不通过的行丢弃。仅持久化本节点最终输出（含各轮 token 汇总）。"""
+    cfg = node.config
+    async with session_factory() as s:
+        rec = (await s.execute(select(RunRow).where(
+            RunRow.run_id == run_id, RunRow.node_id == node.id, RunRow.row_idx == 0
+        ))).scalar_one_or_none()
+    if rec is not None and rec.status == "done":
+        await _set_node_state(session_factory, run_id, node.id, status="done", total=1, done=1, failed=0)
+        return
+    await _set_node_state(session_factory, run_id, node.id, status="running", total=1, done=0, failed=0)
+    try:
+        target_id = next((e["target"] for e in graph.edges
+                          if e["kind"] == "rescan" and e["source"] == node.id), None)
+        passed, failed = nodes.qc_split(inputs, cfg)
+        usage = {"prompt_tokens": 0, "completion_tokens": 0}
+        rounds = 0
+        if target_id is not None and failed:
+            tgt = next(n for n in graph.nodes if n.id == target_id)
+            async with session_factory() as s:
+                mc = await s.get(ModelConfig, tgt.config.get("model_config_id"))
+            if mc is None or mc.user_id != user_id:
+                raise ValueError(f"回扫目标 {target_id}: 模型配置不存在")
+            sem = asyncio.Semaphore(tgt.config.get("concurrency", 4))
+
+            async def regen(row):
+                async with sem:
+                    return await nodes.run_llm_synth_row(tgt.config, row, mc, user_sem)
+
+            while failed and rounds < cfg.get("max_rounds", 3) and not cancel_event.is_set():
+                rounds += 1
+                regenerated: list[dict] = []
+                for out_rows, u in await asyncio.gather(*[regen(r) for r in failed]):
+                    usage["prompt_tokens"] += u["prompt_tokens"]
+                    usage["completion_tokens"] += u["completion_tokens"]
+                    regenerated.extend(out_rows)
+                fresh_pass, failed = nodes.qc_split(regenerated, cfg)
+                passed.extend(fresh_pass)
+                await _set_node_state(session_factory, run_id, node.id, status="running",
+                                      total=1, done=0, failed=len(failed))
+        if cancel_event.is_set():
+            return
+    except Exception as e:
+        await _write_unit(session_factory, run_id, node.id, 0, "failed", [], str(e))
+        await _set_node_state(session_factory, run_id, node.id, status="failed", total=1, done=0, failed=1)
+        raise
+    await _write_unit(session_factory, run_id, node.id, 0, "done", passed, "",
+                      usage=usage, qc_round=rounds)
+    await _set_node_state(session_factory, run_id, node.id, status="done", total=1, done=1, failed=0)

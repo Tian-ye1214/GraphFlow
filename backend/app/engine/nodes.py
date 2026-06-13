@@ -20,24 +20,27 @@ def _dedup(rows, op, rng):
     return out
 
 
+def _predicate(s: str, mode: str, value) -> bool:
+    if mode == "min_len":
+        return len(s) >= value
+    if mode == "max_len":
+        return len(s) <= value
+    if mode == "contains":
+        return value in s
+    if mode == "not_contains":
+        return value not in s
+    if mode == "regex":
+        return re.search(value, s) is not None
+    if mode == "not_empty":
+        return s.strip() != ""
+    if mode == "equals":
+        return s == str(value)
+    raise ValueError(f"未知判定模式: {mode}")
+
+
 def _filter(rows, op, rng):
     col, mode, value = op["column"], op["mode"], op["value"]
-
-    def keep(row) -> bool:
-        s = str(row.get(col, ""))
-        if mode == "min_len":
-            return len(s) >= value
-        if mode == "max_len":
-            return len(s) <= value
-        if mode == "contains":
-            return value in s
-        if mode == "not_contains":
-            return value not in s
-        if mode == "regex":
-            return re.search(value, s) is not None
-        raise ValueError(f"未知过滤模式: {mode}")
-
-    return [r for r in rows if keep(r)]
+    return [r for r in rows if _predicate(str(r.get(col, "")), mode, value)]
 
 
 def _rename(rows, op, rng):
@@ -108,6 +111,23 @@ async def apply_operations_with_agent(rows: list[dict], operations: list[dict],
     return rows
 
 
+def qc_split(rows: list[dict], config: dict) -> tuple[list[dict], list[dict]]:
+    """规则质检：按 condition（{column, mode, value}）判定每行通过/不通过。
+    返回 (passed, failed)；failed 行注入 _qc_reason（取 reason_field 列，否则 config['reason']）。"""
+    cond = config["condition"]
+    col, mode, value = cond["column"], cond["mode"], cond["value"]
+    reason_field = config.get("reason_field")
+    default_reason = config.get("reason") or f"列「{col}」未通过质检（{mode}）"
+    passed, failed = [], []
+    for r in rows:
+        if _predicate(str(r.get(col, "")), mode, value):
+            passed.append(r)
+        else:
+            reason = str(r[reason_field]) if reason_field and r.get(reason_field) else default_reason
+            failed.append({**r, "_qc_reason": reason})
+    return passed, failed
+
+
 TEMPLATE_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 
 
@@ -118,8 +138,11 @@ def render_template(template: str, row: dict) -> str:
 async def run_llm_synth_row(config: dict, row: dict, mc: ModelConfig,
                             user_sem: asyncio.Semaphore) -> tuple[list[dict], dict]:
     """处理一条输入行：扇出 fanout_n 次调用，返回 (输出行列表, usage 汇总)。失败抛异常由 runner 记为行失败。"""
-    system = render_template(config.get("system_prompt", ""), row)
-    user = render_template(config.get("user_prompt", ""), row)
+    base = {k: v for k, v in row.items() if k != "_qc_reason"}
+    system = render_template(config.get("system_prompt", ""), base)
+    user = render_template(config.get("user_prompt", ""), base)
+    if row.get("_qc_reason"):
+        user += f"\n\n上一轮质检未通过，原因：{row['_qc_reason']}\n请针对此改进后重新生成。"
     params = config.get("params", {})
     retries = config.get("retries", 3)
     fanout = config.get("fanout_n", 1)
@@ -145,7 +168,7 @@ async def run_llm_synth_row(config: dict, row: dict, mc: ModelConfig,
             parsed = _json.loads(text)
             if not isinstance(parsed, dict):
                 raise ValueError("LLM 返回的不是 JSON 对象")
-            out_rows.append({**row, **parsed})
+            out_rows.append({**base, **parsed})
         else:
-            out_rows.append({**row, config.get("output_column", "output"): text})
+            out_rows.append({**base, config.get("output_column", "output"): text})
     return out_rows, usage_total

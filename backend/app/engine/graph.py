@@ -1,7 +1,7 @@
 import json
 from dataclasses import dataclass
 
-NODE_TYPES = {"input", "llm_synth", "auto_process", "output"}  # P2 增加 qc
+NODE_TYPES = {"input", "llm_synth", "auto_process", "output", "qc"}
 
 
 class GraphError(ValueError):
@@ -40,9 +40,12 @@ def validate_graph(g: Graph) -> None:
     for n in g.nodes:
         if n.type not in NODE_TYPES:
             raise GraphError(f"未知节点类型: {n.type}")
+    qc_ids = {n.id for n in g.nodes if n.type == "qc"}
     for e in g.edges:
         if e["source"] not in id_set or e["target"] not in id_set:
             raise GraphError("边指向不存在的节点")
+        if e["kind"] == "rescan" and e["source"] not in qc_ids:
+            raise GraphError("rescan 回扫边必须从 qc 节点出发")
     topo_order(g)
 
 

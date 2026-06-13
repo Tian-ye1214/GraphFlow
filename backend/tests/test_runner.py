@@ -76,6 +76,62 @@ async def get_run(session_factory, run_id) -> Run:
         return await s.get(Run, run_id)
 
 
+RESCAN_GRAPH = {
+    "nodes": [
+        {"id": "in", "type": "input", "config": {"dataset_ids": []}},
+        {"id": "gen", "type": "llm_synth",
+         "config": {"model_config_id": 0, "user_prompt": "Q:{{q}}", "output_column": "a",
+                    "concurrency": 4, "retries": 1}},
+        {"id": "qc", "type": "qc",
+         "config": {"condition": {"column": "a", "mode": "not_contains", "value": "bad"},
+                    "max_rounds": 2}},
+        {"id": "out", "type": "output", "config": {}},
+    ],
+    "edges": [{"source": "in", "target": "gen", "kind": "normal"},
+              {"source": "gen", "target": "qc", "kind": "normal"},
+              {"source": "qc", "target": "out", "kind": "normal"},
+              {"source": "qc", "target": "gen", "kind": "rescan"}],
+}
+
+
+async def test_rescan_regenerates_failed_rows(session_factory, monkeypatch):
+    def fn(user):  # 问1 首次生成坏值；带着质检原因回扫重生成则修好
+        if "问1" in user and "质检未通过" not in user:
+            return "bad答", {"prompt_tokens": 1, "completion_tokens": 1}
+        return "good答", {"prompt_tokens": 1, "completion_tokens": 1}
+
+    patch_chat(monkeypatch, fn)
+    run_id = await make_run(session_factory, graph=RESCAN_GRAPH)
+    await run_it(session_factory, run_id)
+    run = await get_run(session_factory, run_id)
+    assert run.status == "completed"
+    out_rows = await runner._node_outputs(session_factory, run_id, "qc")
+    assert len(out_rows) == 3 and all("bad" not in r["a"] for r in out_rows)
+    # 回扫轮的 token 计入统计：3 行首轮 + 1 行回扫一次 = 4 次调用
+    assert json.loads(run.stats_json) == {"prompt_tokens": 4, "completion_tokens": 4}
+    async with session_factory() as s:
+        qc_rec = (await s.execute(select(RunRow).where(
+            RunRow.run_id == run_id, RunRow.node_id == "qc"))).scalar_one()
+    assert qc_rec.qc_round == 1
+
+
+async def test_rescan_drops_persistent_failures(session_factory, monkeypatch):
+    def fn(user):  # 问1 永远坏：回扫 max_rounds 轮后被丢弃
+        if "问1" in user:
+            return "bad答", {"prompt_tokens": 1, "completion_tokens": 1}
+        return "good答", {"prompt_tokens": 1, "completion_tokens": 1}
+
+    patch_chat(monkeypatch, fn)
+    run_id = await make_run(session_factory, graph=RESCAN_GRAPH)
+    await run_it(session_factory, run_id)
+    out_rows = await runner._node_outputs(session_factory, run_id, "qc")
+    assert {r["q"] for r in out_rows} == {"问0", "问2"}  # 问1 始终不过被丢弃
+    async with session_factory() as s:
+        qc_rec = (await s.execute(select(RunRow).where(
+            RunRow.run_id == run_id, RunRow.node_id == "qc"))).scalar_one()
+    assert qc_rec.qc_round == 2  # 用满 max_rounds
+
+
 async def test_happy_path(session_factory, monkeypatch):
     patch_chat(monkeypatch)
     run_id = await make_run(session_factory)
