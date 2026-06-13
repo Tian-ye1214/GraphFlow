@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.engine import nodes
 from app.engine.graph import Graph, Node, parse_graph, topo_order, upstream_ids, validate_graph
-from app.models import DatasetRow, ModelConfig, Run, RunNodeState, RunRow, WorkflowVersion
+from app.models import DatasetRow, ModelConfig, Run, RunLog, RunNodeState, RunRow, WorkflowVersion
 from app.routers.datasets import create_dataset
 
 
@@ -34,6 +34,19 @@ async def _cancellable(coro, cancel_event: asyncio.Event):
     raise asyncio.CancelledError()
 
 
+async def _log(session_factory, run_id, node_id, message, level="info"):
+    async with session_factory() as s:
+        s.add(RunLog(run_id=run_id, node_id=node_id, message=message, level=level))
+        await s.commit()
+
+
+async def _node_counts(session_factory, run_id, node_id) -> tuple[int, int]:
+    async with session_factory() as s:
+        ns = (await s.execute(select(RunNodeState).where(
+            RunNodeState.run_id == run_id, RunNodeState.node_id == node_id))).scalar_one_or_none()
+    return (ns.done, ns.failed) if ns else (0, 0)
+
+
 async def execute_run(run_id: int, session_factory: async_sessionmaker,
                       user_sem: asyncio.Semaphore, cancel_event: asyncio.Event) -> None:
     """运行入口：任何未捕获异常都落为 run.failed，不向上抛。"""
@@ -46,6 +59,7 @@ async def execute_run(run_id: int, session_factory: async_sessionmaker,
             run.error = str(e)
             run.finished_at = _now()
             await s.commit()
+        await _log(session_factory, run_id, "", f"运行失败：{e}", "error")
 
 
 async def _execute(run_id, session_factory, user_sem, cancel_event):
@@ -58,10 +72,12 @@ async def _execute(run_id, session_factory, user_sem, cancel_event):
         user_id = run.user_id
     graph = parse_graph(ver.graph_json)
     validate_graph(graph)
+    await _log(session_factory, run_id, "", "运行开始")
 
     for node in topo_order(graph):
         if cancel_event.is_set():
             return await _finish(session_factory, run_id, "cancelled")
+        await _log(session_factory, run_id, node.id, f"▶ 节点 {node.id} 开始")
         inputs = await _node_inputs(session_factory, run_id, graph, node)
         if node.type == "llm_synth":
             await _run_llm_node(session_factory, run_id, user_id, node, inputs,
@@ -71,6 +87,10 @@ async def _execute(run_id, session_factory, user_sem, cancel_event):
                                user_sem, cancel_event)
         else:
             await _run_barrier_node(session_factory, run_id, user_id, node, inputs)
+        done, failed = await _node_counts(session_factory, run_id, node.id)
+        await _log(session_factory, run_id, node.id,
+                   f"✓ 节点 {node.id} 完成（done={done} failed={failed}）",
+                   "error" if failed else "info")
         if cancel_event.is_set():
             return await _finish(session_factory, run_id, "cancelled")
     await _finish(session_factory, run_id, "completed")
@@ -87,6 +107,8 @@ async def _finish(session_factory, run_id, status):
         run.status = status
         run.finished_at = _now()
         await s.commit()
+    await _log(session_factory, run_id, "",
+               f"运行结束：{status}（prompt={sums[0]} completion={sums[1]}）")
 
 
 async def _node_outputs(session_factory, run_id, node_id) -> list[dict]:

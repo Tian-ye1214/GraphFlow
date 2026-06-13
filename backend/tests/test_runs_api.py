@@ -187,3 +187,20 @@ async def test_startup_resume(auth_client, monkeypatch, session_factory):
     assert count == 1
     await asyncio.sleep(0)  # 让 create_task 调度
     assert len(resumed) == 1
+
+
+async def test_run_emits_node_and_run_logs(auth_client, monkeypatch, session_factory):
+    from sqlalchemy import select
+    from app.models import RunLog
+    patch_chat(monkeypatch)
+    wf_id = await setup_workflow(auth_client)
+    run_id = (await auth_client.post("/api/runs", json={"workflow_id": wf_id})).json()["id"]
+    await wait_run(auth_client, run_id)
+    async with session_factory() as s:
+        logs = (await s.execute(
+            select(RunLog).where(RunLog.run_id == run_id).order_by(RunLog.id))).scalars().all()
+    msgs = [l.message for l in logs]
+    assert any("运行开始" in m for m in msgs)
+    assert any("节点 gen 开始" in m for m in msgs)
+    assert any("节点 gen 完成" in m for m in msgs)
+    assert any("运行结束" in m for m in msgs)
