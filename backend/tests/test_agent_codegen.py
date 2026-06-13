@@ -106,3 +106,22 @@ async def test_sample_skips_foreign_dataset(client, session_factory):
         await s.commit()
         rows, source = await codegen.gather_sample_rows(s, wf.id, "auto_process_1", user_id=2)
     assert source == "none" and rows == []
+
+
+async def test_generate_node_config_llm_synth():
+    from pydantic_ai.models.function import FunctionModel
+    from pydantic_ai.messages import ModelResponse, TextPart
+    out = json.dumps({"system_prompt": "你是翻译", "user_prompt": "翻译:{{q}}", "output_column": "q_en"},
+                     ensure_ascii=False)
+    model = FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(f"```json\n{out}\n```")]))
+    cfg = await codegen.generate_node_config(model, "llm_synth", "把 q 翻译成英文", [{"q": "你好"}])
+    assert cfg == {"system_prompt": "你是翻译", "user_prompt": "翻译:{{q}}", "output_column": "q_en"}
+
+
+async def test_generate_node_config_rejects_unknown_type():
+    import pytest
+    from pydantic_ai.models.function import FunctionModel
+    from pydantic_ai.messages import ModelResponse, TextPart
+    model = FunctionModel(lambda m, i: ModelResponse(parts=[TextPart("{}")]))
+    with pytest.raises(KeyError):
+        await codegen.generate_node_config(model, "input", "x", [])

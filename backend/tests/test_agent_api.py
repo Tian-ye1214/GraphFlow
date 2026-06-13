@@ -133,3 +133,31 @@ async def test_codegen_ownership(auth_client, mc_id):
     r = await auth_client.post("/api/agent/codegen", json={
         "workflow_id": wid, "node_id": "x", "instruction": "y", "model_config_id": 9999})
     assert r.status_code == 422
+
+
+async def test_node_assist_guards(auth_client, monkeypatch):
+    from app.agent import codegen
+
+    async def fake_cfg(model, node_type, instruction, sample_rows):
+        return {"system_prompt": "s", "user_prompt": "翻译:{{q}}", "output_column": "q_en"}
+
+    monkeypatch.setattr(codegen, "generate_node_config", fake_cfg)
+    wf = (await auth_client.post("/api/workflows", json={"name": "w"})).json()
+    mc = (await auth_client.post("/api/models", json={
+        "name": "m", "model_name": "x", "base_url": "http://x", "api_key": "k"})).json()
+    # 成功路径
+    r = await auth_client.post("/api/agent/node-assist", json={
+        "workflow_id": wf["id"], "node_id": "llm_synth_1", "node_type": "llm_synth",
+        "instruction": "翻译", "model_config_id": mc["id"]})
+    assert r.status_code == 200
+    assert r.json()["config"]["output_column"] == "q_en"
+    # 不支持的节点类型
+    r2 = await auth_client.post("/api/agent/node-assist", json={
+        "workflow_id": wf["id"], "node_id": "input_1", "node_type": "input",
+        "instruction": "x", "model_config_id": mc["id"]})
+    assert r2.status_code == 422
+    # 他人工作流 → 404
+    r3 = await auth_client.post("/api/agent/node-assist", json={
+        "workflow_id": 99999, "node_id": "n", "node_type": "qc",
+        "instruction": "x", "model_config_id": mc["id"]})
+    assert r3.status_code == 404

@@ -57,6 +57,28 @@ async def generate_with_repair(model, instruction: str, sample_rows: list[dict])
         return code, None, str(e)
 
 
+NODE_ASSIST_INSTRUCTIONS = {
+    "llm_synth": """你为「LLM 合成」节点写配置：根据用户指令和样本可用列，写一段生成提示词。
+硬性要求：
+- 只输出一个 JSON 对象，不要解释或 markdown 围栏。
+- 形如 {"system_prompt": "...", "user_prompt": "...", "output_column": "..."}。
+- user_prompt 用 {{列名}} 引用样本里的可用列。""",
+    "qc": """你为「质检」节点写判定配置：根据用户指令和样本可用列，写一段判定提示词。
+硬性要求：
+- 只输出一个 JSON 对象，不要解释或 markdown 围栏。
+- 形如 {"system_prompt": "...", "user_prompt": "..."}。
+- 提示词要引导模型只输出 {"pass": true|false, "reason": "<不通过原因>"}。
+- user_prompt 用 {{列名}} 引用样本里的可用列。""",
+}
+
+
+async def generate_node_config(model, node_type: str, instruction: str, sample_rows: list[dict]) -> dict:
+    """临时单 Agent 为指定节点产出配置 JSON（不跑代码，仅生成提示词）。未知 node_type 抛 KeyError。"""
+    agent = create_agent(model, [], NODE_ASSIST_INSTRUCTIONS[node_type])
+    result = await agent.run(_user_prompt(instruction, sample_rows))
+    return json.loads(strip_code_fences(str(result.output or "")))
+
+
 async def gather_sample_rows(s: AsyncSession, workflow_id: int, node_id: str, user_id: int):
     """按优先级取样本：最近一次运行的上游输出 → 上游 input 数据集头部 → 无。返回 (rows, source)。"""
     run = (await s.execute(select(Run).where(Run.workflow_id == workflow_id)
