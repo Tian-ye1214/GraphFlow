@@ -37,6 +37,21 @@ async def test_create_and_get_session(auth_client, mc_id, no_run):
     assert r.json()["messages"] == []
 
 
+async def test_session_title_numbered_per_user(client, no_run):
+    """会话编号按用户独立：每个用户的未命名会话从"会话 1"起，不共用全局自增 id。"""
+    async def mc_for(username):
+        await client.post("/api/auth/login", json={"username": username})
+        return (await client.post("/api/models", json={
+            "name": "m", "model_name": "x", "base_url": "http://l/v1", "api_key": "sk"})).json()["id"]
+
+    a = await mc_for("alice_u")
+    t1 = (await client.post("/api/agent/sessions", json={"model_config_id": a})).json()["title"]
+    t2 = (await client.post("/api/agent/sessions", json={"model_config_id": a})).json()["title"]
+    b = await mc_for("bob_u")  # 切换用户后重新计数
+    t3 = (await client.post("/api/agent/sessions", json={"model_config_id": b})).json()["title"]
+    assert (t1, t2, t3) == ("会话 1", "会话 2", "会话 1")
+
+
 async def test_create_session_per_role_models(auth_client, mc_id, no_run):
     r = await auth_client.post("/api/agent/sessions", json={
         "models": {"coordinator": mc_id, "manager": mc_id, "worker": mc_id}})

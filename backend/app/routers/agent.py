@@ -3,7 +3,7 @@ import shutil
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import delete as sa_delete, select
+from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.codegen import gather_sample_rows, generate_with_repair
@@ -54,7 +54,9 @@ async def create_session(body: SessionIn, request: Request,
                          session: AsyncSession = Depends(get_session)):
     models = body.models or {r: body.model_config_id for r in ROLES}
     await _check_models(models, user, session)
-    sess = AgentSession(user_id=user.id, models_json=json.dumps(models))
+    seq = (await session.scalar(select(func.count()).select_from(AgentSession)
+                                .where(AgentSession.user_id == user.id))) + 1
+    sess = AgentSession(user_id=user.id, title=f"会话 {seq}", models_json=json.dumps(models))
     session.add(sess)
     await session.commit()
     wd = session_dir(sess.id)
@@ -98,9 +100,11 @@ async def post_message(sid: int, body: MessageIn,
     if not text:
         raise HTTPException(status_code=422, detail="消息不能为空")
     await _check_models(json.loads(sess.models_json), user, session)
+    first = (await session.scalar(select(func.count()).select_from(AgentMessage)
+                                  .where(AgentMessage.session_id == sid))) == 0
     session.add(AgentMessage(session_id=sid, role="user",
                              content_json=json.dumps({"text": text}, ensure_ascii=False)))
-    if not sess.title:
+    if first:  # 首条消息把"会话 N"占位标题改为消息预览
         sess.title = text[:30]
     sess.status = "running"
     await session.commit()
