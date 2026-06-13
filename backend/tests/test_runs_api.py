@@ -156,7 +156,8 @@ async def test_create_run_rejects_qc_without_model(auth_client):
     wf = (await auth_client.post("/api/workflows", json={"name": "w"})).json()
     await auth_client.put(f"/api/workflows/{wf['id']}", json={"graph": graph})
     r = await auth_client.post("/api/runs", json={"workflow_id": wf["id"]})
-    assert r.status_code == 422 and "qc_1" in r.json()["detail"]
+    assert r.status_code == 422
+    assert "qc_1" in r.json()["detail"]
 
 
 async def test_startup_resume(auth_client, monkeypatch, session_factory):

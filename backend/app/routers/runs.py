@@ -52,7 +52,8 @@ async def create_run(body: RunCreate, user: User = Depends(get_current_user),
                 if ds is None or ds.user_id != user.id:
                     raise HTTPException(status_code=422, detail=f"节点 {n.id}: 数据集不存在")
         if n.type in ("llm_synth", "qc"):
-            mc = await session.get(ModelConfig, n.config.get("model_config_id"))
+            mc_id = n.config.get("model_config_id")
+            mc = await session.get(ModelConfig, mc_id) if mc_id else None
             if mc is None or mc.user_id != user.id:
                 raise HTTPException(status_code=422, detail=f"节点 {n.id}: 未选择有效的模型配置")
     max_ver = (await session.execute(select(func.max(WorkflowVersion.version)).where(
