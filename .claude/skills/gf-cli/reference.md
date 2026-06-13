@@ -55,16 +55,24 @@
 
 ## 质检回扫（qc 节点 + rescan 边）——支持的，不要回复"做不到"
 
-质检节点按规则判定每行通过/不通过；不通过的行带着失败原因经 **rescan 回扫边** 回到上游 LLM 节点重新生成，最多 N 轮，仍不过则丢弃。这就是「质检不通过 → 回到 LLM 重处理」的有界循环（有向有环图）。
+质检节点用 **LLM 语义判定**每行通过/不通过；不通过的行带着失败原因（`reason`）经 **rescan 回扫边** 回到上游 LLM 节点重新生成，最多 N 轮，仍不过则丢弃。这就是「质检不通过 → 回到 LLM 重处理」的有界循环（有向有环图）。
 
 - 加节点：`gf node add qc`
-- 配置：`gf node set <qc> qc_col=<列> qc_mode=<模式> qc_value=<值> max_rounds=<N> [reason=<原因文本>] [reason_field=<取原因的列名>]`
-  - qc_mode 取值：`min_len`/`max_len`/`contains`/`not_contains`/`regex`/`not_empty`/`equals`。该列满足条件即通过，否则失败。
-  - 失败原因：`reason_field` 优先（逐行取该列，适合「LLM 自评打分/原因列」），否则用 `reason` 固定文案；原因会自动追加进回扫时 LLM 的 user prompt。
+- 配置：`gf node set <qc> model=<模型名> system=<判定系统提示词> prompt=<判定用户提示词,可用{{列名}}> max_rounds=<N> [conc=<并发>]`
+  - 键与 llm_synth 相同：`model`→model_config_id，`system`→system_prompt，`prompt`→user_prompt，`conc`→concurrency，`max_rounds`→max_rounds。
+  - 判定提示词必须引导模型**只输出** JSON：`{"pass": true|false, "reason": "不通过原因"}`。`pass` 为 `true` 则该行通过；`false` 时 `reason` 的内容会自动追加进回扫时上游 LLM 的 user prompt。
 - 回扫边：`gf link <qc> <上游LLM> --kind rescan`（正向边仍是 `gf link <上游LLM> <qc>`）
+- `gf show` 中回扫边显示为 `⟲回扫`
 
-典型「翻译 + 质检回扫」链：`input → llm(译) → qc(译文非空/够长) → output`，外加 `gf link qc_1 llm_synth_1 --kind rescan`。
-**语义质检**：在 qc 前放一个 LLM 节点输出「合格/原因」两列，qc 用 `qc_col=合格 qc_mode=equals qc_value=是 reason_field=原因` 判定。
+典型「翻译 + 质检回扫」链：`input → llm(译) → qc(LLM判定译文达标) → output`，外加 `gf link qc_1 llm_synth_1 --kind rescan`。
+
+示例配置：
+```
+gf node set qc_1 model=通义 \
+  system="判断以下译文是否达标，只输出JSON，格式：{\"pass\":true或false,\"reason\":\"原因\"}" \
+  "prompt=原文:{{src}} 译文:{{a}}" \
+  max_rounds=2 conc=4
+```
 
 ## model（模型配置）
 
