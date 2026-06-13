@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Card, Popconfirm, Progress, Select, Space, Table, Tabs, Tag, message } from 'antd'
 import { useParams } from 'react-router-dom'
 import { api } from '../api/client'
-import type { RowsPage, RunDetail } from '../api/types'
+import type { RowsPage, RunDetail, RunLogEntry } from '../api/types'
+import { formatRunLog } from './runLog'
 import { NODE_LABELS } from '../canvas/serialize'
 import { STATUS_COLORS, STATUS_LABELS } from './RunsPage'
 
@@ -17,6 +18,24 @@ export default function RunDetailPage() {
   const [failedPage, setFailedPage] = useState(1)
   const [failed, setFailed] = useState<RowsPage>({ total: 0, rows: [] })
   const [format, setFormat] = useState('jsonl')
+  const [logs, setLogs] = useState<RunLogEntry[]>([])
+  const refreshLogs = useCallback(
+    () => api.get<RunLogEntry[]>(`/api/runs/${id}/logs`).then(setLogs), [id])
+  useEffect(() => { void refreshLogs() }, [refreshLogs])
+  useEffect(() => {
+    if (!run || !ACTIVE.includes(run.status)) return
+    const t = setInterval(() => void refreshLogs(), 2000)
+    return () => clearInterval(t)
+  }, [run?.status, refreshLogs])
+  const downloadLog = () => {
+    const blob = new Blob([formatRunLog(logs)], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `run${id}.log`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
 
   const refresh = useCallback(() => api.get<RunDetail>(`/api/runs/${id}`).then(setRun), [id])
   useEffect(() => {
@@ -89,6 +108,17 @@ export default function RunDetailPage() {
           </Card>
         ))}
       </Space>
+      <Card size="small" title="运行日志" style={{ marginBottom: 16 }}
+            extra={<Button size="small" onClick={downloadLog} disabled={!logs.length}>下载日志</Button>}>
+        <div style={{ maxHeight: 220, overflow: 'auto', fontFamily: 'monospace', fontSize: 12 }}>
+          {logs.map((l, i) => (
+            <div key={i} style={{ color: l.level === 'error' ? '#ff4d4f' : '#555' }}>
+              [{l.created_at}] {l.message}
+            </div>
+          ))}
+          {!logs.length && <span style={{ color: '#999' }}>暂无日志</span>}
+        </div>
+      </Card>
       {!isActive && (
         <>
           <Space style={{ marginBottom: 8 }}>

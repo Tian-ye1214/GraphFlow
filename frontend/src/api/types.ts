@@ -55,3 +55,5 @@ export interface NodeAssistOut {
   config: Record<string, any>
   sample_source: 'last_run' | 'dataset' | 'none'
 }
+
+export interface RunLogEntry { created_at: string; node_id: string; level: string; message: string }
