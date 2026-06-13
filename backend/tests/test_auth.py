@@ -43,3 +43,17 @@ async def test_admin_flag_set_on_login(client, monkeypatch, session_factory):
         pleb = (await s.execute(select(User).where(User.username == "pleb"))).scalar_one()
     assert boss.is_admin is True
     assert pleb.is_admin is False
+
+
+async def test_act_as_ignored_for_non_admin(client, monkeypatch):
+    from app.auth import make_act_as_cookie
+    victim = (await client.post("/api/auth/login", json={"username": "victim"})).json()
+    await client.post("/api/auth/login", json={"username": "pleb"})  # cookie 现为 pleb
+    client.cookies.set("gf_act_as", make_act_as_cookie(victim["id"]))
+    me = (await client.get("/api/me")).json()
+    assert me["username"] == "pleb"  # 非管理员即便带签名 act-as 也不切换
+
+
+async def test_act_as_cookie_roundtrip():
+    from app.auth import make_act_as_cookie, parse_session_cookie
+    assert parse_session_cookie(make_act_as_cookie(42)) == 42
