@@ -31,7 +31,8 @@ class DevAuthProvider:
         if user is None:
             user = User(username=username, display_name=username, auth_provider="dev")
             session.add(user)
-            await session.commit()
+        user.is_admin = username in settings.admin_user_set
+        await session.commit()
         return user
 
 

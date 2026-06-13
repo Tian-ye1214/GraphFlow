@@ -19,6 +19,7 @@ class User(Base):
     display_name: Mapped[str] = mapped_column(default="")
     auth_provider: Mapped[str] = mapped_column(default="dev")
     max_llm_concurrency: Mapped[int] = mapped_column(default=8)
+    is_admin: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 

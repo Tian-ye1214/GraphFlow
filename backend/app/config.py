@@ -9,6 +9,11 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
     secret_key: str = "dev-secret-change-me"
     agent_goal_max_rounds: int = 20
+    admin_users: str = ""  # 逗号分隔的管理员用户名白名单
+
+    @property
+    def admin_user_set(self) -> set[str]:
+        return {u.strip() for u in self.admin_users.split(",") if u.strip()}
 
     @property
     def db_url(self) -> str:
