@@ -157,6 +157,23 @@ async def start_goal(sid: int, body: GoalIn, user: User = Depends(get_current_us
     return {"ok": True}
 
 
+@router.delete("/sessions")
+async def delete_all_sessions(user: User = Depends(get_current_user),
+                              session: AsyncSession = Depends(get_session)):
+    sessions = (await session.execute(select(AgentSession).where(
+        AgentSession.user_id == user.id))).scalars().all()
+    sids = [s.id for s in sessions]
+    for sid in sids:
+        turn_manager.cancel(sid)
+    if sids:
+        await session.execute(sa_delete(AgentMessage).where(AgentMessage.session_id.in_(sids)))
+        await session.execute(sa_delete(AgentSession).where(AgentSession.id.in_(sids)))
+        await session.commit()
+        for sid in sids:
+            shutil.rmtree(session_dir(user.username, sid), ignore_errors=True)
+    return {"deleted": len(sids)}
+
+
 @router.delete("/sessions/{sid}")
 async def delete_session(sid: int, user: User = Depends(get_current_user),
                          session: AsyncSession = Depends(get_session)):

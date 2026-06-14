@@ -145,6 +145,25 @@ async def run_qc_failures(run_id: int, node_id: str | None = None, limit: int = 
             for f in rows]
 
 
+@router.delete("")
+async def delete_all_runs(user: User = Depends(get_current_user),
+                          session: AsyncSession = Depends(get_session)):
+    runs = (await session.execute(select(Run).where(
+        Run.user_id == user.id, Run.status.notin_(("queued", "running"))))).scalars().all()
+    run_ids = [r.id for r in runs]
+    ver_ids = [r.workflow_version_id for r in runs]
+    if run_ids:
+        for Model in (RunRow, RunNodeState, RunLog, QcMetric, QcFailure):
+            await session.execute(sa_delete(Model).where(Model.run_id.in_(run_ids)))
+        await session.execute(sa_delete(Run).where(Run.id.in_(run_ids)))
+        await session.execute(sa_delete(WorkflowVersion).where(WorkflowVersion.id.in_(ver_ids)))
+        await session.commit()
+        for rid in run_ids:
+            for p in (settings.data_dir / "exports").glob(f"run{rid}_*"):
+                p.unlink(missing_ok=True)
+    return {"deleted": len(run_ids)}
+
+
 @router.delete("/{run_id}")
 async def delete_run(run_id: int, user: User = Depends(get_current_user),
                      session: AsyncSession = Depends(get_session)):
