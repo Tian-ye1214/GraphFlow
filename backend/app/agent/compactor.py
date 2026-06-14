@@ -30,9 +30,8 @@ def _strip_to_text(history: list) -> str:
 
 async def _default_summarize(compactor_mc, text: str) -> str:
     from app.services import llm
-    system = ("你是上下文压缩器。把下面的 Agent 工作历史压缩成简洁结构化摘要，"
-              "必须包含两节：【已完成】列已达成的目标/产出；【待完成】列尚未完成的任务/已知问题。"
-              "只保留对继续推进有用的结论，删除寒暄与中间过程。")
+    from app.agent.prompts import load_prompt
+    system = load_prompt("compactor_system.md")
     out, _usage = await llm.chat(compactor_mc, system, text, params={}, retries=2)
     return out
 

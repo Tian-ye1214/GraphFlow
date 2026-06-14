@@ -3,9 +3,12 @@ import json as _json
 import random
 import re
 
+from app.agent.prompts import load_prompt
 from app.engine import pycode
 from app.models import ModelConfig
 from app.services import llm
+
+QC_EMPTY_ANCHOR = "\n\n" + load_prompt("qc_empty_anchor.md")
 
 
 def _dedup(rows, op, rng):
@@ -164,8 +167,7 @@ async def run_qc_judge_row(config: dict, row: dict, mcs: list[ModelConfig], pass
     base = {k: v for k, v in row.items() if not k.startswith("_qc")}
     if not any(str(v).strip() for v in base.values()):   # 空/全空白样本：直接判不通过，不调 judge
         return False, "样本内容为空", {"prompt_tokens": 0, "completion_tokens": 0}, []
-    system = render_template(config.get("system_prompt", ""), base) + \
-        "\n\n硬性规则：若待判定内容为空或缺少必要字段，必须返回 pass:false。"
+    system = render_template(config.get("system_prompt", ""), base) + QC_EMPTY_ANCHOR
     user = render_template(config.get("user_prompt", ""), base)
     params = {"temperature": 0, **config.get("params", {}), "json_mode": True}
     retries = config.get("retries", 3)
