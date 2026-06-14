@@ -110,6 +110,15 @@ async def test_generate_node_config_llm_synth():
     assert cfg == {"system_prompt": "你是翻译", "user_prompt": "翻译:{{q}}", "output_column": "q_en"}
 
 
+async def test_generate_node_config_llm_synth_json_mode():
+    out = json.dumps({"system_prompt": "你是翻译", "user_prompt": "翻译 {{q}} {{category}}",
+                      "output_mode": "json", "output_columns": ["q_en", "category_en"]},
+                     ensure_ascii=False)
+    model = FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(out)]))
+    cfg = await codegen.generate_node_config(model, "llm_synth", "把 q、category 翻译成英文拆两列", ["q", "category"])
+    assert cfg["output_mode"] == "json" and cfg["output_columns"] == ["q_en", "category_en"]
+
+
 async def test_generate_node_config_rejects_unknown_type():
     import pytest
     model = FunctionModel(lambda m, i: ModelResponse(parts=[TextPart("{}")]))
