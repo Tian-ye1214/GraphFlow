@@ -30,6 +30,14 @@ async def test_upload_bad_file_422(auth_client):
     assert "bad.txt" in r.json()["detail"]
 
 
+async def test_upload_non_object_records_422(auth_client):
+    """非对象记录（标量/null/数组/混入裸值）应 422，而非 500 或静默生成损坏数据集。"""
+    for name, content in [("s.json", b"42"), ("n.json", b"null"), ("arr.json", b"[1,2,3]"),
+                          ("str.json", b'"hi"'), ("bare.jsonl", b'{"q":1}\n99\n')]:
+        r = await upload(auth_client, (name, content))
+        assert r.status_code == 422, f"{name} 应 422，实得 {r.status_code}"
+
+
 async def test_rows_pagination(auth_client):
     ds = (await upload(auth_client, ("a.jsonl", JSONL))).json()[0]
     r = (await auth_client.get(f"/api/datasets/{ds['id']}/rows?page=2&page_size=2")).json()

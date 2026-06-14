@@ -46,6 +46,21 @@ def test_csv_numeric_json_serializable():
         json.dumps(row, ensure_ascii=False)
 
 
+def test_csv_preserves_strings_no_type_coercion():
+    """CSV 不再静默推断类型：前导零/超长 ID/布尔字面量 一律按字符串保真（与 JSONL 一致）。"""
+    rows = parse_file("a.csv", b"phone,flag,big\n007,true,12345678901234567890\n")
+    assert rows == [{"phone": "007", "flag": "true", "big": "12345678901234567890"}]
+
+
+def test_non_object_records_rejected():
+    """标量/null/数组/混入裸值的 JSON/JSONL 应抛 ValueError（上传路径转 422）。"""
+    for content in (b"42", b"null", b"[1, 2, 3]", b'"hi"'):
+        with pytest.raises(ValueError, match="JSON 对象"):
+            parse_file("x.json", content)
+    with pytest.raises(ValueError, match="JSON 对象"):
+        parse_file("x.jsonl", b'{"q": 1}\n99\n')
+
+
 def test_xlsx_numeric_json_serializable():
     buf = io.BytesIO()
     pd.DataFrame([{"n": 1, "x": 2.5}]).to_excel(buf, index=False)

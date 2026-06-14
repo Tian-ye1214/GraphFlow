@@ -107,6 +107,7 @@ def test_qc_passthrough_and_rescan_ignored():
 
 
 def test_ordered_union_dedupes_across_upstreams():
+    # 多父节点=并行分支汇合(merge)：每行并入各支列 → 血缘取并集（执行端按行合并，union 如实）
     g = _g(
         [{"id": "a", "type": "input", "config": {"dataset_ids": [1]}},
          {"id": "b", "type": "input", "config": {"dataset_ids": [2]}},
@@ -115,6 +116,16 @@ def test_ordered_union_dedupes_across_upstreams():
          {"source": "b", "target": "out", "kind": "normal"}])
     cols = propagate_columns(g, {1: ["id", "q"], 2: ["id", "x"]})
     assert cols["out"]["input"] == ["id", "q", "x"]
+
+
+def test_input_multi_dataset_uses_intersection():
+    """单 input 节点选多数据集=纵向堆叠(行异构)：血缘取交集（每行都有的列），不虚报并集。"""
+    g = _g([{"id": "in", "type": "input", "config": {"dataset_ids": [1, 2]}},
+            {"id": "out", "type": "output", "config": {}}],
+           [{"source": "in", "target": "out", "kind": "normal"}])
+    cols = propagate_columns(g, {1: ["id", "q"], 2: ["id", "text"]})
+    assert cols["in"]["output"] == ["id"]
+    assert cols["out"]["input"] == ["id"]
 
 
 def test_empty_graph():

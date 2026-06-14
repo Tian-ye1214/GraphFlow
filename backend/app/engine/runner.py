@@ -129,10 +129,32 @@ async def _node_outputs(session_factory, run_id, node_id) -> list[dict]:
 
 
 async def _node_inputs(session_factory, run_id, graph: Graph, node: Node) -> list[dict]:
-    rows: list[dict] = []
-    for uid in upstream_ids(graph, node.id):
-        rows.extend(await _node_outputs(session_factory, run_id, uid))
-    return rows
+    parents = upstream_ids(graph, node.id)
+    branches = [await _node_outputs(session_factory, run_id, uid) for uid in parents]
+    if len(branches) <= 1:
+        return branches[0] if branches else []
+    return _merge_branches(node.id, branches)
+
+
+def _merge_branches(node_id: str, branches: list[list[dict]]) -> list[dict]:
+    """并行分支汇合：按行号横向合并，每行并入各上游的列（同一批行分头加工后再并列）。
+    要求各支行数一致、同名列取值不冲突；否则结构性报错让整 run 失败（信息明确）。
+    要把不同的数据「堆叠」成更大集合，请在 input 节点选多个数据集，而非多分支汇入。"""
+    counts = [len(b) for b in branches]
+    if len(set(counts)) > 1:
+        raise ValueError(f"节点 {node_id}: 多个上游行数不一致 {counts}，无法按行合并"
+                         f"（某分支的 fanout/过滤/质检改变了行数）")
+    merged: list[dict] = []
+    for i in range(counts[0]):
+        row: dict = {}
+        for b in branches:
+            for k, v in b[i].items():
+                if k in row and row[k] != v:
+                    raise ValueError(f"节点 {node_id}: 第 {i} 行列 '{k}' 在多个上游取值不同，"
+                                     f"无法合并（请为各分支产出列改用不同列名）")
+                row[k] = v
+        merged.append(row)
+    return merged
 
 
 async def _write_unit(session_factory, run_id, node_id, row_idx, status, out_rows, error,

@@ -167,12 +167,13 @@ async def test_dedup_none_session_not_collide_with_literal_none(auth_client, mon
 
 # ── 重复列名 / 诡异模板（诚实记录，非 bug 则作回归护栏）──────────────────────────
 async def test_csv_duplicate_columns_disambiguated_no_data_loss(auth_client):
-    """CSV 重复表头 a,a：pandas 自动消歧为 a / a.1，两列数据都在（非 bug，作护栏）。"""
+    """CSV 重复表头 a,a：pandas 自动消歧为 a / a.1，两列数据都在（非 bug，作护栏）。
+    值按 dtype=str 保真为字符串（不再静默推断为数字）。"""
     csv = "a,a\n1,2\n".encode("utf-8")
     ds = (await _upload(auth_client, csv, "dup.csv")).json()[0]
     assert ds["columns"] == ["a", "a.1"]
     rows = (await auth_client.get(f"/api/datasets/{ds['id']}/rows")).json()["rows"]
-    assert rows[0] == {"a": 1, "a.1": 2}
+    assert rows[0] == {"a": "1", "a.1": "2"}
 
 
 async def test_weird_templates_dotted_missing_and_no_reexpand(auth_client, monkeypatch, session_factory):

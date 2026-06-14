@@ -14,6 +14,16 @@ def _ordered_union(lists: list[list[str]]) -> list[str]:
     return out
 
 
+def _ordered_intersection(lists: list[list[str]]) -> list[str]:
+    """各列表的交集，保第一个列表的顺序。空入参→[]。"""
+    if not lists:
+        return []
+    common = set(lists[0])
+    for lst in lists[1:]:
+        common &= set(lst)
+    return [c for c in lists[0] if c in common]
+
+
 def _apply_op(cols: list[str], op: dict) -> list[str]:
     kind = op.get("op")
     if kind == "rename":
@@ -34,7 +44,9 @@ def _apply_op(cols: list[str], op: dict) -> list[str]:
 def _node_output(node, input_cols: list[str], dataset_cols: dict[int, list[str]]) -> list[str]:
     t = node.type
     if t == "input":
-        return _ordered_union([dataset_cols.get(d, []) for d in node.config.get("dataset_ids", [])])
+        # input 节点多数据集=纵向堆叠（行异构）：只保「每行都有」的列=交集，不虚报。
+        present = [dataset_cols[d] for d in node.config.get("dataset_ids", []) if d in dataset_cols]
+        return _ordered_intersection(present)
     if t == "llm_synth":
         if node.config.get("output_mode") == "json":
             return _ordered_union([input_cols, node.config.get("output_columns") or []])

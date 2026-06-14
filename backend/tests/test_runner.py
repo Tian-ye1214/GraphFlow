@@ -245,6 +245,60 @@ async def test_barrier_crash_window_repairs_state(session_factory, monkeypatch):
     assert ns.status == "done" and ns.done == 1
 
 
+DIAMOND_GRAPH = {
+    "nodes": [
+        {"id": "in", "type": "input", "config": {"dataset_ids": []}},
+        {"id": "A", "type": "llm_synth",
+         "config": {"model_config_id": 0, "user_prompt": "A:{{q}}", "output_column": "a"}},
+        {"id": "B", "type": "llm_synth",
+         "config": {"model_config_id": 0, "user_prompt": "B:{{q}}", "output_column": "b"}},
+        {"id": "out", "type": "output", "config": {}},
+    ],
+    "edges": [{"source": "in", "target": "A", "kind": "normal"},
+              {"source": "in", "target": "B", "kind": "normal"},
+              {"source": "A", "target": "out", "kind": "normal"},
+              {"source": "B", "target": "out", "kind": "normal"}],
+}
+
+
+async def test_merge_branches_combines_columns(session_factory, monkeypatch):
+    """并行两分支汇入一个节点：按行合并成每行都含 a&b（不是堆叠成 6 行）。"""
+    patch_chat(monkeypatch, lambda u: (("a值" if u.startswith("A:") else "b值"),
+                                       {"prompt_tokens": 1, "completion_tokens": 1}))
+    run_id = await make_run(session_factory, graph=DIAMOND_GRAPH, rows=3)
+    await run_it(session_factory, run_id)
+    assert (await get_run(session_factory, run_id)).status == "completed"
+    out_rows = await runner._node_outputs(session_factory, run_id, "out")
+    assert len(out_rows) == 3                                    # 合并而非堆叠
+    assert all({"q", "a", "b"} <= set(r) for r in out_rows)     # 每行都同时拥有 a 和 b
+    assert out_rows[0] == {"q": "问0", "a": "a值", "b": "b值"}
+
+
+async def test_merge_row_count_mismatch_fails(session_factory, monkeypatch):
+    """某分支 fanout 改了行数 → 两支对不齐 → 结构性报错，整 run failed。"""
+    patch_chat(monkeypatch, lambda u: ("v", {"prompt_tokens": 1, "completion_tokens": 1}))
+    graph = json.loads(json.dumps(DIAMOND_GRAPH))
+    next(n for n in graph["nodes"] if n["id"] == "A")["config"]["fanout_n"] = 2
+    run_id = await make_run(session_factory, graph=graph, rows=3)
+    await run_it(session_factory, run_id)
+    run = await get_run(session_factory, run_id)
+    assert run.status == "failed" and "行数不一致" in run.error
+
+
+async def test_merge_column_conflict_fails(session_factory, monkeypatch):
+    """两分支产出同名列且取值不同 → 合并冲突 → 整 run failed。"""
+    patch_chat(monkeypatch, lambda u: (("甲" if u.startswith("A:") else "乙"),
+                                       {"prompt_tokens": 1, "completion_tokens": 1}))
+    graph = json.loads(json.dumps(DIAMOND_GRAPH))
+    for n in graph["nodes"]:
+        if n["id"] in ("A", "B"):
+            n["config"]["output_column"] = "ans"               # 同名产出列
+    run_id = await make_run(session_factory, graph=graph, rows=2)
+    await run_it(session_factory, run_id)
+    run = await get_run(session_factory, run_id)
+    assert run.status == "failed" and "取值不同" in run.error
+
+
 async def test_rescan_fanout_no_inflation(session_factory, monkeypatch):
     """回扫目标带 fanout_n>1：回扫应一行换一行，不得让通过数超过输入、failed 计负、产物翻倍。"""
     def fn(user):
