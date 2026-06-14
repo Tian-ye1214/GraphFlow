@@ -332,7 +332,7 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
         if failed:                                # 最终仍失败样本落库
             async with session_factory() as s:
                 for fr in failed:
-                    sample = {k: v for k, v in fr.items() if not k.startswith("_qc")}
+                    sample = nodes.strip_qc_internal(fr)
                     s.add(QcFailure(run_id=run_id, node_id=node.id,
                                     sample_json=json.dumps(sample, ensure_ascii=False),
                                     reasons_json=json.dumps(fr.get("_qc_per_model", []),

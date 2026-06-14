@@ -121,10 +121,19 @@ def render_template(template: str, row: dict) -> str:
     return TEMPLATE_RE.sub(lambda m: str(row.get(m.group(1), "")), template)
 
 
+# 运行期注入的内部 QC 簿记列：渲染/判定/落库前剔除。只剔这两个确切键——
+# 用旧的 startswith("_qc") 会把用户同前缀列（如 _qc_score）一并静默吃掉。
+_QC_INTERNAL_KEYS = ("_qc_reason", "_qc_per_model")
+
+
+def strip_qc_internal(row: dict) -> dict:
+    return {k: v for k, v in row.items() if k not in _QC_INTERNAL_KEYS}
+
+
 async def run_llm_synth_row(config: dict, row: dict, mc: ModelConfig,
                             user_sem: asyncio.Semaphore) -> tuple[list[dict], dict]:
     """处理一条输入行：扇出 fanout_n 次调用，返回 (输出行列表, usage 汇总)。失败抛异常由 runner 记为行失败。"""
-    base = {k: v for k, v in row.items() if not k.startswith("_qc")}
+    base = strip_qc_internal(row)
     system = render_template(config.get("system_prompt", ""), base)
     user = render_template(config.get("user_prompt", ""), base)
     if row.get("_qc_reason"):
@@ -172,7 +181,7 @@ async def run_qc_judge_row(config: dict, row: dict, mcs: list[ModelConfig], pass
                            user_sem: asyncio.Semaphore) -> tuple[bool, str, dict, list]:
     """多模型 K-of-N 质检判定：N 个模型共用提示词并发判定，≥pass_k 个通过即整行通过。
     返回 (是否通过, 聚合理由, usage 汇总, per_model 列表)。"""
-    base = {k: v for k, v in row.items() if not k.startswith("_qc")}
+    base = strip_qc_internal(row)
     if not any(str(v).strip() for v in base.values()):   # 空/全空白样本：直接判不通过，不调 judge
         return False, "样本内容为空", {"prompt_tokens": 0, "completion_tokens": 0}, []
     system = render_template(config.get("system_prompt", ""), base) + QC_EMPTY_ANCHOR
