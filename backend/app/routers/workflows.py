@@ -7,6 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
 from app.db import get_session
+from app.engine.columns import propagate_columns, resolve_dataset_cols
+from app.engine.graph import parse_graph
 from app.events import publish
 from app.models import User, Workflow
 
@@ -58,6 +60,15 @@ async def create_workflow(body: WorkflowCreate, user: User = Depends(get_current
 async def get_workflow(wf_id: int, user: User = Depends(get_current_user),
                        session: AsyncSession = Depends(get_session)):
     return _out(await get_owned_workflow(wf_id, user, session))
+
+
+@router.get("/{wf_id}/columns")
+async def workflow_columns(wf_id: int, user: User = Depends(get_current_user),
+                           session: AsyncSession = Depends(get_session)):
+    wf = await get_owned_workflow(wf_id, user, session)
+    graph = parse_graph(wf.graph_json)
+    dataset_cols = await resolve_dataset_cols(session, graph, user.id)
+    return propagate_columns(graph, dataset_cols)
 
 
 @router.put("/{wf_id}")
