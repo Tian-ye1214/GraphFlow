@@ -1,6 +1,8 @@
-"""目标优化循环的纯函数：跳出判定与轮次提示构造（便于单测，无 I/O）。"""
+"""目标优化循环：跳出判定（纯函数）与轮次提示构造（从 prompts 读模板）。"""
 import json
 from dataclasses import dataclass
+
+from app.agent.prompts import load_prompt
 
 
 @dataclass
@@ -32,17 +34,9 @@ def decide(*, metric, threshold, best, no_improve, no_improve_k) -> Decision:
 def build_round_prompt(goal_text: str, metric, failures: list, run_id: int) -> str:
     metric_str = "（首轮尚无指标）" if metric is None else f"{metric:.1%}"
     fail_str = json.dumps(failures, ensure_ascii=False, indent=2) if failures else "（无失败样本）"
-    return (f"[目标]\n{goal_text}\n\n"
-            f"[上一轮运行 #{run_id} 实测：首轮质检通过率 = {metric_str}]\n\n"
-            f"[真实质检失败样本抽样（含各判定模型理由）]\n{fail_str}\n\n"
-            "请先**凝练通用经验**：从这些失败样本中归纳出可推广的规律（而不是针对单条样本打补丁），"
-            "再据此用 gf 命令改进当前工作流的提示词/参数（必要时调整链路）。改完即结束本回合，"
-            "系统会自动跑数并把新指标喂给你。仍需继续时回复末尾输出 "
-            "`<!-- REDLOTUS_GOAL:CONTINUE -->`；若判断目标不可达请输出 `<!-- REDLOTUS_GOAL:DONE -->`。")
+    return load_prompt("goal_round.md").format(
+        goal_text=goal_text, run_id=run_id, metric_str=metric_str, fail_str=fail_str)
 
 
 def first_round_prompt(goal_text: str) -> str:
-    return (f"[目标]\n{goal_text}\n\n"
-            "这是目标优化模式第一轮。请先用 gf 查看当前工作流结构与质检节点，"
-            "凝练你对如何达成目标的初步判断，再改进提示词/参数。改完结束回合，系统会自动跑数。"
-            "回复末尾输出 `<!-- REDLOTUS_GOAL:CONTINUE -->`。")
+    return load_prompt("goal_first_round.md").format(goal_text=goal_text)
