@@ -16,7 +16,8 @@ def _dedup(rows, op, rng):
     all_cols = cols or sorted({k for r in rows for k in r})
     seen, out = set(), []
     for row in rows:
-        key = tuple(str(row.get(c)) for c in all_cols)
+        # 用 JSON 串作键：None→"null" 与字符串 "None" 不撞键，且兼容嵌套（list/dict）值。
+        key = tuple(_json.dumps(row.get(c), ensure_ascii=False, sort_keys=True) for c in all_cols)
         if key not in seen:
             seen.add(key)
             out.append(row)
@@ -118,7 +119,12 @@ TEMPLATE_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 
 
 def render_template(template: str, row: dict) -> str:
-    return TEMPLATE_RE.sub(lambda m: str(row.get(m.group(1), "")), template)
+    # 缺失值（CSV 空单元格 → NaN → None）渲染成空串，而非字面量 "None" 污染提示词。
+    return TEMPLATE_RE.sub(lambda m: _cell(row.get(m.group(1))), template)
+
+
+def _cell(v) -> str:
+    return "" if v is None else str(v)
 
 
 # 运行期注入的内部 QC 簿记列：渲染/判定/落库前剔除。只剔这两个确切键——
