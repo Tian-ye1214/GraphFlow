@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Button, Collapse, Drawer, FloatButton, Input, Select, Space, Spin, Tag, message } from 'antd'
+import { Button, Collapse, Drawer, FloatButton, Input, Popconfirm, Select, Space, Spin, Switch, Tag, message } from 'antd'
 import ReactMarkdown from 'react-markdown'
 import { api } from '../api/client'
 import { useEvents } from '../api/events'
@@ -22,6 +22,7 @@ export default function AgentDrawer() {
   const [streaming, setStreaming] = useState('')
   const [liveTools, setLiveTools] = useState<AgentToolContent[]>([])
   const [goalRound, setGoalRound] = useState(0)
+  const [goalMode, setGoalMode] = useState(false)
   const [goalText, setGoalText] = useState('')
   const [goalWf, setGoalWf] = useState<number>()
   const [workflows, setWorkflows] = useState<{ id: number; name: string }[]>([])
@@ -41,6 +42,22 @@ export default function AgentDrawer() {
     setMetrics([])
     await refreshDetail(sid)
   }, [refreshDetail])
+
+  const deleteSession = async (sid: number) => {
+    await api.del(`/api/agent/sessions/${sid}`)
+    const rest = sessions.filter((x) => x.id !== sid)
+    setSessions(rest)
+    if (sessionIdRef.current === sid) {
+      sessionIdRef.current = null
+      if (rest.length) await selectSession(rest[0].id)
+      else setDetail(null)
+    }
+  }
+  const deleteAllSessions = async () => {
+    await api.del('/api/agent/sessions')
+    setSessions([]); sessionIdRef.current = null; setDetail(null)
+    message.success('已清空会话')
+  }
 
   useEffect(() => {
     if (!open) return
@@ -188,6 +205,16 @@ export default function AgentDrawer() {
                           value={modelSel} onChange={setModelSel}
                           options={models.map((m) => ({ value: m.id, label: m.name }))} />
                   <Button size="small" type="text" onClick={() => setAdvanced(!advanced)}>高级</Button>
+                  <Popconfirm title="删除当前会话？" disabled={!detail}
+                              onConfirm={() => detail && void deleteSession(detail.id)}>
+                    <Button size="small" danger disabled={!detail}>删除会话</Button>
+                  </Popconfirm>
+                  <Popconfirm title="清空全部会话？" onConfirm={() => void deleteAllSessions()}>
+                    <Button size="small" danger>清空全部</Button>
+                  </Popconfirm>
+                  <span style={{ fontSize: 12 }}>目标模式
+                    <Switch size="small" style={{ marginLeft: 4 }} checked={goalMode}
+                            onChange={setGoalMode} /></span>
                 </Space>
               }>
         {advanced && (
@@ -197,6 +224,17 @@ export default function AgentDrawer() {
                       value={roleSel[r]} onChange={(v) => setRoleSel({ ...roleSel, [r]: v })}
                       options={models.map((m) => ({ value: m.id, label: `${r}: ${m.name}` }))} />
             ))}
+          </Space>
+        )}
+        {goalMode && detail && !running && (
+          <Space style={{ marginBottom: 8 }} wrap>
+            <Select size="small" style={{ width: 160 }} placeholder="目标工作流"
+                    value={goalWf} onChange={setGoalWf}
+                    options={workflows.map((w) => ({ value: w.id, label: w.name }))} />
+            <Input size="small" style={{ width: 280 }}
+                   placeholder="一句话目标，如：把首轮质检通过率提到 90%"
+                   value={goalText} onChange={(e) => setGoalText(e.target.value)} />
+            <Button size="small" type="primary" onClick={() => void startGoal()}>启动目标</Button>
           </Space>
         )}
         <div style={{ height: 'calc(100% - 120px)', overflowY: 'auto' }}>
@@ -213,16 +251,6 @@ export default function AgentDrawer() {
               {goalRound > 0 && <Button size="small" danger onClick={() => void stop()}>停止</Button>}
             </Space>
           )}
-        {detail && !running && (
-          <Space.Compact style={{ width: '100%', marginBottom: 6 }}>
-            <Select size="small" style={{ width: 140 }} placeholder="目标工作流"
-                    value={goalWf} onChange={setGoalWf}
-                    options={workflows.map((w) => ({ value: w.id, label: w.name }))} />
-            <Input size="small" placeholder="一句话目标，如：把首轮质检通过率提到 90%"
-                   value={goalText} onChange={(e) => setGoalText(e.target.value)} />
-            <Button size="small" type="primary" onClick={() => void startGoal()}>目标模式</Button>
-          </Space.Compact>
-        )}
         {metrics.length > 0 && (
           <div style={{ fontSize: 12, color: '#555', marginBottom: 6 }}>
             {metrics.map((m) => (
