@@ -44,14 +44,42 @@ def test_llm_synth_json_mode_uses_declared_output_columns():
     assert cols["qc"]["input"] == ["id", "q", "category", "q_en", "category_en"]
 
 
-def test_auto_process_agent_op_adds_declared_columns():
+def test_auto_process_agent_op_replaces_with_declared_columns():
+    """agent 操作声明=运行后的完整列集合（替换，非并入）：声明 q_english 即只剩 q_english。"""
     g = _g(
         [{"id": "in", "type": "input", "config": {"dataset_ids": [1]}},
          {"id": "ap", "type": "auto_process",
           "config": {"operations": [{"op": "agent", "code": "x", "output_columns": ["q_english"]}]}}],
         [{"source": "in", "target": "ap", "kind": "normal"}])
     cols = propagate_columns(g, {1: ["q"]})
-    assert cols["ap"]["output"] == ["q", "q_english"]
+    assert cols["ap"]["output"] == ["q_english"]
+
+
+def test_auto_process_agent_op_empty_declaration_passthrough():
+    """未声明产出列（[]）→ 透传输入，不静默造列。"""
+    g = _g(
+        [{"id": "in", "type": "input", "config": {"dataset_ids": [1]}},
+         {"id": "ap", "type": "auto_process",
+          "config": {"operations": [{"op": "agent", "code": "x", "output_columns": []}]}}],
+        [{"source": "in", "target": "ap", "kind": "normal"}])
+    cols = propagate_columns(g, {1: ["id", "q", "category"]})
+    assert cols["ap"]["output"] == ["id", "q", "category"]
+
+
+def test_workflow2_delete_all_keep_one():
+    """复刻 workflow 2：llm column→q_english 后接 agent 替换为 [q_english]，下游 output 只见 q_english。"""
+    g = _g(
+        [{"id": "in", "type": "input", "config": {"dataset_ids": [1]}},
+         {"id": "ls", "type": "llm_synth", "config": {"output_mode": "column", "output_column": "q_english"}},
+         {"id": "ap", "type": "auto_process",
+          "config": {"operations": [{"op": "agent", "code": "x", "output_columns": ["q_english"]}]}},
+         {"id": "out", "type": "output", "config": {}}],
+        [{"source": "in", "target": "ls", "kind": "normal"},
+         {"source": "ls", "target": "ap", "kind": "normal"},
+         {"source": "ap", "target": "out", "kind": "normal"}])
+    cols = propagate_columns(g, {1: ["id", "q", "category"]})
+    assert cols["ap"]["output"] == ["q_english"]
+    assert cols["out"]["input"] == ["q_english"]
 
 
 def test_auto_process_rename_drop_concat():

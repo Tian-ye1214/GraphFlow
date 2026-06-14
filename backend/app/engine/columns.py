@@ -26,7 +26,8 @@ def _apply_op(cols: list[str], op: dict) -> list[str]:
         target = op.get("target")
         return cols + [target] if target and target not in cols else cols
     if kind == "agent":
-        return _ordered_union([cols, op.get("output_columns") or []])
+        declared = op.get("output_columns") or []
+        return _ordered_union([declared]) if declared else cols
     return cols  # dedup/filter/cast/sample/shuffle 不改列集合
 
 
