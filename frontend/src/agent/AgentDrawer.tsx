@@ -44,19 +44,23 @@ export default function AgentDrawer() {
   }, [refreshDetail])
 
   const deleteSession = async (sid: number) => {
-    await api.del(`/api/agent/sessions/${sid}`)
-    const rest = sessions.filter((x) => x.id !== sid)
-    setSessions(rest)
-    if (sessionIdRef.current === sid) {
-      sessionIdRef.current = null
-      if (rest.length) await selectSession(rest[0].id)
-      else setDetail(null)
-    }
+    try {
+      await api.del(`/api/agent/sessions/${sid}`)
+      const rest = sessions.filter((x) => x.id !== sid)
+      setSessions(rest)
+      if (sessionIdRef.current === sid) {
+        sessionIdRef.current = null
+        if (rest.length) await selectSession(rest[0].id)
+        else setDetail(null)
+      }
+    } catch (e) { message.error((e as Error).message) }
   }
   const deleteAllSessions = async () => {
-    await api.del('/api/agent/sessions')
-    setSessions([]); sessionIdRef.current = null; setDetail(null)
-    message.success('已清空会话')
+    try {
+      await api.del('/api/agent/sessions')
+      setSessions([]); sessionIdRef.current = null; setDetail(null)
+      message.success('已清空会话')
+    } catch (e) { message.error((e as Error).message) }
   }
 
   useEffect(() => {
