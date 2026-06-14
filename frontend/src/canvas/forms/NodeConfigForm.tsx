@@ -49,7 +49,7 @@ function liveOutput(type: string, config: Record<string, any>, inputCols: string
       if (op.op === 'rename') { const map = op.mapping ?? {}; cols = cols.map((c) => map[c] ?? c) }
       else if (op.op === 'drop') { const d = new Set(op.columns ?? []); cols = cols.filter((c) => !d.has(c)) }
       else if (op.op === 'concat') { if (op.target && !cols.includes(op.target)) cols = [...cols, op.target] }
-      else if (op.op === 'agent') { cols = uniq([...cols, ...(op.output_columns ?? [])]) }
+      else if (op.op === 'agent') { cols = op.output_columns?.length ? uniq(op.output_columns) : cols }
     }
     return cols
   }
@@ -364,7 +364,7 @@ function AgentOpFields({ op, update, workflowId, nodeId }: {
       )}
       {op.code && (
         <div style={{ marginTop: 8 }}>
-          <div style={{ color: '#666', fontSize: 12, marginBottom: 4 }}>产出列（本操作新增的列，AI 已填，可改）</div>
+          <div style={{ color: '#666', fontSize: 12, marginBottom: 4 }}>产出列（本操作运行后的全部列，AI 已填，可改）</div>
           <Select mode="tags" style={{ width: '100%' }} value={op.output_columns ?? []}
                   onChange={(v) => update({ output_columns: v })} placeholder="如 q_english" />
         </div>
