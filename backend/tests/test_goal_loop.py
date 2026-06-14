@@ -26,3 +26,12 @@ def test_round_prompt_includes_metric_and_failures_and_distill():
     assert "0.6" in p or "60" in p
     assert "凝练" in p and "打补丁" in p           # 凝练经验、非打补丁
     assert "q" in p
+
+
+def test_goal_prompts_forbid_gaming_data_and_qc():
+    """护栏：目标提示词必须禁止 agent 改输入数据/放宽质检判定标准（防 Goodhart 刷分作弊）。"""
+    p1 = gl.first_round_prompt("目标X")
+    p2 = gl.build_round_prompt("目标X", metric=0.5, failures=[], run_id=1)
+    for p in (p1, p2):
+        assert "数据集" in p and "判定标准" in p     # 红线点名：考题（数据集）+ 标尺（判定标准）
+        assert "作弊" in p
