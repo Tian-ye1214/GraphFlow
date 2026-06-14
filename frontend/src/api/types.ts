@@ -52,14 +52,17 @@ export interface AgentSessionDetail extends AgentSessionSummary { messages: Agen
 
 export interface CodegenOut {
   code: string
+  output_columns: string[]
   columns: string[]
-  sample_source: 'last_run' | 'dataset' | 'none'
+  sample_source: 'computed' | 'none'
 }
 
 export interface NodeAssistOut {
   config: Record<string, any>
-  sample_source: 'last_run' | 'dataset' | 'none'
+  sample_source: 'computed' | 'none'
 }
+
+export type ColumnsMap = Record<string, { input: string[]; output: string[] }>
 
 export interface RunLogEntry { created_at: string; node_id: string; level: string; message: string }
 

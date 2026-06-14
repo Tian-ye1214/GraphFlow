@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Button, Input, InputNumber, Radio, Select, Space, Switch, Table } from 'antd'
+import { Button, Input, InputNumber, Radio, Select, Space, Switch, Table, Tag } from 'antd'
 import { api } from '../../api/client'
-import type { CodegenOut, Dataset, ModelConfig, NodeAssistOut, RowsPage } from '../../api/types'
+import type { CodegenOut, ColumnsMap, Dataset, ModelConfig, NodeAssistOut, RowsPage } from '../../api/types'
 
 export interface FormProps {
   config: Record<string, any>
@@ -13,6 +13,67 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <div style={{ marginBottom: 12 }}>
       <div style={{ marginBottom: 4, color: '#666' }}>{label}</div>
       {children}
+    </div>
+  )
+}
+
+const TPL_RE = /\{\{\s*([^{}]+?)\s*\}\}/g
+function missingCols(text: string, inputCols: string[]): string[] {
+  const out: string[] = []
+  for (const m of (text ?? '').matchAll(TPL_RE)) {
+    if (!inputCols.includes(m[1]) && !out.includes(m[1])) out.push(m[1])
+  }
+  return out
+}
+
+export function MissingColsWarning({ text, inputCols }: { text: string; inputCols: string[] }) {
+  const miss = missingCols(text, inputCols)
+  if (miss.length === 0) return null
+  return (
+    <div style={{ color: '#d4380d', fontSize: 12, marginTop: 4 }}>
+      ⚠ 引用了上游未产出的列：{miss.map((c) => `{{${c}}}`).join('、')}
+    </div>
+  )
+}
+
+const uniq = (arr: string[]) => arr.filter((c, i) => arr.indexOf(c) === i)
+
+function liveOutput(type: string, config: Record<string, any>, inputCols: string[]): string[] {
+  if (type === 'llm_synth') {
+    if ((config.output_mode ?? 'column') === 'json') return uniq([...inputCols, ...(config.output_columns ?? [])])
+    return uniq([...inputCols, config.output_column || 'output'])
+  }
+  if (type === 'auto_process') {
+    let cols = [...inputCols]
+    for (const op of config.operations ?? []) {
+      if (op.op === 'rename') { const map = op.mapping ?? {}; cols = cols.map((c) => map[c] ?? c) }
+      else if (op.op === 'drop') { const d = new Set(op.columns ?? []); cols = cols.filter((c) => !d.has(c)) }
+      else if (op.op === 'concat') { if (op.target && !cols.includes(op.target)) cols = [...cols, op.target] }
+      else if (op.op === 'agent') { cols = uniq([...cols, ...(op.output_columns ?? [])]) }
+    }
+    return cols
+  }
+  return inputCols
+}
+
+function ColumnsBar({ inputCols, outputCols, onInsert }: {
+  inputCols: string[]; outputCols: string[]; onInsert?: (col: string) => void
+}) {
+  return (
+    <div style={{ background: '#fafafa', border: '1px solid #f0f0f0', borderRadius: 6, padding: 8, marginBottom: 12, fontSize: 12 }}>
+      <div style={{ color: '#666', marginBottom: 4 }}>
+        输入列：{inputCols.length === 0
+          ? <span style={{ color: '#bbb' }}>（无／先连好上游）</span>
+          : inputCols.map((c) => (
+            <Tag key={c} style={{ cursor: onInsert ? 'pointer' : 'default', marginInlineEnd: 4 }}
+                 onClick={() => onInsert?.(c)}>{c}</Tag>))}
+      </div>
+      <div style={{ color: '#666' }}>
+        输出列：{outputCols.length === 0
+          ? <span style={{ color: '#bbb' }}>（无）</span>
+          : outputCols.map((c) => <Tag key={c} color="blue" style={{ marginInlineEnd: 4 }}>{c}</Tag>)}
+      </div>
+      {onInsert && <div style={{ color: '#999', marginTop: 4 }}>点输入列标签即可插入 {'{{列}}'} 到 User Prompt</div>}
     </div>
   )
 }
@@ -394,17 +455,32 @@ function OutputNodeForm({ config, onChange }: FormProps) {
 export default function NodeConfigForm({ type, config, onChange, workflowId, nodeId }: FormProps & {
   type: string; workflowId?: number; nodeId?: string
 }) {
+  const [colsMap, setColsMap] = useState<ColumnsMap>({})
+  useEffect(() => {
+    if (workflowId) void api.get<ColumnsMap>(`/api/workflows/${workflowId}/columns`).then(setColsMap).catch(() => {})
+  }, [workflowId, nodeId])
+  const nodeCols = (nodeId && colsMap[nodeId]) || { input: [], output: [] }
+  const inputCols = nodeCols.input
+  const outputCols = type === 'llm_synth' || type === 'auto_process'
+    ? liveOutput(type, config, inputCols) : nodeCols.output
+  const canInsert = type === 'llm_synth' || type === 'qc'
+  const bar = type === 'input' ? null : (
+    <ColumnsBar inputCols={inputCols} outputCols={outputCols}
+                onInsert={canInsert
+                  ? (c) => onChange({ ...config, user_prompt: (config.user_prompt ?? '') + `{{${c}}}` })
+                  : undefined} />
+  )
   switch (type) {
     case 'input':
       return <InputNodeForm config={config} onChange={onChange} />
     case 'llm_synth':
-      return <LlmSynthForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} />
+      return <>{bar}<LlmSynthForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} /></>
     case 'auto_process':
-      return <AutoProcessForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} />
+      return <>{bar}<AutoProcessForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} /></>
     case 'qc':
-      return <QcForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} />
+      return <>{bar}<QcForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} /></>
     case 'output':
-      return <OutputNodeForm config={config} onChange={onChange} />
+      return <>{bar}<OutputNodeForm config={config} onChange={onChange} /></>
     default:
       return null
   }
