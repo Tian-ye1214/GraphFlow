@@ -26,7 +26,7 @@ function missingCols(text: string, inputCols: string[]): string[] {
   return out
 }
 
-export function MissingColsWarning({ text, inputCols }: { text: string; inputCols: string[] }) {
+function MissingColsWarning({ text, inputCols }: { text: string; inputCols: string[] }) {
   const miss = missingCols(text, inputCols)
   if (miss.length === 0) return null
   return (
@@ -165,7 +165,9 @@ function NodeAssist({ nodeType, workflowId, nodeId, onApply }: {
   )
 }
 
-function LlmSynthForm({ config, onChange, workflowId, nodeId }: FormProps & { workflowId?: number; nodeId?: string }) {
+function LlmSynthForm({ config, onChange, workflowId, nodeId, inputCols }: FormProps & {
+  workflowId?: number; nodeId?: string; inputCols: string[]
+}) {
   const [models, setModels] = useState<ModelConfig[]>([])
   useEffect(() => {
     void api.get<ModelConfig[]>('/api/models').then(setModels)
@@ -191,6 +193,7 @@ function LlmSynthForm({ config, onChange, workflowId, nodeId }: FormProps & { wo
       <Field label="User Prompt（用 {{列名}} 引用上游数据列）">
         <Input.TextArea rows={6} value={config.user_prompt ?? ''}
                         onChange={(e) => patch({ user_prompt: e.target.value })} />
+        <MissingColsWarning text={config.user_prompt ?? ''} inputCols={inputCols} />
       </Field>
       <Field label="输出方式">
         <Radio.Group value={config.output_mode ?? 'column'}
@@ -199,6 +202,12 @@ function LlmSynthForm({ config, onChange, workflowId, nodeId }: FormProps & { wo
           <Radio.Button value="json">解析 JSON 拆多列</Radio.Button>
         </Radio.Group>
       </Field>
+      {(config.output_mode ?? 'column') === 'json' && (
+        <Field label="JSON 输出列（解析后拆出的列名，供下游识别）">
+          <Select mode="tags" style={{ width: '100%' }} value={config.output_columns ?? []}
+                  onChange={(v) => patch({ output_columns: v })} placeholder="如 q_en、category_en" />
+        </Field>
+      )}
       {(config.output_mode ?? 'column') === 'column' && (
         <Field label="输出列名">
           <Input value={config.output_column ?? 'output'}
@@ -238,7 +247,7 @@ const OP_DEFAULTS: Record<string, Record<string, any>> = {
   cast: { op: 'cast', column: '', to: 'str' },
   sample: { op: 'sample', n: 100 },
   shuffle: { op: 'shuffle' },
-  agent: { op: 'agent', instruction: '', code: '' },
+  agent: { op: 'agent', instruction: '', code: '', output_columns: [] },
 }
 const OP_LABELS: Record<string, string> = {
   dedup: '去重', filter: '过滤', rename: '重命名', drop: '删除列',
@@ -317,7 +326,6 @@ function AgentOpFields({ op, update, workflowId, nodeId }: {
   const [models, setModels] = useState<ModelConfig[]>([])
   const [modelSel, setModelSel] = useState<number>()
   const [busy, setBusy] = useState(false)
-  const [cols, setCols] = useState<string[]>([])
   const [info, setInfo] = useState('')
   useEffect(() => {
     void api.get<ModelConfig[]>('/api/models').then(setModels)
@@ -331,8 +339,7 @@ function AgentOpFields({ op, update, workflowId, nodeId }: {
         workflow_id: workflowId, node_id: nodeId,
         instruction: op.instruction, model_config_id: modelSel,
       })
-      update({ code: r.code })
-      setCols(r.columns)
+      update({ code: r.code, output_columns: r.output_columns })
       if (r.sample_source === 'none') setInfo('未检测到上游列（先连好上游/上传数据集），AI 仅按指令生成')
     } catch (e) {
       setInfo((e as Error).message)
@@ -355,8 +362,12 @@ function AgentOpFields({ op, update, workflowId, nodeId }: {
         <Input.TextArea rows={8} style={{ fontFamily: 'monospace', fontSize: 12 }} value={op.code}
                         onChange={(e) => update({ code: e.target.value })} />
       )}
-      {cols.length > 0 && (
-        <div style={{ fontSize: 12, color: '#555', marginTop: 4 }}>检测到的上游列：{cols.join('、')}</div>
+      {op.code && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ color: '#666', fontSize: 12, marginBottom: 4 }}>产出列（本操作新增的列，AI 已填，可改）</div>
+          <Select mode="tags" style={{ width: '100%' }} value={op.output_columns ?? []}
+                  onChange={(v) => update({ output_columns: v })} placeholder="如 q_english" />
+        </div>
       )}
     </div>
   )
@@ -394,14 +405,16 @@ function AutoProcessForm({ config, onChange, workflowId, nodeId }: FormProps & {
   )
 }
 
-function QcForm({ config, onChange, workflowId, nodeId }: FormProps & {
-  workflowId?: number; nodeId?: string
+function QcForm({ config, onChange, workflowId, nodeId, inputCols }: FormProps & {
+  workflowId?: number; nodeId?: string; inputCols: string[]
 }) {
   const [models, setModels] = useState<ModelConfig[]>([])
   useEffect(() => {
     void api.get<ModelConfig[]>('/api/models').then(setModels)
   }, [])
   const patch = (p: object) => onChange({ ...config, ...p })
+  const params = config.params ?? {}
+  const patchParams = (p: object) => onChange({ ...config, params: { ...params, ...p } })
   return (
     <>
       <NodeAssist nodeType="qc" workflowId={workflowId} nodeId={nodeId}
@@ -422,11 +435,23 @@ function QcForm({ config, onChange, workflowId, nodeId }: FormProps & {
       <Field label="User Prompt（用 {{列名}} 引用上游数据列）">
         <Input.TextArea rows={5} value={config.user_prompt ?? ''}
                         onChange={(e) => patch({ user_prompt: e.target.value })} />
+        <MissingColsWarning text={config.user_prompt ?? ''} inputCols={inputCols} />
       </Field>
       <Field label="最多回扫轮数">
         <InputNumber min={0} value={config.max_rounds ?? 3}
                      onChange={(v) => patch({ max_rounds: v ?? 3 })} />
       </Field>
+      <Space wrap>
+        <Field label="temperature"><InputNumber min={0} max={2} step={0.1} value={params.temperature}
+          onChange={(v) => patchParams({ temperature: v })} /></Field>
+        <Field label="top_p"><InputNumber min={0} max={1} step={0.05} value={params.top_p}
+          onChange={(v) => patchParams({ top_p: v })} /></Field>
+        <Field label="max_tokens"><InputNumber min={1} value={params.max_tokens}
+          onChange={(v) => patchParams({ max_tokens: v })} /></Field>
+        <Field label="超时(秒)"><InputNumber min={1} value={params.timeout ?? 120}
+          onChange={(v) => patchParams({ timeout: v ?? 120 })} /></Field>
+      </Space>
+      <div style={{ color: '#999', fontSize: 12 }}>判定默认 temperature 0（确定性）；留空即用 0。</div>
       <div style={{ color: '#999', fontSize: 12 }}>
         把质检节点底部的橙色圆点拖回上游 LLM 节点形成回扫边；不通过的行带原因重生成，满 N 轮仍不过则丢弃。
       </div>
@@ -474,11 +499,11 @@ export default function NodeConfigForm({ type, config, onChange, workflowId, nod
     case 'input':
       return <InputNodeForm config={config} onChange={onChange} />
     case 'llm_synth':
-      return <>{bar}<LlmSynthForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} /></>
+      return <>{bar}<LlmSynthForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} inputCols={inputCols} /></>
     case 'auto_process':
       return <>{bar}<AutoProcessForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} /></>
     case 'qc':
-      return <>{bar}<QcForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} /></>
+      return <>{bar}<QcForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} inputCols={inputCols} /></>
     case 'output':
       return <>{bar}<OutputNodeForm config={config} onChange={onChange} /></>
     default:
