@@ -162,9 +162,12 @@ async def run_qc_judge_row(config: dict, row: dict, mcs: list[ModelConfig], pass
     """多模型 K-of-N 质检判定：N 个模型共用提示词并发判定，≥pass_k 个通过即整行通过。
     返回 (是否通过, 聚合理由, usage 汇总, per_model 列表)。"""
     base = {k: v for k, v in row.items() if not k.startswith("_qc")}
-    system = render_template(config.get("system_prompt", ""), base)
+    if not any(str(v).strip() for v in base.values()):   # 空/全空白样本：直接判不通过，不调 judge
+        return False, "样本内容为空", {"prompt_tokens": 0, "completion_tokens": 0}, []
+    system = render_template(config.get("system_prompt", ""), base) + \
+        "\n\n硬性规则：若待判定内容为空或缺少必要字段，必须返回 pass:false。"
     user = render_template(config.get("user_prompt", ""), base)
-    params = {**config.get("params", {}), "json_mode": True}
+    params = {**config.get("params", {}), "json_mode": True, "temperature": 0}
     retries = config.get("retries", 3)
 
     async def judge_one(mc: ModelConfig):
