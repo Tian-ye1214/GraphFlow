@@ -15,8 +15,7 @@ from app.agent.tools import AgentToolkit
 # ── 最小假对象 ─────────────────────────────────────────────────────────────
 
 class _FakeModelConfig:
-    """足够让 resolve_compactor_model 判为 ModelConfig 的假体（不调用真 LLM）。"""
-    model_name = "fake-model"
+    """不透明哨兵：作为 compactor_mc 直接注入，仅用于 identity 断言，不经过 resolve_compactor_model。"""
 
 
 def _worker_model(reply: str = "SUCCESS: done"):
@@ -141,4 +140,4 @@ async def test_manager_seam_calls_compact_when_set(tmp_path, monkeypatch):
 
     # 两次 manager.run 各触发一次 _compact -> spy，过滤出 running_mc = manager model 的调用
     manager_calls = [c for c in calls if c["running_mc"] is system.models["manager"]]
-    assert len(manager_calls) >= 2
+    assert len(manager_calls) == 2
