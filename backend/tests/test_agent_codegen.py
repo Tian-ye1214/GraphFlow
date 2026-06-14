@@ -5,7 +5,7 @@ from pydantic_ai.models.function import FunctionModel
 from sqlalchemy import select
 
 from app.agent import codegen
-from app.models import Dataset, DatasetRow, Run, RunRow, Workflow, WorkflowVersion
+from app.models import Dataset, DatasetRow, Workflow
 
 GOOD = "def process(rows):\n    return [{**r, 'ok': True} for r in rows]"
 
@@ -53,26 +53,27 @@ async def test_columns_from_dataset_fallback(client, session_factory):
         s.add(wf)
         await s.commit()
         cols, source = await codegen.gather_upstream_columns(s, wf.id, "auto_process_1", user_id=1)
-    assert source == "dataset" and cols == ["q", "category"]
+    assert source == "computed" and cols == ["q", "category"]
 
 
-async def test_columns_prefer_last_run(client, session_factory):
+async def test_columns_propagate_through_llm(client, session_factory):
+    """静态传播能看到上游 llm_synth 声明的 json 输出列（如 q_en），无需任何历史运行。"""
     async with session_factory() as s:
-        wf = Workflow(user_id=1, name="w", graph_json=_graph(999))
+        ds = Dataset(user_id=1, name="d", columns_json=json.dumps(["q"]))
+        s.add(ds)
+        await s.commit()
+        graph = {"nodes": [
+            {"id": "input_1", "type": "input", "config": {"dataset_ids": [ds.id]}},
+            {"id": "llm_1", "type": "llm_synth",
+             "config": {"output_mode": "json", "output_columns": ["q_en"]}},
+            {"id": "auto_process_1", "type": "auto_process", "config": {}}],
+            "edges": [{"source": "input_1", "target": "llm_1"},
+                      {"source": "llm_1", "target": "auto_process_1"}]}
+        wf = Workflow(user_id=1, name="w", graph_json=json.dumps(graph))
         s.add(wf)
         await s.commit()
-        ver = WorkflowVersion(workflow_id=wf.id, version=1, graph_json=_graph(999))
-        s.add(ver)
-        await s.commit()
-        run = Run(user_id=1, workflow_id=wf.id, workflow_version_id=ver.id, status="completed")
-        s.add(run)
-        await s.commit()
-        s.add(RunRow(run_id=run.id, node_id="input_1", row_idx=0, status="done",
-                     data_json=json.dumps([{"q": "来自上次运行", "_qc_pass": True}])))
-        await s.commit()
         cols, source = await codegen.gather_upstream_columns(s, wf.id, "auto_process_1", user_id=1)
-    # 取上游运行输出的列名，质检内部 _qc* 列被过滤掉
-    assert source == "last_run" and cols == ["q"]
+    assert source == "computed" and cols == ["q", "q_en"]
 
 
 async def test_columns_none_when_node_missing(client, session_factory):

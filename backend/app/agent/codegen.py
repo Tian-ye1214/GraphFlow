@@ -1,14 +1,10 @@
 """智能处理操作的代码生成：临时单 Agent（零工具、零历史、请求级生命周期）+ 仅采上游列名（不跑数、不预览）。"""
 import json
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.agent.factory import create_agent
-from app.engine.graph import Graph, parse_graph, upstream_ids
-from app.models import Dataset, Run, RunRow, Workflow, WorkflowVersion
-
-SAMPLE_N = 5
+from app.engine.columns import propagate_columns, resolve_dataset_cols
+from app.engine.graph import parse_graph
+from app.models import Workflow
 
 INSTRUCTIONS = """你是数据处理代码生成器，为表格行数据按用户指令写一个 Python 处理函数。
 硬性要求：
@@ -67,67 +63,14 @@ async def generate_node_config(model, node_type: str, instruction: str, columns:
     return json.loads(strip_code_fences(str(result.output or "")))
 
 
-async def gather_upstream_columns(s: AsyncSession, workflow_id: int, node_id: str, user_id: int):
-    """取上游节点产出的列名（只名不值）。优先最近一次运行的上游输出键，否则上游 input 数据集列。
-    返回 (columns, source)。"""
-    run = (await s.execute(select(Run).where(Run.workflow_id == workflow_id)
-                           .order_by(Run.id.desc()))).scalars().first()
-    if run is not None:
-        ver = await s.get(WorkflowVersion, run.workflow_version_id)
-        rows = await _upstream_run_rows(s, run.id, parse_graph(ver.graph_json), node_id)
-        if rows:
-            return _columns_of(rows), "last_run"
+async def gather_upstream_columns(s, workflow_id: int, node_id: str, user_id: int):
+    """静态推算 node_id 的输入列（沿 llm/处理节点传播）。返回 (columns, source)。"""
     wf = await s.get(Workflow, workflow_id)
-    cols = await _upstream_dataset_columns(s, parse_graph(wf.graph_json), node_id, user_id)
-    if cols:
-        return cols, "dataset"
-    return [], "none"
-
-
-def _columns_of(rows: list[dict]) -> list[str]:
-    cols: list[str] = []
-    for r in rows:
-        for k in r:
-            if k not in cols and not k.startswith("_qc"):
-                cols.append(k)
-    return cols
-
-
-async def _upstream_run_rows(s, run_id: int, graph: Graph, node_id: str) -> list[dict]:
+    if wf is None or wf.user_id != user_id:
+        return [], "none"
+    graph = parse_graph(wf.graph_json)
     if node_id not in {n.id for n in graph.nodes}:
-        return []
-    out: list[dict] = []
-    for uid in upstream_ids(graph, node_id):
-        recs = (await s.execute(select(RunRow).where(
-            RunRow.run_id == run_id, RunRow.node_id == uid, RunRow.status == "done")
-            .order_by(RunRow.row_idx).limit(SAMPLE_N))).scalars().all()
-        for r in recs:
-            out.extend(json.loads(r.data_json))
-        if len(out) >= SAMPLE_N:
-            break
-    return out
-
-
-async def _upstream_dataset_columns(s, graph: Graph, node_id: str, user_id: int) -> list[str]:
-    by_id = {n.id: n for n in graph.nodes}
-    if node_id not in by_id:
-        return []
-    seen: set[str] = set()
-    frontier, dataset_ids = [node_id], []
-    while frontier:
-        for uid in upstream_ids(graph, frontier.pop()):
-            if uid in seen:
-                continue
-            seen.add(uid)
-            frontier.append(uid)
-            if by_id[uid].type == "input":
-                dataset_ids.extend(by_id[uid].config.get("dataset_ids", []))
-    cols: list[str] = []
-    for ds_id in dataset_ids:
-        ds = await s.get(Dataset, ds_id)
-        if ds is None or ds.user_id != user_id:   # 资源归属校验（租户隔离）
-            continue
-        for c in json.loads(ds.columns_json):
-            if c not in cols:
-                cols.append(c)
-    return cols
+        return [], "none"
+    dataset_cols = await resolve_dataset_cols(s, graph, user_id)
+    cols = propagate_columns(graph, dataset_cols)[node_id]["input"]
+    return cols, ("computed" if cols else "none")

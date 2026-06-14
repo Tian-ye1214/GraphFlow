@@ -17,7 +17,7 @@ async def test_gather_upstream_columns_from_dataset(auth_client, session_factory
         s.add(wf); await s.commit(); wf_id = wf.id
         async with session_factory() as s2:
             cols, source = await gather_upstream_columns(s2, wf_id, "ap", uid)
-    assert cols == ["q", "category"] and source == "dataset"
+    assert cols == ["q", "category"] and source == "computed"
 
 
 async def test_codegen_endpoint_returns_columns_no_preview(auth_client, session_factory, monkeypatch):
