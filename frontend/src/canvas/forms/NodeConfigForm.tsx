@@ -81,7 +81,7 @@ function NodeAssist({ nodeType, workflowId, nodeId, onApply }: {
         instruction, model_config_id: modelSel,
       })
       onApply(r.config)
-      if (r.sample_source === 'none') setInfo('没有可用样本（先保存画布、运行一次更准）')
+      if (r.sample_source === 'none') setInfo('未检测到上游列，可先连好上游')
     } catch (e) {
       setInfo((e as Error).message)
     } finally {
@@ -256,7 +256,7 @@ function AgentOpFields({ op, update, workflowId, nodeId }: {
   const [models, setModels] = useState<ModelConfig[]>([])
   const [modelSel, setModelSel] = useState<number>()
   const [busy, setBusy] = useState(false)
-  const [preview, setPreview] = useState<Record<string, unknown>[] | null>(null)
+  const [cols, setCols] = useState<string[]>([])
   const [info, setInfo] = useState('')
   useEffect(() => {
     void api.get<ModelConfig[]>('/api/models').then(setModels)
@@ -271,9 +271,8 @@ function AgentOpFields({ op, update, workflowId, nodeId }: {
         instruction: op.instruction, model_config_id: modelSel,
       })
       update({ code: r.code })
-      setPreview(r.preview_rows)
-      if (r.error) setInfo(`试跑失败：${r.error}`)
-      else if (r.sample_source === 'none') setInfo('没有可用样本（先保存画布、运行一次更准），已跳过试跑')
+      setCols(r.columns)
+      if (r.sample_source === 'none') setInfo('未检测到上游列（先连好上游/上传数据集），AI 仅按指令生成')
     } catch (e) {
       setInfo((e as Error).message)
     } finally {
@@ -295,10 +294,8 @@ function AgentOpFields({ op, update, workflowId, nodeId }: {
         <Input.TextArea rows={8} style={{ fontFamily: 'monospace', fontSize: 12 }} value={op.code}
                         onChange={(e) => update({ code: e.target.value })} />
       )}
-      {preview && (
-        <pre style={{ fontSize: 12, background: '#fafafa', padding: 8, maxHeight: 160, overflow: 'auto' }}>
-          {JSON.stringify(preview, null, 2)}
-        </pre>
+      {cols.length > 0 && (
+        <div style={{ fontSize: 12, color: '#555', marginTop: 4 }}>检测到的上游列：{cols.join('、')}</div>
       )}
     </div>
   )

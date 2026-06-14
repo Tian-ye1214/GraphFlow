@@ -52,9 +52,8 @@ export interface AgentSessionDetail extends AgentSessionSummary { messages: Agen
 
 export interface CodegenOut {
   code: string
-  preview_rows: Record<string, unknown>[] | null
+  columns: string[]
   sample_source: 'last_run' | 'dataset' | 'none'
-  error: string | null
 }
 
 export interface NodeAssistOut {
