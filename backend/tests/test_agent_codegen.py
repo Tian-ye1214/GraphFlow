@@ -15,11 +15,12 @@ def test_strip_code_fences():
     assert codegen.strip_code_fences(GOOD) == GOOD
 
 
-async def test_generate_code_returns_source_no_exec():
-    """只按指令+列名生成源码，不试跑、不预览。"""
-    model = FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(GOOD)]))
-    code = await codegen.generate_code(model, "加 ok 列", [])
-    assert code == GOOD
+async def test_generate_code_returns_code_and_columns():
+    """模型返回 JSON {code, output_columns}，generate_code 解析为 dict，不试跑、不预览。"""
+    payload = json.dumps({"code": GOOD, "output_columns": ["ok"]})
+    model = FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(payload)]))
+    out = await codegen.generate_code(model, "加 ok 列", [])
+    assert out == {"code": GOOD, "output_columns": ["ok"]}
 
 
 async def test_generate_code_strips_fences_and_passes_columns():
@@ -27,10 +28,11 @@ async def test_generate_code_strips_fences_and_passes_columns():
 
     def fn(messages, info):
         seen["prompt"] = messages[-1].parts[-1].content
-        return ModelResponse(parts=[TextPart(f"```python\n{GOOD}\n```")])
+        payload = json.dumps({"code": GOOD, "output_columns": []})
+        return ModelResponse(parts=[TextPart(f"```json\n{payload}\n```")])
 
-    code = await codegen.generate_code(FunctionModel(fn), "去重", ["q", "category"])
-    assert code == GOOD
+    out = await codegen.generate_code(FunctionModel(fn), "去重", ["q", "category"])
+    assert out["code"] == GOOD and out["output_columns"] == []
     # 上游列名进入 prompt，真实行值不进入
     assert "q" in seen["prompt"] and "category" in seen["prompt"]
 
@@ -122,3 +124,4 @@ def test_instructions_guide_grouped_dedup():
     assert "groupby" in INSTRUCTIONS  # 分组处理示例在位
     assert "分组" in INSTRUCTIONS
     assert "上游可用列" in INSTRUCTIONS  # 改为按列名生成
+    assert "output_columns" in INSTRUCTIONS  # 要求声明产出列

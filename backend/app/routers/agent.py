@@ -205,8 +205,9 @@ async def codegen(body: CodegenIn, user: User = Depends(get_current_user),
     if not body.instruction.strip():
         raise HTTPException(status_code=422, detail="指令不能为空")
     columns, source = await gather_upstream_columns(session, body.workflow_id, body.node_id, user.id)
-    code = await generate_code(mc, body.instruction, columns)
-    return {"code": code, "columns": columns, "sample_source": source}
+    result = await generate_code(mc, body.instruction, columns)
+    return {"code": result["code"], "output_columns": result["output_columns"],
+            "columns": columns, "sample_source": source}
 
 
 class NodeAssistIn(BaseModel):

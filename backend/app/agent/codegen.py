@@ -7,11 +7,13 @@ from app.engine.graph import parse_graph
 from app.models import Workflow
 
 INSTRUCTIONS = """你是数据处理代码生成器，为表格行数据按用户指令写一个 Python 处理函数。
-硬性要求：
-- 只输出 Python 源码，不要任何解释或 markdown 围栏。
+只输出一个 JSON 对象，不要任何解释或 markdown 围栏，形如：
+{"code": "<Python 源码字符串>", "output_columns": ["<本次新增的列名>", ...]}
+code 字段要求：
 - 必须定义 def process(rows: list[dict]) -> list[dict]，输入输出都是行字典列表。
 - 只能用标准库与 pandas（可 import pandas as pd）；禁止网络访问、禁止读写文件、禁止 exec/eval。
 - 数据问题（如列不存在）让代码自然报错，不要静默吞掉。
+output_columns 字段：列出 code 相对输入新增/产出的列名（仅新增的，没有则空数组 []）。
 
 只给出上游可用列名（不含真实数据），请据指令与列名编写代码。
 常见模式（按需选用、灵活组合，最后都 return 行字典列表，如 df.to_dict('records')）：
@@ -34,11 +36,12 @@ def _user_prompt(instruction: str, columns: list[str]) -> str:
     return f"用户指令：{instruction}\n\n上游可用列：{cols}"
 
 
-async def generate_code(model, instruction: str, columns: list[str]) -> str:
-    """只按指令+上游列名生成处理函数源码；不执行、不预览。"""
+async def generate_code(model, instruction: str, columns: list[str]) -> dict:
+    """按指令+上游列名生成 {code, output_columns}；不执行、不预览。"""
     agent = create_agent(model, [], INSTRUCTIONS)
     result = await agent.run(_user_prompt(instruction, columns))
-    return strip_code_fences(str(result.output or ""))
+    data = json.loads(strip_code_fences(str(result.output or "")))
+    return {"code": data.get("code", ""), "output_columns": data.get("output_columns", [])}
 
 
 NODE_ASSIST_INSTRUCTIONS = {

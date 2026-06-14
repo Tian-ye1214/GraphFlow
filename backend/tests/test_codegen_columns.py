@@ -22,7 +22,7 @@ async def test_gather_upstream_columns_from_dataset(auth_client, session_factory
 
 async def test_codegen_endpoint_returns_columns_no_preview(auth_client, session_factory, monkeypatch):
     async def fake_generate_code(model, instruction, columns):
-        return "def process(rows):\n    return rows"
+        return {"code": "def process(rows):\n    return rows", "output_columns": []}
     monkeypatch.setattr("app.routers.agent.generate_code", fake_generate_code)
     async with session_factory() as s:
         uid = (await s.execute(select(User).where(User.username == "tester"))).scalar_one().id
@@ -39,4 +39,5 @@ async def test_codegen_endpoint_returns_columns_no_preview(auth_client, session_
         "workflow_id": wf_id, "node_id": "ap", "instruction": "删空行", "model_config_id": mid})
     assert r.status_code == 200
     body = r.json()
-    assert body["columns"] == ["a"] and "preview_rows" not in body and body["code"].startswith("def process")
+    assert body["columns"] == ["a"] and body["output_columns"] == []
+    assert "preview_rows" not in body and body["code"].startswith("def process")
