@@ -7,7 +7,7 @@ from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent import codegen as codegen_mod
-from app.agent.codegen import gather_sample_rows, generate_with_repair
+from app.agent.codegen import gather_upstream_columns, generate_code
 from app.agent.turns import session_dir, turn_manager
 from app.auth import get_current_user, make_session_cookie
 from app.db import get_session
@@ -204,9 +204,9 @@ async def codegen(body: CodegenIn, user: User = Depends(get_current_user),
         raise HTTPException(status_code=422, detail="模型配置无效")
     if not body.instruction.strip():
         raise HTTPException(status_code=422, detail="指令不能为空")
-    sample_rows, source = await gather_sample_rows(session, body.workflow_id, body.node_id, user.id)
-    code, preview, error = await generate_with_repair(mc, body.instruction, sample_rows)
-    return {"code": code, "preview_rows": preview, "sample_source": source, "error": error}
+    columns, source = await gather_upstream_columns(session, body.workflow_id, body.node_id, user.id)
+    code = await generate_code(mc, body.instruction, columns)
+    return {"code": code, "columns": columns, "sample_source": source}
 
 
 class NodeAssistIn(BaseModel):
@@ -230,6 +230,6 @@ async def node_assist(body: NodeAssistIn, user: User = Depends(get_current_user)
         raise HTTPException(status_code=422, detail="模型配置无效")
     if not body.instruction.strip():
         raise HTTPException(status_code=422, detail="指令不能为空")
-    sample_rows, source = await gather_sample_rows(session, body.workflow_id, body.node_id, user.id)
-    config = await codegen_mod.generate_node_config(mc, body.node_type, body.instruction, sample_rows)
+    columns, source = await gather_upstream_columns(session, body.workflow_id, body.node_id, user.id)
+    config = await codegen_mod.generate_node_config(mc, body.node_type, body.instruction, columns)
     return {"config": config, "sample_source": source}

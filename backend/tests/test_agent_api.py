@@ -127,11 +127,11 @@ async def test_cross_user_isolation(auth_client, mc_id, no_run):
 async def test_codegen_endpoint(auth_client, mc_id, monkeypatch):
     from app.routers import agent as agent_router
 
-    async def fake(model, instruction, sample_rows):
+    async def fake(model, instruction, columns):
         assert instruction == "去重"
-        return "def process(rows):\n    return rows", [], None
+        return "def process(rows):\n    return rows"
 
-    monkeypatch.setattr(agent_router, "generate_with_repair", fake)
+    monkeypatch.setattr(agent_router, "generate_code", fake)
     wid = (await auth_client.post("/api/workflows", json={"name": "w1"})).json()["id"]
     r = await auth_client.post("/api/agent/codegen", json={
         "workflow_id": wid, "node_id": "auto_process_1",
@@ -139,6 +139,7 @@ async def test_codegen_endpoint(auth_client, mc_id, monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body["code"].startswith("def process") and body["sample_source"] == "none"
+    assert body["columns"] == [] and "preview_rows" not in body  # 只回列名，不再有数据预览
 
 
 async def test_codegen_ownership(auth_client, mc_id):
@@ -154,7 +155,7 @@ async def test_codegen_ownership(auth_client, mc_id):
 async def test_node_assist_guards(auth_client, monkeypatch):
     from app.agent import codegen
 
-    async def fake_cfg(model, node_type, instruction, sample_rows):
+    async def fake_cfg(model, node_type, instruction, columns):
         return {"system_prompt": "s", "user_prompt": "翻译:{{q}}", "output_column": "q_en"}
 
     monkeypatch.setattr(codegen, "generate_node_config", fake_cfg)
