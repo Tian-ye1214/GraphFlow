@@ -22,6 +22,10 @@ export default function AgentDrawer() {
   const [streaming, setStreaming] = useState('')
   const [liveTools, setLiveTools] = useState<AgentToolContent[]>([])
   const [goalRound, setGoalRound] = useState(0)
+  const [goalText, setGoalText] = useState('')
+  const [goalWf, setGoalWf] = useState<number>()
+  const [workflows, setWorkflows] = useState<{ id: number; name: string }[]>([])
+  const [metrics, setMetrics] = useState<{ round: number; metric: number | null; run_id: number }[]>([])
   const sessionIdRef = useRef<number | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -34,6 +38,7 @@ export default function AgentDrawer() {
     setStreaming('')
     setLiveTools([])
     setGoalRound(0)
+    setMetrics([])
     await refreshDetail(sid)
   }, [refreshDetail])
 
@@ -44,6 +49,7 @@ export default function AgentDrawer() {
       if (list.length && sessionIdRef.current === null) void selectSession(list[0].id)
     })
     void api.get<ModelConfig[]>('/api/models').then(setModels)
+    void api.get<{ id: number; name: string }[]>('/api/workflows').then(setWorkflows)
   }, [open, selectSession])
 
   useEffect(() => {
@@ -70,10 +76,12 @@ export default function AgentDrawer() {
       setLiveTools([])
       void refreshDetail(e.id)
     } else if (e.kind === 'goal_round') setGoalRound(Number(e.data) || 0)
+    else if (e.kind === 'goal_metric') setMetrics((m) => [...m, e.data as { round: number; metric: number | null; run_id: number }])
     else if (e.kind === 'turn_done') {
       setStreaming('')
       setLiveTools([])
       setGoalRound(0)
+      setMetrics([])
       void refreshDetail(e.id)
     }
   })
@@ -108,6 +116,17 @@ export default function AgentDrawer() {
 
   const stop = async () => {
     if (sessionIdRef.current) await api.post(`/api/agent/sessions/${sessionIdRef.current}/stop`)
+  }
+
+  const startGoal = async () => {
+    const sid = sessionIdRef.current
+    if (!sid || !goalText.trim() || !goalWf) { message.warning('选择工作流并填写目标'); return }
+    try {
+      setMetrics([])
+      await api.post(`/api/agent/sessions/${sid}/goal`, { workflow_id: goalWf, goal_text: goalText })
+      setGoalText('')
+      await refreshDetail(sid)
+    } catch (e) { message.error((e as Error).message) }
   }
 
   const running = detail?.status === 'running'
@@ -194,6 +213,25 @@ export default function AgentDrawer() {
               {goalRound > 0 && <Button size="small" danger onClick={() => void stop()}>停止</Button>}
             </Space>
           )}
+        {detail && !running && (
+          <Space.Compact style={{ width: '100%', marginBottom: 6 }}>
+            <Select size="small" style={{ width: 140 }} placeholder="目标工作流"
+                    value={goalWf} onChange={setGoalWf}
+                    options={workflows.map((w) => ({ value: w.id, label: w.name }))} />
+            <Input size="small" placeholder="一句话目标，如：把首轮质检通过率提到 90%"
+                   value={goalText} onChange={(e) => setGoalText(e.target.value)} />
+            <Button size="small" type="primary" onClick={() => void startGoal()}>目标模式</Button>
+          </Space.Compact>
+        )}
+        {metrics.length > 0 && (
+          <div style={{ fontSize: 12, color: '#555', marginBottom: 6 }}>
+            {metrics.map((m) => (
+              <span key={m.round} style={{ marginRight: 12 }}>
+                第{m.round}轮: {m.metric === null ? '—' : `${(m.metric * 100).toFixed(1)}%`}（#{m.run_id}）
+              </span>
+            ))}
+          </div>
+        )}
           <Space.Compact style={{ width: '100%' }}>
             <Input.TextArea autoSize={{ minRows: 1, maxRows: 4 }} value={input} disabled={running || !detail}
                             onChange={(e) => setInput(e.target.value)}

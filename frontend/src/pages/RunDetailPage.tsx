@@ -96,6 +96,13 @@ export default function RunDetailPage() {
             重跑失败行
           </Button>
         )}
+        {!isActive && (
+          <Popconfirm title="把当前工作流恢复为此运行的版本？" onConfirm={async () => {
+            await api.post(`/api/runs/${id}/restore`); message.success('已恢复工作流版本')
+          }}>
+            <Button size="small">恢复此版本</Button>
+          </Popconfirm>
+        )}
       </Space>
       {run.error && <Alert type="error" message={run.error} style={{ marginBottom: 16 }} />}
       <Space wrap style={{ marginBottom: 16 }}>
