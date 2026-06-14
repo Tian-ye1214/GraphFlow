@@ -12,7 +12,7 @@ from app.config import settings
 from app.db import get_session
 from app.events import publish
 from app.models import Dataset, DatasetRow, User
-from app.services.file_parse import parse_file, union_columns
+from app.services.file_parse import parse_file, parse_sheets, union_columns
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
 
@@ -56,8 +56,10 @@ async def upload(files: list[UploadFile], user: User = Depends(get_current_user)
     results = []
     for f in files:
         content = await f.read()
-        try:
-            rows = parse_file(f.filename, content)
+        suffix = Path(f.filename).suffix.lower()
+        try:  # Excel 多 sheet → 每个非空 sheet 一个数据集；其余 → 单个数据集
+            parsed = (parse_sheets(f.filename, content) if suffix in (".xlsx", ".xls")
+                      else [(Path(f.filename).stem, parse_file(f.filename, content))])
         except (ValueError, UnicodeDecodeError) as e:
             raise HTTPException(status_code=422, detail=f"{f.filename} 解析失败: {e}")
         # 仅取文件名末段并清洗非法字符，杜绝路径穿越；uuid 前缀保证唯一
@@ -66,10 +68,11 @@ async def upload(files: list[UploadFile], user: User = Depends(get_current_user)
         upload_dir.mkdir(parents=True, exist_ok=True)
         file_path = upload_dir / f"{uuid4().hex[:8]}_{safe_name}"
         file_path.write_bytes(content)
-        ds = await create_dataset(session, user.id, Path(f.filename).stem, rows,
-                                  original_filename=f.filename, file_path=str(file_path))
-        results.append(_out(ds))
-        publish(user.id, "dataset", ds.id)
+        for name, rows in parsed:
+            ds = await create_dataset(session, user.id, name, rows,
+                                      original_filename=f.filename, file_path=str(file_path))
+            results.append(_out(ds))
+            publish(user.id, "dataset", ds.id)
     return results
 
 

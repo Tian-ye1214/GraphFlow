@@ -4,7 +4,7 @@ import json
 import pandas as pd
 import pytest
 
-from app.services.file_parse import parse_file, union_columns
+from app.services.file_parse import parse_file, parse_sheets, union_columns
 
 
 def test_jsonl():
@@ -59,6 +59,37 @@ def test_non_object_records_rejected():
             parse_file("x.json", content)
     with pytest.raises(ValueError, match="JSON 对象"):
         parse_file("x.jsonl", b'{"q": 1}\n99\n')
+
+
+def test_csv_preserves_na_like_literals():
+    """CSV 字面量 None/NA/null 不被默认 NA 列表当缺失吞掉（keep_default_na=False）。"""
+    rows = parse_file("a.csv", b"x,y\nNone,NA\nnull,foo\n")
+    assert rows == [{"x": "None", "y": "NA"}, {"x": "null", "y": "foo"}]
+
+
+def test_xlsx_preserves_text_no_coercion():
+    """Excel 文本单元格不被 read_excel 推断篡改：前导零/长ID/布尔字面量/字面量None 保字符串。"""
+    buf = io.BytesIO()
+    pd.DataFrame([{"id": "007", "flag": "false", "big": "12345678901234567890", "na": "None"}]
+                 ).to_excel(buf, index=False)
+    rows = parse_file("a.xlsx", buf.getvalue())
+    assert rows == [{"id": "007", "flag": "false", "big": "12345678901234567890", "na": "None"}]
+
+
+def test_parse_sheets_multi_and_single():
+    """多 sheet → 每非空 sheet 一个 (stem-sheet名, 行)，空 sheet 跳过；单 sheet 用 stem 名。"""
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf) as w:
+        pd.DataFrame([{"q": "甲"}]).to_excel(w, sheet_name="S1", index=False)
+        pd.DataFrame([{"k": "v", "n": "x"}]).to_excel(w, sheet_name="S2", index=False)
+        pd.DataFrame().to_excel(w, sheet_name="空", index=False)
+    out = parse_sheets("书.xlsx", buf.getvalue())
+    assert [name for name, _ in out] == ["书-S1", "书-S2"]      # 空 sheet 跳过
+    assert dict(out)["书-S1"] == [{"q": "甲"}] and dict(out)["书-S2"] == [{"k": "v", "n": "x"}]
+
+    buf2 = io.BytesIO()
+    pd.DataFrame([{"q": "x"}]).to_excel(buf2, sheet_name="OnlyOne", index=False)
+    assert [name for name, _ in parse_sheets("单.xlsx", buf2.getvalue())] == ["单"]  # 单 sheet 用 stem
 
 
 def test_xlsx_numeric_json_serializable():

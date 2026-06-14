@@ -30,6 +30,22 @@ async def test_upload_bad_file_422(auth_client):
     assert "bad.txt" in r.json()["detail"]
 
 
+async def test_upload_multi_sheet_excel_one_dataset_per_sheet(auth_client):
+    """多 sheet Excel：每个非空 sheet 各成一个数据集（名=stem-sheet名），空 sheet 跳过。"""
+    import io
+    import pandas as pd
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf) as w:
+        pd.DataFrame([{"q": "甲"}, {"q": "乙"}]).to_excel(w, sheet_name="表一", index=False)
+        pd.DataFrame([{"k": "v"}]).to_excel(w, sheet_name="表二", index=False)
+        pd.DataFrame().to_excel(w, sheet_name="空", index=False)
+    r = await upload(auth_client, ("多表.xlsx", buf.getvalue()))
+    assert r.status_code == 200
+    by = {d["name"]: d for d in r.json()}
+    assert set(by) == {"多表-表一", "多表-表二"}
+    assert by["多表-表一"]["row_count"] == 2 and by["多表-表二"]["row_count"] == 1
+
+
 async def test_upload_non_object_records_422(auth_client):
     """非对象记录（标量/null/数组/混入裸值）应 422，而非 500 或静默生成损坏数据集。"""
     for name, content in [("s.json", b"42"), ("n.json", b"null"), ("arr.json", b"[1,2,3]"),
