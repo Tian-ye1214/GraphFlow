@@ -167,7 +167,7 @@ async def run_qc_judge_row(config: dict, row: dict, mcs: list[ModelConfig], pass
     system = render_template(config.get("system_prompt", ""), base) + \
         "\n\n硬性规则：若待判定内容为空或缺少必要字段，必须返回 pass:false。"
     user = render_template(config.get("user_prompt", ""), base)
-    params = {**config.get("params", {}), "json_mode": True, "temperature": 0}
+    params = {"temperature": 0, **config.get("params", {}), "json_mode": True}
     retries = config.get("retries", 3)
 
     async def judge_one(mc: ModelConfig):
