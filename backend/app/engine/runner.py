@@ -155,7 +155,7 @@ async def _write_unit(session_factory, run_id, node_id, row_idx, status, out_row
         await s.commit()
 
 
-async def _set_node_state(session_factory, run_id, node_id, *, status, total, done, failed):
+async def _set_node_state(session_factory, run_id, node_id, *, user_id, status, total, done, failed):
     async with session_factory() as s:
         ns = (await s.execute(select(RunNodeState).where(
             RunNodeState.run_id == run_id, RunNodeState.node_id == node_id
@@ -165,6 +165,8 @@ async def _set_node_state(session_factory, run_id, node_id, *, status, total, do
             s.add(ns)
         ns.status, ns.total, ns.done, ns.failed = status, total, done, failed
         await s.commit()
+    publish(user_id, "run", run_id, kind="progress",
+            data={"node_id": node_id, "status": status, "total": total, "done": done, "failed": failed})
 
 
 async def _run_barrier_node(session_factory, run_id, user_id, node: Node, inputs):
@@ -173,17 +175,17 @@ async def _run_barrier_node(session_factory, run_id, user_id, node: Node, inputs
             RunRow.run_id == run_id, RunRow.node_id == node.id, RunRow.row_idx == 0
         ))).scalar_one_or_none()
     if rec is not None and rec.status == "done":
-        await _set_node_state(session_factory, run_id, node.id, status="done", total=1, done=1, failed=0)
+        await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="done", total=1, done=1, failed=0)
         return  # 断点续跑：单元已完成；补写状态以修复「单元已写、状态未写」的崩溃窗口
-    await _set_node_state(session_factory, run_id, node.id, status="running", total=1, done=0, failed=0)
+    await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running", total=1, done=0, failed=0)
     try:
         out = await _barrier_output(session_factory, user_id, node, inputs)
     except Exception as e:
         await _write_unit(session_factory, run_id, node.id, 0, "failed", [], str(e))
-        await _set_node_state(session_factory, run_id, node.id, status="failed", total=1, done=0, failed=1)
+        await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="failed", total=1, done=0, failed=1)
         raise
     await _write_unit(session_factory, run_id, node.id, 0, "done", out, "")
-    await _set_node_state(session_factory, run_id, node.id, status="done", total=1, done=1, failed=0)
+    await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="done", total=1, done=1, failed=0)
 
 
 async def _barrier_output(session_factory, user_id, node: Node, inputs) -> list[dict]:
@@ -221,7 +223,7 @@ async def _run_llm_node(session_factory, run_id, user_id, node: Node, inputs,
     failed_idx = {idx for idx, st in existing if st == "failed"}
     total = len(inputs)
     done_count, failed_count = len(done_idx), len(failed_idx)
-    await _set_node_state(session_factory, run_id, node.id, status="running",
+    await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running",
                           total=total, done=done_count, failed=failed_count)
     todo = [i for i in range(total) if i not in done_idx and i not in failed_idx]
     node_sem = asyncio.Semaphore(cfg.get("concurrency", 4))
@@ -243,12 +245,12 @@ async def _run_llm_node(session_factory, run_id, user_id, node: Node, inputs,
                 await _write_unit(session_factory, run_id, node.id, idx, "done", out_rows, "",
                                   usage=usage)
                 done_count += 1
-            await _set_node_state(session_factory, run_id, node.id, status="running",
+            await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running",
                                   total=total, done=done_count, failed=failed_count)
 
     await asyncio.gather(*[work(i) for i in todo])
     if not cancel_event.is_set():
-        await _set_node_state(session_factory, run_id, node.id, status="done",
+        await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="done",
                               total=total, done=done_count, failed=failed_count)
 
 
@@ -266,12 +268,12 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
         ))).scalar_one_or_none()
         jmcs = [await s.get(ModelConfig, jid) for jid in judge_ids]
     if rec is not None and rec.status == "done":
-        await _set_node_state(session_factory, run_id, node.id, status="done",
+        await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="done",
                               total=len(inputs), done=len(inputs), failed=0)
         return
     if not jmcs or any(m is None or m.user_id != user_id for m in jmcs):
         raise ValueError(f"质检节点 {node.id}: 判定模型配置不存在")
-    await _set_node_state(session_factory, run_id, node.id, status="running",
+    await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running",
                           total=len(inputs), done=0, failed=0)
     usage = {"prompt_tokens": 0, "completion_tokens": 0}
 
@@ -325,7 +327,7 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
                     regenerated.extend(out_rows)
                 fresh_pass, failed = await judge_all(regenerated)
                 passed.extend(fresh_pass)
-                await _set_node_state(session_factory, run_id, node.id, status="running",
+                await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running",
                                       total=len(inputs), done=len(passed), failed=len(failed))
         if failed:                                # 最终仍失败样本落库
             async with session_factory() as s:
@@ -340,10 +342,10 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
         return
     except Exception as e:
         await _write_unit(session_factory, run_id, node.id, 0, "failed", [], str(e))
-        await _set_node_state(session_factory, run_id, node.id, status="failed",
+        await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="failed",
                               total=len(inputs), done=0, failed=len(inputs))
         raise
     await _write_unit(session_factory, run_id, node.id, 0, "done", passed, "",
                       usage=usage, qc_round=rounds)
-    await _set_node_state(session_factory, run_id, node.id, status="done",
+    await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="done",
                           total=len(inputs), done=len(passed), failed=len(inputs) - len(passed))
