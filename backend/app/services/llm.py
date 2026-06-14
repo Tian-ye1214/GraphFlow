@@ -47,9 +47,12 @@ async def chat(mc: ModelConfig, system_prompt: str, user_prompt: str,
             resp = await client.chat.completions.create(
                 model=mc.model_name, messages=messages,
                 timeout=merged.get("timeout", 120), **kwargs)
+            content = resp.choices[0].message.content or ""
+            if not content.strip():  # 空/全空白补全视为可重试失败，避免空结果被当成功落库污染产物
+                raise LLMError("模型返回空内容")
             usage = {"prompt_tokens": resp.usage.prompt_tokens if resp.usage else 0,
                      "completion_tokens": resp.usage.completion_tokens if resp.usage else 0}
-            return resp.choices[0].message.content or "", usage
+            return content, usage
         except Exception as e:
             last_err = e
             if attempt < retries - 1:

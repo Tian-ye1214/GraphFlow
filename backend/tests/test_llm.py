@@ -84,6 +84,24 @@ async def test_retries_exhausted(monkeypatch):
     assert fake.calls == 2
 
 
+async def test_empty_completion_retries_then_raises(monkeypatch):
+    """空/全空白补全视为可重试失败：重试到耗尽后抛 LLMError，而非把空当成功返回。"""
+    fake = FakeClient(lambda n, kw: fake_response("   "))  # 每次都全空白
+    monkeypatch.setattr(llm, "_client", lambda _: fake)
+    with pytest.raises(llm.LLMError, match="空内容"):
+        await llm.chat(mc(), "", "u", retries=2)
+    assert fake.calls == 2  # 两次都因空被重试
+
+
+async def test_empty_then_nonempty_succeeds(monkeypatch):
+    """首次空、二次非空：重试拿到实质内容即成功返回。"""
+    fake = FakeClient(lambda n, kw: fake_response("" if n == 1 else "实质内容"))
+    monkeypatch.setattr(llm, "_client", lambda _: fake)
+    text, _ = await llm.chat(mc(), "", "u", retries=3)
+    assert text == "实质内容"
+    assert fake.calls == 2
+
+
 async def test_model_test_endpoint(auth_client, monkeypatch):
     fake = FakeClient(lambda n, kw: fake_response("pong"))
     monkeypatch.setattr(llm, "_client", lambda _: fake)
