@@ -129,7 +129,7 @@ async def test_codegen_endpoint(auth_client, mc_id, monkeypatch):
 
     async def fake(model, instruction, columns):
         assert instruction == "去重"
-        return "def process(rows):\n    return rows"
+        return {"code": "def process(rows):\n    return rows", "output_columns": []}
 
     monkeypatch.setattr(agent_router, "generate_code", fake)
     wid = (await auth_client.post("/api/workflows", json={"name": "w1"})).json()["id"]
