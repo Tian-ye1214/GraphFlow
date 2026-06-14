@@ -1,8 +1,6 @@
 import asyncio
 import json
 
-import pytest
-
 from app.engine import nodes
 from app.services import llm
 
@@ -36,13 +34,19 @@ async def test_qc_judge_pass(monkeypatch):
     assert ok is True and reason == "通过"  # 通过时 dissent 为空，返回"通过"
 
 
-async def test_qc_judge_missing_pass_raises(monkeypatch):
+async def test_qc_judge_missing_pass_votes_fail(monkeypatch):
+    """判定缺 pass 字段：重试耗尽后判该模型「不通过」，不再抛错拖垮整个 run。"""
+    monkeypatch.setattr(llm, "BACKOFF_BASE", 0)
+
     async def fake(mc, system, user, params=None, retries=3):
         return json.dumps({"reason": "x"}), {"prompt_tokens": 1, "completion_tokens": 1}
 
     monkeypatch.setattr(llm, "chat", fake)
-    with pytest.raises(ValueError):
-        await nodes.run_qc_judge_row({"user_prompt": "p"}, {"a": "x"}, [_FakeMC()], 1, asyncio.Semaphore(1))
+    ok, reason, usage, per_model = await nodes.run_qc_judge_row(
+        {"user_prompt": "p"}, {"a": "x"}, [_FakeMC()], 1, asyncio.Semaphore(1))
+    assert ok is False                                            # 拿不准 → 判不过
+    assert usage == {"prompt_tokens": 3, "completion_tokens": 3}  # 3 次重试都真实调用了模型
+    assert per_model[0]["pass"] is False
 
 
 async def test_qc_multi_model_metric_and_failures(auth_client, monkeypatch, session_factory):
