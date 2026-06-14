@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Card, Popconfirm, Progress, Select, Space, Table, Tabs, Tag, message } from 'antd'
 import { useParams } from 'react-router-dom'
 import { api } from '../api/client'
-import type { QcFailureEntry, RowsPage, RunDetail, RunLogEntry } from '../api/types'
+import { useEvents } from '../api/events'
+import type { NodeState, QcFailureEntry, RowsPage, RunDetail, RunLogEntry } from '../api/types'
 import { formatRunLog } from './runLog'
 import { NODE_LABELS } from '../canvas/serialize'
 import { STATUS_COLORS, STATUS_LABELS } from './RunsPage'
@@ -47,6 +48,19 @@ export default function RunDetailPage() {
     const t = setInterval(() => void refresh(), 2000)
     return () => clearInterval(t)
   }, [run?.status, refresh])
+
+  useEvents((e) => {
+    if (e.entity !== 'run' || e.id !== Number(id)) return
+    if (e.kind === 'progress') {
+      const d = e.data as NodeState
+      setRun((r) => r && ({
+        ...r,
+        node_states: r.node_states.some((s) => s.node_id === d.node_id)
+          ? r.node_states.map((s) => (s.node_id === d.node_id ? d : s))
+          : [...r.node_states, d],
+      }))
+    } else void refresh()
+  })
 
   const node = selectedNode ?? run?.graph.nodes.find((n) => n.type === 'output')?.id
   const isActive = run ? ACTIVE.includes(run.status) : true
@@ -105,18 +119,20 @@ export default function RunDetailPage() {
         )}
       </Space>
       {run.error && <Alert type="error" message={run.error} style={{ marginBottom: 16 }} />}
+      {isActive && (() => {
+        const tot = run.node_states.reduce((a, s) => a + s.total, 0)
+        const dn = run.node_states.reduce((a, s) => a + s.done, 0)
+        return <Progress percent={tot ? Math.round((dn / tot) * 100) : 0} status="active"
+                         style={{ marginBottom: 12 }} />
+      })()}
       <Space wrap style={{ marginBottom: 16 }}>
         {orderedStates.map((s) => (
           <Card key={s.node_id} size="small" style={{ width: 230 }}>
-            <div>{nodeLabel(s.node_id)}</div>
-            <Progress
-              percent={s.total ? Math.round((s.done / s.total) * 100) : 0}
-              status={s.failed > 0 ? 'exception' : s.status === 'done' ? 'success' : 'active'}
-            />
-            <div>
-              {s.done}/{s.total}
-              {s.failed > 0 && <span style={{ color: '#ff4d4f' }}>（失败 {s.failed}）</span>}
-            </div>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>{nodeLabel(s.node_id)}</div>
+            <Progress percent={s.total ? Math.round((s.done / s.total) * 100) : 0}
+                      status={s.failed > 0 ? 'exception' : s.status === 'done' ? 'success' : 'active'} />
+            <div style={{ fontSize: 13 }}>{s.done}/{s.total}
+              {s.failed > 0 && <span style={{ color: '#ff4d4f' }}>（失败 {s.failed}）</span>}</div>
           </Card>
         ))}
       </Space>
