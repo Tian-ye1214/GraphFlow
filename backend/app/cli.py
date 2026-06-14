@@ -416,7 +416,7 @@ def cmd_model_test(args):
     mc_id = cli.resolve("models", args.ref)
     r = cli.req("POST", f"/api/models/{mc_id}/test")
     if r["ok"]:
-        print(f"连通正常: {r['reply']}")
+        print("连通正常")
     else:
         die(f"连接失败: {r['error']}")
 
