@@ -31,3 +31,23 @@ def test_worker_has_report_protocol_and_state_note():
 def test_templates_loadable():
     for name in ("manager_planning_new.md", "manager_planning_continue.md", "manager_summary.md"):
         assert "{user_input}" in load_prompt(name)
+
+
+def test_new_static_prompts_loadable():
+    sysp = load_prompt("codegen_system.md")
+    assert "def process(rows: list[dict]) -> list[dict]" in sysp and "output_columns" in sysp
+    assert "完整" in sysp or "全部" in sysp                       # 替换语义契约
+    assert "pass:false" in load_prompt("qc_empty_anchor.md")      # qc 锚定句
+    assert "压缩器" in load_prompt("compactor_system.md")
+    for name in ("node_assist_llm_synth.md", "node_assist_qc.md"):
+        assert load_prompt(name).strip()
+
+
+def test_new_templated_prompts_render():
+    u = load_prompt("codegen_user.md").format(instruction="去重", columns="q、category")
+    assert "去重" in u and "q" in u and "category" in u
+    r = load_prompt("goal_round.md").format(
+        goal_text="G", run_id=3, metric_str="60.0%", fail_str='[{"q": "a"}]')
+    assert "凝练" in r and "60.0%" in r and "G" in r
+    f = load_prompt("goal_first_round.md").format(goal_text="G")
+    assert "G" in f and "REDLOTUS_GOAL:CONTINUE" in f
