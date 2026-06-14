@@ -134,3 +134,4 @@ def test_instructions_guide_grouped_dedup():
     assert "分组" in INSTRUCTIONS
     assert "上游可用列" in INSTRUCTIONS  # 改为按列名生成
     assert "output_columns" in INSTRUCTIONS  # 要求声明产出列
+    assert "完整" in INSTRUCTIONS or "全部" in INSTRUCTIONS  # 产出列=运行后完整 schema（替换语义契约）

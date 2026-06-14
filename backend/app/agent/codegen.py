@@ -2,24 +2,12 @@
 import json
 
 from app.agent.factory import create_agent
+from app.agent.prompts import load_prompt
 from app.engine.columns import propagate_columns, resolve_dataset_cols
 from app.engine.graph import parse_graph
 from app.models import Workflow
 
-INSTRUCTIONS = """你是数据处理代码生成器，为表格行数据按用户指令写一个 Python 处理函数。
-只输出一个 JSON 对象，不要任何解释或 markdown 围栏，形如：
-{"code": "<Python 源码字符串>", "output_columns": ["<本次新增的列名>", ...]}
-code 字段要求：
-- 必须定义 def process(rows: list[dict]) -> list[dict]，输入输出都是行字典列表。
-- 只能用标准库与 pandas（可 import pandas as pd）；禁止网络访问、禁止读写文件、禁止 exec/eval。
-- 数据问题（如列不存在）让代码自然报错，不要静默吞掉。
-output_columns 字段：列出 code 相对输入新增/产出的列名（仅新增的，没有则空数组 []）。
-
-只给出上游可用列名（不含真实数据），请据指令与列名编写代码。
-常见模式（按需选用、灵活组合，最后都 return 行字典列表，如 df.to_dict('records')）：
-- 全局/多列复合去重：df.drop_duplicates(subset=[列...])（subset 含 'session' 即按 session 与其它列联合去重）。
-- 分组内复杂处理（先按 session 分组、再对每组单独处理）：df.groupby('session', group_keys=False).apply(fn)。
-- 过滤/改列：用 pandas 布尔索引或列表推导。"""
+INSTRUCTIONS = load_prompt("codegen_system.md")
 
 
 def strip_code_fences(text: str) -> str:
@@ -33,7 +21,7 @@ def strip_code_fences(text: str) -> str:
 
 def _user_prompt(instruction: str, columns: list[str]) -> str:
     cols = "、".join(columns) if columns else "（未知，按指令中提到的列名处理）"
-    return f"用户指令：{instruction}\n\n上游可用列：{cols}"
+    return load_prompt("codegen_user.md").format(instruction=instruction, columns=cols)
 
 
 async def generate_code(model, instruction: str, columns: list[str]) -> dict:
@@ -45,18 +33,8 @@ async def generate_code(model, instruction: str, columns: list[str]) -> dict:
 
 
 NODE_ASSIST_INSTRUCTIONS = {
-    "llm_synth": """你为「LLM 合成」节点写配置：根据用户指令和上游可用列，写一段生成提示词。
-硬性要求：
-- 只输出一个 JSON 对象，不要解释或 markdown 围栏。
-- 指令只产出单列时：{"system_prompt":"...","user_prompt":"...","output_mode":"column","output_column":"<列名>"}。
-- 指令产出多列时（让模型返回 JSON 再拆列）：{"system_prompt":"...","user_prompt":"...","output_mode":"json","output_columns":["<列名>",...]}，并让 user_prompt 要求模型只输出对应这些键的 JSON。
-- user_prompt 用 {{列名}} 引用上游的可用列。""",
-    "qc": """你为「质检」节点写判定配置：根据用户指令和上游可用列，写一段判定提示词。
-硬性要求：
-- 只输出一个 JSON 对象，不要解释或 markdown 围栏。
-- 形如 {"system_prompt": "...", "user_prompt": "..."}。
-- 提示词要引导模型只输出 {"pass": true|false, "reason": "<不通过原因>"}。
-- user_prompt 用 {{列名}} 引用上游的可用列。""",
+    "llm_synth": load_prompt("node_assist_llm_synth.md"),
+    "qc": load_prompt("node_assist_qc.md"),
 }
 
 
