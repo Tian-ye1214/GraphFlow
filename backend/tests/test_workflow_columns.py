@@ -36,3 +36,18 @@ async def test_workflow_columns_404_foreign(auth_client, session_factory):
         wf_id = wf.id
     r = await auth_client.get(f"/api/workflows/{wf_id}/columns")
     assert r.status_code == 404
+
+
+async def test_workflow_columns_invalid_graph_returns_422(auth_client):
+    """草稿态非法图（有环 / 悬空边）属正常编辑中间态：列接口应给 422 而非 500。"""
+    wf = (await auth_client.post("/api/workflows", json={"name": "草稿"})).json()
+    cyclic = {"nodes": [{"id": "a", "type": "llm_synth", "config": {}},
+                        {"id": "b", "type": "llm_synth", "config": {}}],
+              "edges": [{"source": "a", "target": "b", "kind": "normal"},
+                        {"source": "b", "target": "a", "kind": "normal"}]}
+    await auth_client.put(f"/api/workflows/{wf['id']}", json={"graph": cyclic})
+    assert (await auth_client.get(f"/api/workflows/{wf['id']}/columns")).status_code == 422
+    dangling = {"nodes": [{"id": "a", "type": "input", "config": {}}],
+                "edges": [{"source": "a", "target": "ghost", "kind": "normal"}]}
+    await auth_client.put(f"/api/workflows/{wf['id']}", json={"graph": dangling})
+    assert (await auth_client.get(f"/api/workflows/{wf['id']}/columns")).status_code == 422

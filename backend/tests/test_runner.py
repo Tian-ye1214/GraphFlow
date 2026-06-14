@@ -245,6 +245,57 @@ async def test_barrier_crash_window_repairs_state(session_factory, monkeypatch):
     assert ns.status == "done" and ns.done == 1
 
 
+async def test_rescan_fanout_no_inflation(session_factory, monkeypatch):
+    """回扫目标带 fanout_n>1：回扫应一行换一行，不得让通过数超过输入、failed 计负、产物翻倍。"""
+    def fn(user):
+        if user.startswith("判定:"):
+            bad = "bad" in user
+            return json.dumps({"pass": not bad, "reason": "bad" if bad else ""}), \
+                {"prompt_tokens": 1, "completion_tokens": 1}
+        if "质检未通过" in user:           # 回扫重生成
+            return "good", {"prompt_tokens": 1, "completion_tokens": 1}
+        return "bad", {"prompt_tokens": 1, "completion_tokens": 1}  # 首轮生成
+
+    patch_chat(monkeypatch, fn)
+    graph = json.loads(json.dumps(RESCAN_GRAPH))
+    graph["nodes"][1]["config"]["fanout_n"] = 2
+    run_id = await make_run(session_factory, graph=graph, rows=1)
+    await run_it(session_factory, run_id)
+    async with session_factory() as s:
+        ns = (await s.execute(select(RunNodeState).where(
+            RunNodeState.run_id == run_id, RunNodeState.node_id == "qc"))).scalar_one()
+    out_rows = await runner._node_outputs(session_factory, run_id, "qc")
+    assert ns.failed >= 0                            # 不得为负
+    assert ns.total == 2 and ns.done == 2            # 1 输入 × fanout2 = 2
+    assert len(out_rows) == 2                        # 回扫不再翻倍
+
+
+async def test_qc_resume_preserves_pass_fail_counts(session_factory, monkeypatch):
+    """已完成 QC 节点再执行(续跑)，应保留真实通过/拒绝计数，不被清成全通过。"""
+    def fn(user):
+        if user.startswith("判定:"):
+            ok = "问1" not in user
+            return json.dumps({"pass": ok, "reason": "" if ok else "坏"}), \
+                {"prompt_tokens": 1, "completion_tokens": 1}
+        return f"答[{user}]", {"prompt_tokens": 1, "completion_tokens": 1}
+
+    patch_chat(monkeypatch, fn)
+    graph = json.loads(json.dumps(RESCAN_GRAPH))
+    graph["edges"] = [e for e in graph["edges"] if e["kind"] != "rescan"]  # 去回扫，问1 直接被拒丢弃
+    run_id = await make_run(session_factory, graph=graph, rows=3)
+    await run_it(session_factory, run_id)
+
+    async def qc_counts():
+        async with session_factory() as s:
+            ns = (await s.execute(select(RunNodeState).where(
+                RunNodeState.run_id == run_id, RunNodeState.node_id == "qc"))).scalar_one()
+            return ns.total, ns.done, ns.failed
+
+    assert await qc_counts() == (3, 2, 1)
+    await run_it(session_factory, run_id)            # 再执行 = 续跑
+    assert await qc_counts() == (3, 2, 1)            # 仍保留，不被清成 (3,3,0)
+
+
 async def test_hard_interrupt_aborts_inflight(session_factory, monkeypatch):
     started, release = asyncio.Event(), asyncio.Event()  # release 永不置位：只有硬中断能解开
 

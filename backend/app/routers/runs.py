@@ -234,6 +234,12 @@ async def rerun_failed(run_id: int, user: User = Depends(get_current_user),
             RunRow.run_id == run.id, RunRow.node_id.in_(reset_targets)))
         await session.execute(sa_delete(RunNodeState).where(
             RunNodeState.run_id == run.id, RunNodeState.node_id.in_(reset_targets)))
+    # 将重算的节点（失败节点本身 + 重置的下游）清掉旧 QC 指标/失败样本，否则重算会再 INSERT
+    # 一条，导致 qc-metrics 同节点重复、first_round_rate（目标模式标尺）被双算。
+    affected = set(failed_nodes) | reset_targets
+    for Model in (QcMetric, QcFailure):
+        await session.execute(sa_delete(Model).where(
+            Model.run_id == run.id, Model.node_id.in_(affected)))
     run.status = "queued"
     run.error = ""
     run.finished_at = None

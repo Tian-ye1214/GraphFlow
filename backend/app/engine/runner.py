@@ -268,8 +268,9 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
         ))).scalar_one_or_none()
         jmcs = [await s.get(ModelConfig, jid) for jid in judge_ids]
     if rec is not None and rec.status == "done":
+        passed_n = len(json.loads(rec.data_json))  # 保留真实通过/拒绝拆分，勿把续跑清成全通过
         await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="done",
-                              total=len(inputs), done=len(inputs), failed=0)
+                              total=len(inputs), done=passed_n, failed=len(inputs) - passed_n)
         return
     if not jmcs or any(m is None or m.user_id != user_id for m in jmcs):
         raise ValueError(f"质检节点 {node.id}: 判定模型配置不存在")
@@ -313,11 +314,12 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
             if tmc is None or tmc.user_id != user_id:
                 raise ValueError(f"回扫目标 {target_id}: 模型配置不存在")
             rsem = asyncio.Semaphore(tgt.config.get("concurrency", 4))
+            regen_cfg = {**tgt.config, "fanout_n": 1}  # 回扫一行换一行，不套用 fanout：否则产物翻倍、failed 计负
 
             async def regen(row):
                 async with rsem:
                     return await _cancellable(
-                        nodes.run_llm_synth_row(tgt.config, row, tmc, user_sem), cancel_event)
+                        nodes.run_llm_synth_row(regen_cfg, row, tmc, user_sem), cancel_event)
 
             while failed and rounds < cfg.get("max_rounds", 3):
                 rounds += 1

@@ -2,15 +2,17 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
+from app.config import settings
 from app.db import get_session
 from app.engine.columns import propagate_columns, resolve_dataset_cols
-from app.engine.graph import parse_graph
+from app.engine.graph import GraphError, parse_graph, validate_graph
 from app.events import publish
-from app.models import User, Workflow
+from app.models import (QcFailure, QcMetric, Run, RunLog, RunNodeState, RunRow, User,
+                        Workflow, WorkflowVersion)
 
 router = APIRouter(prefix="/api/workflows", tags=["workflows"])
 
@@ -67,6 +69,10 @@ async def workflow_columns(wf_id: int, user: User = Depends(get_current_user),
                            session: AsyncSession = Depends(get_session)):
     wf = await get_owned_workflow(wf_id, user, session)
     graph = parse_graph(wf.graph_json)
+    try:  # 草稿态图（有环/悬空边）属正常编辑中间态，应给 422 而非 500（对齐 create_run）
+        validate_graph(graph)
+    except GraphError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     dataset_cols = await resolve_dataset_cols(session, graph, user.id)
     return propagate_columns(graph, dataset_cols)
 
@@ -88,7 +94,20 @@ async def update_workflow(wf_id: int, body: WorkflowUpdate, user: User = Depends
 async def delete_workflow(wf_id: int, user: User = Depends(get_current_user),
                           session: AsyncSession = Depends(get_session)):
     wf = await get_owned_workflow(wf_id, user, session)
+    runs = (await session.execute(
+        select(Run.id, Run.status).where(Run.workflow_id == wf.id))).all()
+    if any(st in ("queued", "running") for _, st in runs):
+        raise HTTPException(status_code=409, detail="存在运行中的任务，请先取消再删除")
+    run_ids = [rid for rid, _ in runs]
+    if run_ids:  # 级联清理子数据，否则版本/运行/行/日志/指标全成孤儿，run 还会脱离列表泄漏
+        for Model in (RunRow, RunNodeState, RunLog, QcMetric, QcFailure):
+            await session.execute(sa_delete(Model).where(Model.run_id.in_(run_ids)))
+        await session.execute(sa_delete(Run).where(Run.workflow_id == wf.id))
+    await session.execute(sa_delete(WorkflowVersion).where(WorkflowVersion.workflow_id == wf.id))
     await session.delete(wf)
     await session.commit()
+    for rid in run_ids:
+        for p in (settings.data_dir / "exports").glob(f"run{rid}_*"):
+            p.unlink(missing_ok=True)
     publish(user.id, "workflow", wf_id)
     return {"ok": True}

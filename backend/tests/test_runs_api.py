@@ -278,3 +278,77 @@ async def test_delete_running_rejected(auth_client, monkeypatch):
     assert (await auth_client.delete(f"/api/runs/{run_id}")).status_code == 409
     await auth_client.post(f"/api/runs/{run_id}/cancel")
     await wait_run(auth_client, run_id)
+
+
+async def test_delete_workflow_cascades(auth_client, monkeypatch, session_factory):
+    from sqlalchemy import func, select
+    from app.models import (QcFailure, QcMetric, Run, RunLog, RunNodeState, RunRow,
+                            WorkflowVersion)
+    patch_chat(monkeypatch)
+    wf_id = await setup_workflow(auth_client)
+    run_id = (await auth_client.post("/api/runs", json={"workflow_id": wf_id})).json()["id"]
+    await wait_run(auth_client, run_id)
+    assert (await auth_client.delete(f"/api/workflows/{wf_id}")).status_code == 200
+    assert (await auth_client.get(f"/api/runs/{run_id}")).status_code == 404  # run 不再是孤儿
+    async with session_factory() as s:
+        for Model in (RunRow, RunNodeState, RunLog, QcMetric, QcFailure):
+            cnt = (await s.execute(select(func.count()).select_from(Model)
+                                   .where(Model.run_id == run_id))).scalar()
+            assert cnt == 0
+        runs = (await s.execute(select(func.count()).select_from(Run)
+                                .where(Run.workflow_id == wf_id))).scalar()
+        vers = (await s.execute(select(func.count()).select_from(WorkflowVersion)
+                                .where(WorkflowVersion.workflow_id == wf_id))).scalar()
+        assert runs == 0 and vers == 0
+
+
+async def test_delete_workflow_with_running_run_rejected(auth_client, monkeypatch):
+    async def slow(mc, system, user, params=None, retries=3):
+        await asyncio.sleep(0.3)
+        return "ok", {"prompt_tokens": 0, "completion_tokens": 0}
+    monkeypatch.setattr(llm, "chat", slow)
+    wf_id = await setup_workflow(auth_client)
+    run_id = (await auth_client.post("/api/runs", json={"workflow_id": wf_id})).json()["id"]
+    assert (await auth_client.delete(f"/api/workflows/{wf_id}")).status_code == 409
+    await auth_client.post(f"/api/runs/{run_id}/cancel")
+    await wait_run(auth_client, run_id)
+
+
+async def test_rerun_failed_no_duplicate_qc_metric(auth_client, monkeypatch):
+    """rerun-failed 后同一 QC 节点不得出现重复指标行（否则 first_round_rate 被双算）。"""
+    broken = {"on": True}
+
+    def fn(user):
+        if user.startswith("判:"):
+            return json.dumps({"pass": True, "reason": ""}), {"prompt_tokens": 1, "completion_tokens": 1}
+        if broken["on"] and "问1" in user:
+            raise RuntimeError("临时故障")
+        return f"答[{user}]", {"prompt_tokens": 1, "completion_tokens": 1}
+
+    patch_chat(monkeypatch, fn)
+    files = [("files", ("种子.jsonl", JSONL, "application/octet-stream"))]
+    ds = (await auth_client.post("/api/datasets/upload", files=files)).json()[0]
+    mc = (await auth_client.post("/api/models", json={
+        "name": "m", "model_name": "q", "base_url": "http://x/v1",
+        "api_key": "k", "default_params": {}})).json()
+    wf = (await auth_client.post("/api/workflows", json={"name": "qc流"})).json()
+    graph = {"nodes": [
+        {"id": "in", "type": "input", "config": {"dataset_ids": [ds["id"]]}},
+        {"id": "gen", "type": "llm_synth", "config": {
+            "model_config_id": mc["id"], "user_prompt": "Q:{{q}}", "output_column": "a", "retries": 1}},
+        {"id": "qc", "type": "qc", "config": {"model_config_id": mc["id"], "user_prompt": "判:{{a}}"}},
+        {"id": "out", "type": "output", "config": {}},
+    ], "edges": [
+        {"source": "in", "target": "gen", "kind": "normal"},
+        {"source": "gen", "target": "qc", "kind": "normal"},
+        {"source": "qc", "target": "out", "kind": "normal"}]}
+    await auth_client.put(f"/api/workflows/{wf['id']}", json={"graph": graph})
+    run_id = (await auth_client.post("/api/runs", json={"workflow_id": wf["id"]})).json()["id"]
+    await wait_run(auth_client, run_id)
+
+    broken["on"] = False
+    assert (await auth_client.post(f"/api/runs/{run_id}/rerun-failed")).status_code == 200
+    await wait_run(auth_client, run_id)
+    metrics = (await auth_client.get(f"/api/runs/{run_id}/qc-metrics")).json()
+    assert len(metrics) == 1                                    # 单节点单条指标
+    assert metrics[0]["total"] == 3 and metrics[0]["first_round_rate"] == 1.0
