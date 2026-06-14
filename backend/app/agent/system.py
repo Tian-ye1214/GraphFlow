@@ -24,25 +24,29 @@ class AgentSystem:
         self.task_manager = TaskManager()
         self._manager_history: list = []
         self._main_state = self.workdir / "cli.json"
+        self._compactor_mc = resolve_compactor_model(models)
         self.orchestrator = WorkerOrchestrator(
             task_manager=self.task_manager, worker_model=models["worker"],
             workdir=self.workdir, make_tools=self._make_tools,
-            skills_manager=self.skills_manager)
-        self._compactor_mc = resolve_compactor_model(models)
+            skills_manager=self.skills_manager, compactor_mc=self._compactor_mc)
 
     def _make_tools(self, state_file: Path) -> list:
         tk = AgentToolkit(self.workdir, state_file, self._confirm_delete)
         sk = SkillsToolkit(self.skills_manager, state_file)
         return tk.tools + sk.tools
 
+    async def _compact(self, history: list, running_mc) -> list:
+        if self._compactor_mc is None:
+            return history
+        return await maybe_compact(history, compactor_mc=self._compactor_mc,
+                                   running_mc=running_mc, emit=self.emit)
+
     async def run_turn(self, text: str, history: list) -> tuple[list, str]:
         """跑一轮 coordinator，返回 (新的全量历史, 输出文本)。"""
         tools = [self.execute_task_with_manager, self.execute_task_with_worker]
         tools += self._make_tools(self._main_state)
         coord = self.models["coordinator"]
-        if self._compactor_mc is not None:
-            history = await maybe_compact(history, compactor_mc=self._compactor_mc,
-                                          running_mc=coord, emit=self.emit)
+        history = await self._compact(history, coord)
         agent = create_agent(coord, tools, get_coordinator_system_prompt(self.skills_manager))
         result = await agent.run(text, message_history=history,
                                  event_stream_handler=self._on_stream if self.emit else None)
@@ -78,6 +82,7 @@ class AgentSystem:
 
         token = ROLE.set("manager")
         try:
+            self._manager_history = await self._compact(self._manager_history, self.models["manager"])
             result = await manager_agent.run(planning, message_history=self._manager_history)
             self._manager_history = result.all_messages()
         finally:
@@ -89,6 +94,7 @@ class AgentSystem:
             user_input=user_input, final_summary=final_summary)
         token = ROLE.set("manager")
         try:
+            self._manager_history = await self._compact(self._manager_history, self.models["manager"])
             result = await manager_agent.run(summary, message_history=self._manager_history)
             self._manager_history = result.all_messages()
         finally:

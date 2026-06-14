@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from app.agent.compactor import maybe_compact
 from app.agent.factory import create_agent
 from app.agent.prompts import get_worker_system_prompt
 from app.agent.tools import ROLE
@@ -226,12 +227,13 @@ class WorkerOrchestrator:
     """Worker 执行编排：单任务（adhoc）与依赖分波并行。每个 Worker 复制独立 gf 状态文件。"""
 
     def __init__(self, *, task_manager: TaskManager, worker_model, workdir: Path,
-                 make_tools, skills_manager):
+                 make_tools, skills_manager, compactor_mc=None):
         self._tm = task_manager
         self._worker_model = worker_model
         self._workdir = Path(workdir)
         self._make_tools = make_tools  # (state_file: Path) -> list[tool]
         self._skills_manager = skills_manager
+        self._compactor_mc = compactor_mc
         self._adhoc_seq = 0
 
     def _spawn_state(self, label) -> Path:
@@ -316,6 +318,9 @@ class WorkerOrchestrator:
             parts.append(f"\n这是第 {task.retry_count} 次重试。此前失败：\n{fails}\n请换一种方式。")
         prompt = "\n".join(parts)
 
+        if self._compactor_mc is not None:
+            task.history = await maybe_compact(task.history, compactor_mc=self._compactor_mc,
+                                               running_mc=self._worker_model)
         token = ROLE.set(worker_id)
         try:
             result = await agent.run(prompt, message_history=task.history)
