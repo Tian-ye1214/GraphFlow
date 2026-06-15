@@ -53,14 +53,15 @@ async def main():
     chk("上传返回 200", r.status_code == 200, f"status={r.status_code}")
     dsets = r.json()
     names = {d["name"] for d in dsets}
-    chk("多 sheet → 多数据集（主数据/配置/数值表，空表跳过）",
-        names == {"complex_test-主数据", "complex_test-配置", "complex_test-数值表"}, f"names={sorted(names)}")
+    chk("多 sheet → 多数据集（主数据/配置/数值表/边界，空表跳过）",
+        names == {"complex_test-主数据", "complex_test-配置", "complex_test-数值表", "complex_test-边界"},
+        f"names={sorted(names)}")
     ds = next(d for d in dsets if d["name"].endswith("主数据"))
     cfg = next((d for d in dsets if d["name"].endswith("配置")), None)
     num = next((d for d in dsets if d["name"].endswith("数值表")), None)
     # 配置 sheet：不同 schema，独立成集
     if cfg:
-        chk("配置 sheet 独立成集且列正确", cfg["columns"] == ["category", "weight", "enabled"],
+        chk("配置 sheet 独立成集且列正确", cfg["columns"] == ["category", "weight", "enabled", "note"],
             f"cols={cfg['columns']}")
     # 数值表 sheet：真数值仍是数值（dtype=object 不把数字变字符串）
     if num:
@@ -70,7 +71,7 @@ async def main():
             f"seq={nrows[1]['seq']!r} ratio={nrows[1]['ratio']!r}")
 
     cols = ds["columns"]
-    chk("主数据 行数=100", ds["row_count"] == 100, f"row_count={ds['row_count']}")
+    chk("主数据 行数=200", ds["row_count"] == 200, f"row_count={ds['row_count']}")
     chk("重复列名消歧 dup/dup.1 都在", "dup" in cols and "dup.1" in cols)
     chk("_qc 前缀用户列存活", "_qc_score" in cols and "_qc_note" in cols)
     chk("中文/点号/emoji/超长 列名都在",
@@ -90,6 +91,12 @@ async def main():
     none_vals = [rr["none_or_str"] for rr in rows]
     chk("字面量'None'不被当缺失吞掉(且与空串可辨)", ("None" in none_vals) and ("" in none_vals),
         f"含 'None'={'None' in none_vals} 含 空串={'' in none_vals}")
+    # 本轮新增列的解析保真
+    chk("多行单元格内嵌换行/制表保留", "\n" in r0["multiline"] and "\t" in r0["multiline"], f"multiline={r0['multiline']!r}")
+    chk("真实日期 → ISO 字符串", isinstance(r0["ts"], str) and r0["ts"].startswith("2026-01-01"), f"ts={r0['ts']!r}")
+    chk("JSON 字符串保字符串(不被解析成对象)", isinstance(r0["json_str"], str), f"type={type(r0['json_str']).__name__}")
+    chk("空格填充数字串两侧空格保留", r0["space_pad"].startswith(" ") and r0["space_pad"].endswith(" "), f"space_pad={r0['space_pad']!r}")
+    chk("真实大整数保数值", isinstance(r0["big_num"], int), f"big_num={r0['big_num']!r}")
 
     # ── 2) 复杂链路：列 CRUD（rename/drop/cast/concat/filter/dedup）+ 菱形双合成合并 ──
     print("\n=== 2) 构建复杂链路 ===")
