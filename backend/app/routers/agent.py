@@ -191,6 +191,7 @@ class CodegenIn(BaseModel):
     node_id: str
     instruction: str
     model_config_id: int
+    current_code: str | None = None
 
 
 @router.post("/codegen")
@@ -205,7 +206,7 @@ async def codegen(body: CodegenIn, user: User = Depends(get_current_user),
     if not body.instruction.strip():
         raise HTTPException(status_code=422, detail="指令不能为空")
     columns, source = await gather_upstream_columns(session, body.workflow_id, body.node_id, user.id)
-    result = await generate_code(mc, body.instruction, columns)
+    result = await generate_code(mc, body.instruction, columns, current_code=body.current_code or "")
     return {"code": result["code"], "output_columns": result["output_columns"],
             "columns": columns, "sample_source": source}
 
@@ -216,6 +217,7 @@ class NodeAssistIn(BaseModel):
     node_type: str
     instruction: str
     model_config_id: int
+    current_config: dict | None = None
 
 
 @router.post("/node-assist")
@@ -232,5 +234,6 @@ async def node_assist(body: NodeAssistIn, user: User = Depends(get_current_user)
     if not body.instruction.strip():
         raise HTTPException(status_code=422, detail="指令不能为空")
     columns, source = await gather_upstream_columns(session, body.workflow_id, body.node_id, user.id)
-    config = await codegen_mod.generate_node_config(mc, body.node_type, body.instruction, columns)
+    config = await codegen_mod.generate_node_config(
+        mc, body.node_type, body.instruction, columns, current_config=body.current_config)
     return {"config": config, "sample_source": source}
