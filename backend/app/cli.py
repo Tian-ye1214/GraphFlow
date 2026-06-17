@@ -39,7 +39,9 @@ class Cli:
         self.state = load_state()
         if not self.state.get("cookie"):
             die("未登录，先执行: gf login <用户名>")
-        self.http = httpx.Client(base_url=self.state["server"],
+        # trust_env=False：gf 访问用户显式指定的服务器（常为本地），绝不走系统代理
+        # （否则开了 Clash 等系统代理时，127.0.0.1 请求被代理拦截返回 502）。
+        self.http = httpx.Client(base_url=self.state["server"], trust_env=False,
                                  cookies={"gf_session": self.state["cookie"]}, timeout=30)
 
     def check(self, r: httpx.Response) -> httpx.Response:
@@ -80,7 +82,8 @@ class Cli:
 
 def cmd_login(args):
     server = args.server.rstrip("/")
-    r = httpx.post(f"{server}/api/auth/login", json={"username": args.username}, timeout=10)
+    r = httpx.post(f"{server}/api/auth/login", json={"username": args.username},
+                   timeout=10, trust_env=False)  # 同上：登录也不走系统代理
     if r.status_code >= 400:
         die(f"登录失败: HTTP {r.status_code} {r.text[:200]}")
     state = load_state()
