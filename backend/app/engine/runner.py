@@ -87,6 +87,8 @@ async def _execute(run_id, session_factory, user_sem, cancel_event):
         elif node.type == "qc":
             await _run_qc_node(session_factory, run_id, user_id, graph, node, inputs,
                                user_sem, cancel_event)
+        elif node.type == "http_fetch":
+            await _run_http_node(session_factory, run_id, user_id, node, inputs, cancel_event)
         else:
             await _run_barrier_node(session_factory, run_id, user_id, node, inputs)
         done, failed = await _node_counts(session_factory, run_id, node.id)
@@ -260,6 +262,46 @@ async def _run_llm_node(session_factory, run_id, user_id, node: Node, inputs,
                     nodes.run_llm_synth_row(cfg, inputs[idx], mc, user_sem), cancel_event)
             except asyncio.CancelledError:
                 return  # 硬中断：在途请求已 abort，该行不落库（保持 pending）
+            except Exception as e:
+                await _write_unit(session_factory, run_id, node.id, idx, "failed", [], str(e))
+                failed_count += 1
+            else:
+                await _write_unit(session_factory, run_id, node.id, idx, "done", out_rows, "",
+                                  usage=usage)
+                done_count += 1
+            await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running",
+                                  total=total, done=done_count, failed=failed_count)
+
+    await asyncio.gather(*[work(i) for i in todo])
+    if not cancel_event.is_set():
+        await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="done",
+                              total=total, done=done_count, failed=failed_count)
+
+
+async def _run_http_node(session_factory, run_id, user_id, node: Node, inputs, cancel_event):
+    cfg = node.config
+    async with session_factory() as s:
+        existing = (await s.execute(select(RunRow.row_idx, RunRow.status).where(
+            RunRow.run_id == run_id, RunRow.node_id == node.id))).all()
+    done_idx = {idx for idx, st in existing if st == "done"}
+    failed_idx = {idx for idx, st in existing if st == "failed"}
+    total = len(inputs)
+    done_count, failed_count = len(done_idx), len(failed_idx)
+    await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running",
+                          total=total, done=done_count, failed=failed_count)
+    todo = [i for i in range(total) if i not in done_idx and i not in failed_idx]
+    node_sem = asyncio.Semaphore(cfg.get("concurrency", 4))
+
+    async def work(idx: int):
+        nonlocal done_count, failed_count
+        async with node_sem:
+            if cancel_event.is_set():
+                return
+            try:
+                out_rows, usage = await _cancellable(
+                    nodes.run_http_fetch_row(cfg, inputs[idx]), cancel_event)
+            except asyncio.CancelledError:
+                return  # 硬中断：该行不落库（保持 pending）
             except Exception as e:
                 await _write_unit(session_factory, run_id, node.id, idx, "failed", [], str(e))
                 failed_count += 1
