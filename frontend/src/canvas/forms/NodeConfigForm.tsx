@@ -26,6 +26,16 @@ function missingCols(text: string, inputCols: string[]): string[] {
   return out
 }
 
+function referencedCols(text: string, inputCols: string[]): string[] {
+  const out: string[] = []
+  for (const m of (text ?? '').matchAll(TPL_RE)) {
+    if (inputCols.includes(m[1]) && !out.includes(m[1])) out.push(m[1])
+  }
+  return out
+}
+
+const MANY_COLS = 12
+
 function MissingColsWarning({ text, inputCols }: { text: string; inputCols: string[] }) {
   const miss = missingCols(text, inputCols)
   if (miss.length === 0) return null
@@ -57,24 +67,34 @@ function liveOutput(type: string, config: Record<string, any>, inputCols: string
   return inputCols
 }
 
-function ColumnsBar({ inputCols, outputCols, onInsert }: {
-  inputCols: string[]; outputCols: string[]; onInsert?: (col: string) => void
+function ColumnsBar({ inputCols, outputCols, referenced = [], onInsert }: {
+  inputCols: string[]; outputCols: string[]; referenced?: string[]; onInsert?: (col: string) => void
 }) {
+  const refSet = new Set(referenced)
+  const many = inputCols.length > MANY_COLS
   return (
     <div style={{ background: '#fafafa', border: '1px solid #f0f0f0', borderRadius: 6, padding: 8, marginBottom: 12, fontSize: 12 }}>
       <div style={{ color: '#666', marginBottom: 4 }}>
         输入列：{inputCols.length === 0
           ? <span style={{ color: '#bbb' }}>（无／先连好上游）</span>
-          : inputCols.map((c) => (
-            <Tag key={c} style={{ cursor: onInsert ? 'pointer' : 'default', marginInlineEnd: 4 }}
-                 onClick={() => onInsert?.(c)}>{c}</Tag>))}
+          : many
+            ? <Select showSearch style={{ width: '100%', marginTop: 4 }} value={null} allowClear={false}
+                      listHeight={320} placeholder={`全部 ${inputCols.length} 列，点选插入 {{列}}`}
+                      onChange={(c) => c && onInsert?.(c as string)}
+                      options={inputCols.map((c) => ({ value: c, label: refSet.has(c) ? `🟢 ${c}` : c }))} />
+            : inputCols.map((c) => (
+              <Tag key={c} color={refSet.has(c) ? 'green' : undefined}
+                   style={{ cursor: onInsert ? 'pointer' : 'default', marginInlineEnd: 4 }}
+                   onClick={() => onInsert?.(c)}>{c}</Tag>))}
       </div>
       <div style={{ color: '#666' }}>
         输出列：{outputCols.length === 0
           ? <span style={{ color: '#bbb' }}>（无）</span>
           : outputCols.map((c) => <Tag key={c} color="blue" style={{ marginInlineEnd: 4 }}>{c}</Tag>)}
       </div>
-      {onInsert && <div style={{ color: '#999', marginTop: 4 }}>点输入列标签即可插入 {'{{列}}'} 到 User Prompt</div>}
+      {onInsert && <div style={{ color: '#999', marginTop: 4 }}>
+        点输入列（<span style={{ color: '#52c41a' }}>绿色</span>=已被引用）插入 {'{{列}}'}{many ? '；列多已折叠为可搜索下拉框，展示全部' : ''}
+      </div>}
     </div>
   )
 }
@@ -558,13 +578,19 @@ export default function NodeConfigForm({ type, config, onChange, workflowId, nod
   }, [workflowId, nodeId])
   const nodeCols = (nodeId && colsMap[nodeId]) || { input: [], output: [] }
   const inputCols = nodeCols.input
-  const outputCols = type === 'llm_synth' || type === 'auto_process'
+  const outputCols = type === 'llm_synth' || type === 'auto_process' || type === 'http_fetch'
     ? liveOutput(type, config, inputCols) : nodeCols.output
-  const canInsert = type === 'llm_synth' || type === 'qc'
+  // 绿标：本节点模板字段里 {{列}} 引用到、且确实在输入列中的列 = 实际用到的列
+  const refText = type === 'http_fetch'
+    ? [config.url, config.body, ...Object.values(config.headers ?? {})].filter(Boolean).map(String).join('\n')
+    : `${config.system_prompt ?? ''}\n${config.user_prompt ?? ''}`
+  const referenced = referencedCols(refText, inputCols)
+  const insertField = type === 'http_fetch' ? 'url' : 'user_prompt'
+  const canInsert = type === 'llm_synth' || type === 'qc' || type === 'http_fetch'
   const bar = type === 'input' ? null : (
-    <ColumnsBar inputCols={inputCols} outputCols={outputCols}
+    <ColumnsBar inputCols={inputCols} outputCols={outputCols} referenced={referenced}
                 onInsert={canInsert
-                  ? (c) => onChange({ ...config, user_prompt: (config.user_prompt ?? '') + `{{${c}}}` })
+                  ? (c) => onChange({ ...config, [insertField]: (config[insertField] ?? '') + `{{${c}}}` })
                   : undefined} />
   )
   switch (type) {
