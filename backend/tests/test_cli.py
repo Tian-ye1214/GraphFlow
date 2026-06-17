@@ -336,6 +336,32 @@ def test_watch_without_runs_dies(server, capsys):
     assert "还没有运行记录" in capsys.readouterr().err
 
 
+def test_http_node_add_set_show(server, capsys):
+    login_and_wf(server)
+    gf("node", "add", "http")
+    capsys.readouterr()
+    gf("node", "set", "http_fetch_1", "url=http://api/{{q}}", "method=GET",
+       "extract=temp:data.temp,desc:data.weather.0.desc", "conc=8")
+    capsys.readouterr()
+    gf("node", "show", "http_fetch_1")
+    node = json.loads(capsys.readouterr().out)
+    assert node["type"] == "http_fetch"
+    assert node["config"]["url"] == "http://api/{{q}}"
+    assert node["config"]["method"] == "GET"
+    assert node["config"]["extract"] == {"temp": "data.temp", "desc": "data.weather.0.desc"}
+    assert node["config"]["concurrency"] == 8
+
+
+def test_http_node_show_summary(server, capsys):
+    login_and_wf(server)
+    gf("node", "add", "http")
+    gf("node", "set", "http_fetch_1", "url=http://api/x")
+    capsys.readouterr()
+    gf("show")
+    out = capsys.readouterr().out
+    assert "HTTP 取数" in out and "http://api/x" in out
+
+
 def test_node_set_judge_models_and_pass_k(server, capsys):
     login_and_wf(server)
     gf("model", "add", "裁判甲", "--url", "http://x/v1", "--model", "q1", "--key", "k1")

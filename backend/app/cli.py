@@ -10,9 +10,10 @@ import httpx
 
 STATE_FILE = Path(os.environ.get("GF_STATE_FILE") or Path.home() / ".graphflow" / "cli.json")
 NODE_TYPES = {"input": "input", "llm": "llm_synth", "auto": "auto_process", "output": "output",
-              "qc": "qc", "llm_synth": "llm_synth", "auto_process": "auto_process"}
+              "qc": "qc", "llm_synth": "llm_synth", "auto_process": "auto_process",
+              "http": "http_fetch", "http_fetch": "http_fetch"}
 NODE_LABELS = {"input": "输入", "llm_synth": "LLM 合成", "auto_process": "自动处理",
-               "output": "输出", "qc": "质检"}
+               "output": "输出", "qc": "质检", "http_fetch": "HTTP 取数"}
 KIND_LABELS = {"workflows": "工作流", "datasets": "数据集", "models": "模型配置"}
 STATUS_LABELS = {"queued": "排队中", "running": "运行中", "completed": "已完成",
                  "failed": "失败", "cancelled": "已取消", "pending": "等待", "done": "完成"}
@@ -145,6 +146,8 @@ def summarize(n: dict) -> str:
         return f"模型 #{c.get('model_config_id', '?')} -> {c.get('output_column', 'output')}"
     if n["type"] == "auto_process":
         return f"{len(c.get('operations', []))} 个操作"
+    if n["type"] == "http_fetch":
+        return f"{c.get('method', 'GET')} {c.get('url', '?')} -> {list((c.get('extract') or {}).keys())}"
     return f"保存为数据集「{c['dataset_name']}」" if c.get("save_as_dataset") else ""
 
 
@@ -169,6 +172,7 @@ LLM_PARAM_KEYS = {"temp": "temperature", "top_p": "top_p", "max_tokens": "max_to
                   "timeout": "timeout", "json_mode": "json_mode"}
 INT_KEYS = {"fanout_n", "concurrency", "retries", "max_tokens", "timeout"}
 FLOAT_KEYS = {"temperature", "top_p"}
+HTTP_STR_KEYS = {"url", "method", "body"}
 
 
 def convert(field: str, v: str):
@@ -202,7 +206,7 @@ def cmd_node_add(args):
     cli = Cli()
     ntype = NODE_TYPES.get(args.type)
     if ntype is None:
-        die(f"未知节点类型 {args.type}（可选: input/llm/auto/output/qc）")
+        die(f"未知节点类型 {args.type}（可选: input/llm/auto/output/qc/http）")
     wf = cli.get_wf()
     nodes = wf["graph"]["nodes"]
     if args.id:
@@ -240,6 +244,10 @@ def cmd_node_set(args):
             cfg["pass_k"] = int(v)
         elif k == "max_rounds":
             cfg["max_rounds"] = int(v)
+        elif k in HTTP_STR_KEYS:
+            cfg[k] = v
+        elif k == "extract":
+            cfg["extract"] = dict(p.split(":", 1) for p in v.split(",") if ":" in p)
         elif k in LLM_CONFIG_KEYS:
             cfg[LLM_CONFIG_KEYS[k]] = convert(LLM_CONFIG_KEYS[k], v)
         elif k in LLM_PARAM_KEYS:
