@@ -127,6 +127,27 @@ def _cell(v) -> str:
     return "" if v is None else str(v)
 
 
+def json_path_get(obj, path: str):
+    """点号路径取值：data.weather.0.desc —— 数字段对 list 当索引、对 dict 当键。
+    任一级类型不符或缺失返回 None（落列时再归一成空串）。不支持通配/过滤（YAGNI）。"""
+    cur = obj
+    for part in path.split("."):
+        if isinstance(cur, list):
+            if not part.lstrip("-").isdigit():
+                return None
+            idx = int(part)
+            if not -len(cur) <= idx < len(cur):
+                return None
+            cur = cur[idx]
+        elif isinstance(cur, dict):
+            if part not in cur:
+                return None
+            cur = cur[part]
+        else:
+            return None
+    return cur
+
+
 # 运行期注入的内部 QC 簿记列：渲染/判定/落库前剔除。只剔这两个确切键——
 # 用旧的 startswith("_qc") 会把用户同前缀列（如 _qc_score）一并静默吃掉。
 _QC_INTERNAL_KEYS = ("_qc_reason", "_qc_per_model")
