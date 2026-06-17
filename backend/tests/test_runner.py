@@ -93,6 +93,30 @@ RESCAN_GRAPH = {
 }
 
 
+DROP_GRAPH = {
+    "nodes": [
+        {"id": "in", "type": "input", "config": {"dataset_ids": []}},
+        {"id": "gen", "type": "llm_synth",
+         "config": {"model_config_id": 0, "user_prompt": "Q:{{q}}", "output_column": "a",
+                    "drop_columns": ["q"], "concurrency": 4, "retries": 1}},
+        {"id": "out", "type": "output", "config": {}},
+    ],
+    "edges": [{"source": "in", "target": "gen", "kind": "normal"},
+              {"source": "gen", "target": "out", "kind": "normal"}],
+}
+
+
+async def test_drop_columns_excluded_from_node_output(session_factory, monkeypatch):
+    patch_chat(monkeypatch)
+    run_id = await make_run(session_factory, DROP_GRAPH, rows=2)
+    await run_it(session_factory, run_id)
+    rows = await runner._node_outputs(session_factory, run_id, "gen")
+    assert len(rows) == 2
+    for r in rows:
+        assert "q" not in r        # 输入列 q 被本节点删除，不落库
+        assert r["a"]              # 产出列 a 保留
+
+
 def _rescan_fn(persistent):
     def fn(user):
         if user.startswith("判定:"):  # 质检判定调用：含 bad 即不通过

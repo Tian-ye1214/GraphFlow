@@ -160,7 +160,7 @@ def _merge_branches(node_id: str, branches: list[list[dict]]) -> list[dict]:
 
 
 async def _write_unit(session_factory, run_id, node_id, row_idx, status, out_rows, error,
-                      usage: dict | None = None, qc_round: int = 0):
+                      usage: dict | None = None, qc_round: int = 0, drop=None):
     async with session_factory() as s:
         rec = (await s.execute(select(RunRow).where(
             RunRow.run_id == run_id, RunRow.node_id == node_id, RunRow.row_idx == row_idx
@@ -169,6 +169,9 @@ async def _write_unit(session_factory, run_id, node_id, row_idx, status, out_row
             rec = RunRow(run_id=run_id, node_id=node_id, row_idx=row_idx, attempt=0)
             s.add(rec)
         rec.status = status
+        if drop:
+            drop_set = set(drop)
+            out_rows = [{k: v for k, v in r.items() if k not in drop_set} for r in out_rows]
         rec.data_json = json.dumps(out_rows, ensure_ascii=False)
         rec.error = error
         rec.attempt = (rec.attempt or 0) + 1
@@ -208,7 +211,8 @@ async def _run_barrier_node(session_factory, run_id, user_id, node: Node, inputs
         await _write_unit(session_factory, run_id, node.id, 0, "failed", [], str(e))
         await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="failed", total=1, done=0, failed=1)
         raise
-    await _write_unit(session_factory, run_id, node.id, 0, "done", out, "")
+    await _write_unit(session_factory, run_id, node.id, 0, "done", out, "",
+                      drop=node.config.get("drop_columns"))
     await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="done", total=1, done=1, failed=0)
 
 
@@ -267,7 +271,7 @@ async def _run_llm_node(session_factory, run_id, user_id, node: Node, inputs,
                 failed_count += 1
             else:
                 await _write_unit(session_factory, run_id, node.id, idx, "done", out_rows, "",
-                                  usage=usage)
+                                  usage=usage, drop=cfg.get("drop_columns"))
                 done_count += 1
             await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running",
                                   total=total, done=done_count, failed=failed_count)
@@ -307,7 +311,7 @@ async def _run_http_node(session_factory, run_id, user_id, node: Node, inputs, c
                 failed_count += 1
             else:
                 await _write_unit(session_factory, run_id, node.id, idx, "done", out_rows, "",
-                                  usage=usage)
+                                  usage=usage, drop=cfg.get("drop_columns"))
                 done_count += 1
             await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running",
                                   total=total, done=done_count, failed=failed_count)
@@ -412,6 +416,6 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
                               total=len(inputs), done=0, failed=len(inputs))
         raise
     await _write_unit(session_factory, run_id, node.id, 0, "done", passed, "",
-                      usage=usage, qc_round=rounds)
+                      usage=usage, qc_round=rounds, drop=cfg.get("drop_columns"))
     await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="done",
                           total=len(inputs), done=len(passed), failed=len(inputs) - len(passed))
