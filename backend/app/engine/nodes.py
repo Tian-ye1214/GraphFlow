@@ -6,7 +6,7 @@ import re
 from app.agent.prompts import load_prompt
 from app.engine import pycode
 from app.models import ModelConfig
-from app.services import llm
+from app.services import http, llm
 
 QC_EMPTY_ANCHOR = "\n\n" + load_prompt("qc_empty_anchor.md")
 
@@ -194,6 +194,27 @@ async def run_llm_synth_row(config: dict, row: dict, mc: ModelConfig,
         else:
             out_rows.append({**base, config.get("output_column", "output"): text})
     return out_rows, usage_total
+
+
+async def run_http_fetch_row(config: dict, row: dict) -> tuple[list[dict], dict]:
+    """处理一条输入行：渲染 url/headers/body 后调接口，按 extract 的 JSON 路径提取落列。
+    返回 (输出行列表, 空 usage)。请求失败/响应非 JSON 抛异常由 runner 记为行失败（逐行隔离）。"""
+    base = strip_qc_internal(row)
+    method = config.get("method", "GET")
+    url = render_template(config.get("url", ""), base)
+    headers = {k: render_template(str(v), base) for k, v in (config.get("headers") or {}).items()}
+    body = render_template(config["body"], base) if config.get("body") else None
+    status, text = await http.fetch(method, url, headers=headers, body=body,
+                                    timeout=config.get("timeout", 30), retries=config.get("retries", 2))
+    try:
+        data = _json.loads(text)
+    except (ValueError, TypeError):
+        raise ValueError(f"接口响应非 JSON，无法提取（HTTP {status} {url}）")
+    extracted = {}
+    for col, path in (config.get("extract") or {}).items():
+        v = json_path_get(data, path)
+        extracted[col] = "" if v is None else v   # 字段缺失→空串（同 render 缺失语义），非缺失保原类型
+    return [{**base, **extracted}], {}
 
 
 def _truthy(v) -> bool:
