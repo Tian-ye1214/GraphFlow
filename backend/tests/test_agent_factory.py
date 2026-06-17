@@ -33,7 +33,14 @@ def test_create_model_decrypts_key(monkeypatch):
 def test_create_model_no_key():
     model = factory.create_model(_mc(api_key_enc="", default_params_json="{}"))
     assert model.model_name == "qwen-max"
-    assert model.settings is None
+    # 思考默认开启 → settings 带 extra_body，不再为 None
+    assert model.settings["extra_body"] == {
+        "thinking": {"type": "enabled"}, "reasoning_effort": "high"}
+
+
+def test_create_model_thinking_disabled():
+    model = factory.create_model(_mc(default_params_json='{"thinking_enabled": false}'))
+    assert "extra_body" not in (model.settings or {})
 
 
 async def test_create_agent_runs_tools():

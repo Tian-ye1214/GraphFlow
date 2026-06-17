@@ -8,6 +8,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from app import crypto
 from app.agent.tools import wrap_tools
 from app.models import ModelConfig
+from app.thinking import thinking_extra_body
 
 SETTINGS_KEYS = ("temperature", "top_p", "max_tokens", "timeout")
 
@@ -15,6 +16,9 @@ SETTINGS_KEYS = ("temperature", "top_p", "max_tokens", "timeout")
 def create_model(mc: ModelConfig) -> OpenAIChatModel:
     params = json.loads(mc.default_params_json)
     kw = {k: params[k] for k in SETTINGS_KEYS if params.get(k) is not None}
+    eb = thinking_extra_body(params)
+    if eb is not None:
+        kw["extra_body"] = eb
     provider = OpenAIProvider(
         base_url=mc.base_url,
         api_key=crypto.decrypt(mc.api_key_enc) if mc.api_key_enc else "none")
