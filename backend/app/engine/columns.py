@@ -42,6 +42,12 @@ def _apply_op(cols: list[str], op: dict) -> list[str]:
 
 
 def _node_output(node, input_cols: list[str], dataset_cols: dict[int, list[str]]) -> list[str]:
+    out = _typed_output(node, input_cols, dataset_cols)
+    drop = set(node.config.get("drop_columns") or [])
+    return [c for c in out if c not in drop] if drop else out
+
+
+def _typed_output(node, input_cols: list[str], dataset_cols: dict[int, list[str]]) -> list[str]:
     t = node.type
     if t == "input":
         # input 节点多数据集=纵向堆叠（行异构）：只保「每行都有」的列=交集，不虚报。

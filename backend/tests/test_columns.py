@@ -147,5 +147,27 @@ def test_http_fetch_no_extract_passthrough():
     assert cols["h"]["output"] == ["id", "q"]
 
 
+def test_drop_columns_removed_from_output_and_downstream():
+    g = _g(
+        [{"id": "in", "type": "input", "config": {"dataset_ids": [1]}},
+         {"id": "ls", "type": "llm_synth",
+          "config": {"output_column": "a", "drop_columns": ["secret"]}},
+         {"id": "out", "type": "output", "config": {}}],
+        [{"source": "in", "target": "ls", "kind": "normal"},
+         {"source": "ls", "target": "out", "kind": "normal"}])
+    cols = propagate_columns(g, {1: ["id", "q", "secret"]})
+    assert cols["ls"]["output"] == ["id", "q", "a"]   # secret 被本节点删除
+    assert cols["out"]["input"] == ["id", "q", "a"]   # 下游看不到 secret
+
+
+def test_drop_columns_empty_is_noop():
+    g = _g(
+        [{"id": "in", "type": "input", "config": {"dataset_ids": [1]}},
+         {"id": "ls", "type": "llm_synth", "config": {"output_column": "a"}}],
+        [{"source": "in", "target": "ls", "kind": "normal"}])
+    cols = propagate_columns(g, {1: ["q"]})
+    assert cols["ls"]["output"] == ["q", "a"]          # 无 drop_columns 时行为不变
+
+
 def test_empty_graph():
     assert propagate_columns(parse_graph({"nodes": [], "edges": []}), {}) == {}
