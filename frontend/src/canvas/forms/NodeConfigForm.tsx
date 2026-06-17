@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Button, Input, InputNumber, Radio, Select, Space, Switch, Table, Tag } from 'antd'
+import { Button, Input, InputNumber, Popover, Radio, Select, Space, Switch, Table, Tag } from 'antd'
 import { api } from '../../api/client'
 import type { CodegenOut, ColumnsMap, Dataset, ModelConfig, NodeAssistOut, RowsPage } from '../../api/types'
 
@@ -56,9 +56,11 @@ function MissingColsWarning({ text, inputCols }: { text: string; inputCols: stri
 const uniq = (arr: string[]) => arr.filter((c, i) => arr.indexOf(c) === i)
 
 function liveOutput(type: string, config: Record<string, any>, inputCols: string[]): string[] {
+  const drop = new Set<string>(config.drop_columns ?? [])
+  const sub = (cols: string[]) => cols.filter((c) => !drop.has(c))
   if (type === 'llm_synth') {
-    if ((config.output_mode ?? 'column') === 'json') return uniq([...inputCols, ...(config.output_columns ?? [])])
-    return uniq([...inputCols, config.output_column || 'output'])
+    if ((config.output_mode ?? 'column') === 'json') return sub(uniq([...inputCols, ...(config.output_columns ?? [])]))
+    return sub(uniq([...inputCols, config.output_column || 'output']))
   }
   if (type === 'auto_process') {
     let cols = [...inputCols]
@@ -68,42 +70,61 @@ function liveOutput(type: string, config: Record<string, any>, inputCols: string
       else if (op.op === 'concat') { if (op.target && !cols.includes(op.target)) cols = [...cols, op.target] }
       else if (op.op === 'agent') { cols = op.output_columns?.length ? uniq(op.output_columns) : cols }
     }
-    return cols
+    return sub(cols)
   }
-  if (type === 'http_fetch') return uniq([...inputCols, ...Object.keys(config.extract ?? {})])
-  return inputCols
+  if (type === 'http_fetch') return sub(uniq([...inputCols, ...Object.keys(config.extract ?? {})]))
+  return sub(inputCols)   // qc / output 透传 - drop
 }
 
-function ColumnsBar({ inputCols, outputCols, referenced = [], onToggle }: {
-  inputCols: string[]; outputCols: string[]; referenced?: string[]
-  onToggle?: (col: string) => void
+function ColumnsBar({ inputCols, outputCols, referenced = [], dropped = [], onCycle }: {
+  inputCols: string[]; outputCols: string[]; referenced?: string[]; dropped?: string[]
+  onCycle?: (col: string) => void
 }) {
   const refSet = new Set(referenced)
+  const dropSet = new Set(dropped)
   const produced = outputCols.filter((c) => !inputCols.includes(c))
-  const passthrough = outputCols.filter((c) => inputCols.includes(c))
+  const fed = inputCols.filter((c) => refSet.has(c) && !dropSet.has(c))
+  const del = inputCols.filter((c) => dropSet.has(c))
+  const colorOf = (c: string) => (dropSet.has(c) ? 'red' : refSet.has(c) ? 'green' : undefined)
+  const inputList = (
+    <div style={{ maxHeight: 280, overflowY: 'auto', maxWidth: 320 }}>
+      {inputCols.length === 0
+        ? <span style={{ color: '#bbb' }}>（无／先连好上游）</span>
+        : inputCols.map((c) => (
+          <Tag key={c} color={colorOf(c)}
+               style={{ cursor: onCycle ? 'pointer' : 'default', marginBottom: 6 }}
+               onClick={() => onCycle?.(c)}>{c}</Tag>))}
+    </div>
+  )
+  const outputList = (
+    <div style={{ maxHeight: 280, overflowY: 'auto', maxWidth: 320 }}>
+      {outputCols.length === 0
+        ? <span style={{ color: '#bbb' }}>（无）</span>
+        : outputCols.map((c) => (
+          <Tag key={c} color={produced.includes(c) ? 'blue' : undefined}
+               style={{ marginBottom: 6 }}>{c}</Tag>))}
+    </div>
+  )
   return (
     <div style={{ background: '#fafafa', border: '1px solid #f0f0f0', borderRadius: 6, padding: 8, marginBottom: 12, fontSize: 12 }}>
-      <div style={{ color: '#666', marginBottom: 6 }}>
-        <span style={{ marginInlineEnd: 4 }}>输入列{onToggle ? '（点击切换是否喂给本节点）' : ''}：</span>
-        {inputCols.length === 0
-          ? <span style={{ color: '#bbb' }}>（无／先连好上游）</span>
-          : inputCols.map((c) => (
-            <Tag key={c} color={refSet.has(c) ? 'green' : undefined}
-                 style={{ cursor: onToggle ? 'pointer' : 'default', marginInlineEnd: 4, marginBottom: 4 }}
-                 onClick={() => onToggle?.(c)}>{c}</Tag>))}
+      <div style={{ marginBottom: 6, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+        <Popover trigger="click" placement="bottomLeft" content={inputList}
+                 title={onCycle ? '点击列名循环：透传→喂模型→删除' : '全部输入列'}>
+          <Button size="small">输入列 ({inputCols.length}) ▾</Button>
+        </Popover>
+        {fed.map((c) => <Tag key={c} color="green" style={{ margin: 0 }}>{c}</Tag>)}
+        {del.map((c) => <Tag key={c} color="red" style={{ margin: 0 }}>{c}</Tag>)}
       </div>
-      <div style={{ color: '#666' }}>
-        <span style={{ marginInlineEnd: 4 }}>输出列：</span>
-        {outputCols.length === 0
-          ? <span style={{ color: '#bbb' }}>（无）</span>
-          : <>
-              {passthrough.map((c) => <Tag key={c} style={{ marginInlineEnd: 4, marginBottom: 4 }}>{c}</Tag>)}
-              {produced.map((c) => <Tag key={c} color="blue" style={{ marginInlineEnd: 4, marginBottom: 4 }}>{c}</Tag>)}
-            </>}
+      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+        <Popover trigger="click" placement="bottomLeft" content={outputList} title="全部输出列">
+          <Button size="small">输出列 ({outputCols.length}) ▾</Button>
+        </Popover>
+        {produced.map((c) => <Tag key={c} color="blue" style={{ margin: 0 }}>{c}</Tag>)}
       </div>
-      {onToggle && <div style={{ color: '#999', marginTop: 6 }}>
-        <span style={{ color: '#52c41a' }}>绿色</span>=喂给本节点（已插入 {'{{列}}'}）；
-        其余输入列不喂给模型，但仍会<b>透传保存</b>。输出列：灰=透传，<span style={{ color: '#1677ff' }}>蓝</span>=本节点新增。
+      {onCycle && <div style={{ color: '#999', marginTop: 6 }}>
+        <span style={{ color: '#52c41a' }}>绿</span>=喂给模型；
+        <span style={{ color: '#cf1322' }}>红</span>=删除(下游不可见)；
+        <span style={{ color: '#1677ff' }}>蓝</span>=本节点新增；灰=透传保存。
       </div>}
     </div>
   )
@@ -265,6 +286,12 @@ function LlmSynthForm({ config, onChange, workflowId, nodeId, inputCols }: FormP
           onChange={(v) => patchParams({ timeout: v ?? 120 })} /></Field>
         <Field label="JSON 模式"><Switch checked={params.json_mode ?? false}
           onChange={(v) => patchParams({ json_mode: v })} /></Field>
+        <Field label="开启思考"><Switch checked={params.thinking_enabled ?? true}
+          onChange={(v) => patchParams({ thinking_enabled: v })} /></Field>
+        <Field label="思考力度"><Select style={{ width: 100 }}
+          value={params.reasoning_effort ?? 'high'} disabled={!(params.thinking_enabled ?? true)}
+          onChange={(v) => patchParams({ reasoning_effort: v })}
+          options={['low', 'medium', 'high', 'xhigh'].map((e) => ({ value: e, label: e }))} /></Field>
       </Space>
     </>
   )
@@ -482,6 +509,12 @@ function QcForm({ config, onChange, workflowId, nodeId, inputCols }: FormProps &
           onChange={(v) => patchParams({ max_tokens: v })} /></Field>
         <Field label="超时(秒)"><InputNumber min={1} value={params.timeout ?? 120}
           onChange={(v) => patchParams({ timeout: v ?? 120 })} /></Field>
+        <Field label="开启思考"><Switch checked={params.thinking_enabled ?? true}
+          onChange={(v) => patchParams({ thinking_enabled: v })} /></Field>
+        <Field label="思考力度"><Select style={{ width: 100 }}
+          value={params.reasoning_effort ?? 'high'} disabled={!(params.thinking_enabled ?? true)}
+          onChange={(v) => patchParams({ reasoning_effort: v })}
+          options={['low', 'medium', 'high', 'xhigh'].map((e) => ({ value: e, label: e }))} /></Field>
       </Space>
       <div style={{ color: '#999', fontSize: 12 }}>判定默认 temperature 0（确定性）；留空即用 0。</div>
       <div style={{ color: '#999', fontSize: 12 }}>
@@ -589,8 +622,7 @@ export default function NodeConfigForm({ type, config, onChange, workflowId, nod
   }, [workflowId, nodeId])
   const nodeCols = (nodeId && colsMap[nodeId]) || { input: [], output: [] }
   const inputCols = nodeCols.input
-  const outputCols = type === 'llm_synth' || type === 'auto_process' || type === 'http_fetch'
-    ? liveOutput(type, config, inputCols) : nodeCols.output
+  const outputCols = type === 'input' ? nodeCols.output : liveOutput(type, config, inputCols)
   // 绿标：本节点模板字段里 {{列}} 引用到、且确实在输入列中的列 = 实际用到的列
   const refText = type === 'http_fetch'
     ? [config.url, config.body, ...Object.values(config.headers ?? {})].filter(Boolean).map(String).join('\n')
@@ -598,11 +630,21 @@ export default function NodeConfigForm({ type, config, onChange, workflowId, nod
   const referenced = referencedCols(refText, inputCols)
   const insertField = type === 'http_fetch' ? 'url' : 'user_prompt'
   const canInsert = type === 'llm_synth' || type === 'qc' || type === 'http_fetch'
+  const dropped: string[] = config.drop_columns ?? []
+  // 三态循环：灰(透传)→绿(喂模型,插{{列}})→红(删除,移{{列}}并入 drop_columns)→灰
+  const cycle = (col: string) => {
+    if (dropped.includes(col)) {
+      onChange({ ...config, drop_columns: dropped.filter((c) => c !== col) })
+    } else if (referenced.includes(col)) {
+      onChange({ ...config, [insertField]: toggleColRef(config[insertField] ?? '', col),
+                 drop_columns: [...dropped, col] })
+    } else {
+      onChange({ ...config, [insertField]: toggleColRef(config[insertField] ?? '', col) })
+    }
+  }
   const bar = type === 'input' ? null : (
     <ColumnsBar inputCols={inputCols} outputCols={outputCols} referenced={referenced}
-                onToggle={canInsert
-                  ? (c) => onChange({ ...config, [insertField]: toggleColRef(config[insertField] ?? '', c) })
-                  : undefined} />
+                dropped={dropped} onCycle={canInsert ? cycle : undefined} />
   )
   switch (type) {
     case 'input':
