@@ -5,6 +5,7 @@ from openai import AsyncOpenAI
 
 from app import crypto
 from app.models import ModelConfig
+from app.thinking import thinking_extra_body
 
 BACKOFF_BASE = 1  # 秒；重试等待 BACKOFF_BASE * 2**attempt，测试中置 0
 
@@ -35,6 +36,9 @@ async def chat(mc: ModelConfig, system_prompt: str, user_prompt: str,
             kwargs[key] = merged[key]
     if merged.get("json_mode"):
         kwargs["response_format"] = {"type": "json_object"}
+    eb = thinking_extra_body(merged)
+    if eb is not None:
+        kwargs["extra_body"] = eb
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})

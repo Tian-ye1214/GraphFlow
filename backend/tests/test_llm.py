@@ -110,3 +110,25 @@ async def test_model_test_endpoint(auth_client, monkeypatch):
     mid = (await auth_client.post("/api/models", json=payload)).json()["id"]
     r = (await auth_client.post(f"/api/models/{mid}/test")).json()
     assert r == {"ok": True, "reply": "pong"}
+
+
+async def test_thinking_default_extra_body(monkeypatch):
+    fake = FakeClient(lambda n, kw: fake_response())
+    monkeypatch.setattr(llm, "_client", lambda _: fake)
+    await llm.chat(mc(), "", "u")
+    assert fake.last_kwargs["extra_body"] == {
+        "thinking": {"type": "enabled"}, "reasoning_effort": "high"}
+
+
+async def test_thinking_disabled_no_extra_body(monkeypatch):
+    fake = FakeClient(lambda n, kw: fake_response())
+    monkeypatch.setattr(llm, "_client", lambda _: fake)
+    await llm.chat(mc(), "", "u", params={"thinking_enabled": False})
+    assert "extra_body" not in fake.last_kwargs
+
+
+async def test_thinking_custom_effort(monkeypatch):
+    fake = FakeClient(lambda n, kw: fake_response())
+    monkeypatch.setattr(llm, "_client", lambda _: fake)
+    await llm.chat(mc(), "", "u", params={"reasoning_effort": "medium"})
+    assert fake.last_kwargs["extra_body"]["reasoning_effort"] == "medium"
