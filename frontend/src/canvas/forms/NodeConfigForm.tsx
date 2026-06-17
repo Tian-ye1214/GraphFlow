@@ -141,8 +141,9 @@ function InputNodeForm({ config, onChange }: FormProps) {
   )
 }
 
-function NodeAssist({ nodeType, workflowId, nodeId, onApply }: {
+function NodeAssist({ nodeType, workflowId, nodeId, config, onApply }: {
   nodeType: string; workflowId?: number; nodeId?: string
+  config: Record<string, any>
   onApply: (config: Record<string, any>) => void
 }) {
   const [models, setModels] = useState<ModelConfig[]>([])
@@ -160,7 +161,7 @@ function NodeAssist({ nodeType, workflowId, nodeId, onApply }: {
     try {
       const r = await api.post<NodeAssistOut>('/api/agent/node-assist', {
         workflow_id: workflowId, node_id: nodeId, node_type: nodeType,
-        instruction, model_config_id: modelSel,
+        instruction, model_config_id: modelSel, current_config: config,
       })
       onApply(r.config)
       if (r.sample_source === 'none') setInfo('未检测到上游列，可先连好上游')
@@ -198,7 +199,7 @@ function LlmSynthForm({ config, onChange, workflowId, nodeId, inputCols }: FormP
   const patchParams = (p: object) => onChange({ ...config, params: { ...params, ...p } })
   return (
     <>
-      <NodeAssist nodeType="llm_synth" workflowId={workflowId} nodeId={nodeId}
+      <NodeAssist nodeType="llm_synth" workflowId={workflowId} nodeId={nodeId} config={config}
                   onApply={(c) => onChange({ ...config, ...c })} />
       <Field label="模型">
         <Select
@@ -358,7 +359,7 @@ function AgentOpFields({ op, update, workflowId, nodeId }: {
     try {
       const r = await api.post<CodegenOut>('/api/agent/codegen', {
         workflow_id: workflowId, node_id: nodeId,
-        instruction: op.instruction, model_config_id: modelSel,
+        instruction: op.instruction, model_config_id: modelSel, current_code: op.code,
       })
       update({ code: r.code, output_columns: r.output_columns })
       if (r.sample_source === 'none') setInfo('未检测到上游列（先连好上游/上传数据集），AI 仅按指令生成')
@@ -438,7 +439,7 @@ function QcForm({ config, onChange, workflowId, nodeId, inputCols }: FormProps &
   const patchParams = (p: object) => onChange({ ...config, params: { ...params, ...p } })
   return (
     <>
-      <NodeAssist nodeType="qc" workflowId={workflowId} nodeId={nodeId}
+      <NodeAssist nodeType="qc" workflowId={workflowId} nodeId={nodeId} config={config}
                   onApply={(c) => onChange({ ...config, ...c })} />
       <Field label="判定模型（多选，N 个模型同提示词判定）">
         <Select mode="multiple" style={{ width: '100%' }}
