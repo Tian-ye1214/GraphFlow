@@ -374,3 +374,55 @@ async def test_hard_interrupt_aborts_inflight(session_factory, monkeypatch):
         recs = (await s.execute(select(RunRow).where(
             RunRow.run_id == run_id, RunRow.node_id == "gen"))).scalars().all()
     assert all(r.status != "done" for r in recs)  # 在途行被中止，不落库
+
+
+async def test_llm_passes_through_all_columns(session_factory, monkeypatch):
+    """10 列输入，LLM 只引用其中 1 列产出 ans —— 输出节点每行应含全部 10 列 + ans（保存全面）。"""
+    patch_chat(monkeypatch)
+    graph = {
+        "nodes": [
+            {"id": "in", "type": "input", "config": {"dataset_ids": []}},
+            {"id": "gen", "type": "llm_synth",
+             "config": {"model_config_id": 0, "user_prompt": "Q:{{c0}}", "output_column": "ans"}},
+            {"id": "out", "type": "output", "config": {}},
+        ],
+        "edges": [{"source": "in", "target": "gen", "kind": "normal"},
+                  {"source": "gen", "target": "out", "kind": "normal"}],
+    }
+    async with session_factory() as s:
+        u = User(username="passthru")
+        s.add(u)
+        await s.flush()
+        mc = ModelConfig(user_id=u.id, name="m", model_name="q", base_url="http://x",
+                         api_key_enc=crypto.encrypt("k"))
+        s.add(mc)
+        await s.flush()
+        ds = Dataset(user_id=u.id, name="d", row_count=2)
+        s.add(ds)
+        await s.flush()
+        for i in range(2):
+            s.add(DatasetRow(dataset_id=ds.id, idx=i, data_json=json.dumps(
+                {f"c{j}": f"v{i}_{j}" for j in range(10)}, ensure_ascii=False)))
+        g = json.loads(json.dumps(graph))
+        for n in g["nodes"]:
+            if n["type"] == "input":
+                n["config"]["dataset_ids"] = [ds.id]
+            if n["type"] == "llm_synth":
+                n["config"]["model_config_id"] = mc.id
+        wf = Workflow(user_id=u.id, name="wf", graph_json=json.dumps(g))
+        s.add(wf)
+        await s.flush()
+        ver = WorkflowVersion(workflow_id=wf.id, version=1, graph_json=json.dumps(g))
+        s.add(ver)
+        await s.flush()
+        run = Run(user_id=u.id, workflow_id=wf.id, workflow_version_id=ver.id)
+        s.add(run)
+        await s.commit()
+        run_id = run.id
+    await run_it(session_factory, run_id)
+    assert (await get_run(session_factory, run_id)).status == "completed"
+    out_rows = await runner._node_outputs(session_factory, run_id, "out")
+    assert len(out_rows) == 2
+    for r in out_rows:
+        assert all(f"c{j}" in r for j in range(10))   # 全部 10 列透传到最终保存
+        assert "ans" in r                              # 产出列也在
