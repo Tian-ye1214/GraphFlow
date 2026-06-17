@@ -2,7 +2,8 @@ import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { NODE_LABELS } from './serialize'
 
 const COLORS: Record<string, string> = {
-  input: '#1677ff', llm_synth: '#722ed1', auto_process: '#13c2c2', output: '#52c41a', qc: '#fa8c16',
+  input: '#1677ff', llm_synth: '#722ed1', auto_process: '#13c2c2', output: '#52c41a',
+  qc: '#fa8c16', http_fetch: '#eb2f96',
 }
 
 function GFNode({ id, type, selected }: NodeProps) {
@@ -27,4 +28,5 @@ function GFNode({ id, type, selected }: NodeProps) {
 
 export const nodeTypes = {
   input: GFNode, llm_synth: GFNode, auto_process: GFNode, output: GFNode, qc: GFNode,
+  http_fetch: GFNode,
 }

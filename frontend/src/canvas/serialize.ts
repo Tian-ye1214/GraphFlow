@@ -7,6 +7,7 @@ export const NODE_LABELS: Record<GraphNode['type'], string> = {
   auto_process: '自动处理',
   output: '输出',
   qc: '质检',
+  http_fetch: 'HTTP 取数',
 }
 
 // 回扫边的视觉样式（橙色虚线 + 流动），CanvasPage 新建边与 toFlow 加载边共用

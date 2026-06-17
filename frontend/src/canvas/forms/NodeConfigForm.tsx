@@ -53,6 +53,7 @@ function liveOutput(type: string, config: Record<string, any>, inputCols: string
     }
     return cols
   }
+  if (type === 'http_fetch') return uniq([...inputCols, ...Object.keys(config.extract ?? {})])
   return inputCols
 }
 
@@ -477,6 +478,77 @@ function OutputNodeForm({ config, onChange }: FormProps) {
   )
 }
 
+function KvEditor({ pairs, onChange, keyPlaceholder, valPlaceholder }: {
+  pairs: Record<string, string>; onChange: (p: Record<string, string>) => void
+  keyPlaceholder: string; valPlaceholder: string
+}) {
+  const entries = Object.entries(pairs)
+  const setEntry = (i: number, k: string, v: string) => {
+    const next: Record<string, string> = {}
+    entries.forEach(([ek, ev], j) => {
+      const [nk, nv] = j === i ? [k, v] : [ek, ev]
+      if (nk) next[nk] = nv
+    })
+    onChange(next)
+  }
+  return (
+    <Space direction="vertical" style={{ width: '100%' }}>
+      {entries.map(([k, v], i) => (
+        <Space key={i}>
+          <Input placeholder={keyPlaceholder} style={{ width: 150 }} value={k}
+                 onChange={(e) => setEntry(i, e.target.value, v)} />
+          <Input placeholder={valPlaceholder} style={{ width: 220 }} value={v}
+                 onChange={(e) => setEntry(i, k, e.target.value)} />
+          <a onClick={() => onChange(Object.fromEntries(entries.filter((_, j) => j !== i)))}>删除</a>
+        </Space>
+      ))}
+      <Button size="small" onClick={() => onChange({ ...pairs, '': '' })}>+ 添加</Button>
+    </Space>
+  )
+}
+
+function HttpFetchForm({ config, onChange, inputCols }: FormProps & { inputCols: string[] }) {
+  const patch = (p: object) => onChange({ ...config, ...p })
+  return (
+    <>
+      <Field label="请求方法">
+        <Radio.Group value={config.method ?? 'GET'} onChange={(e) => patch({ method: e.target.value })}>
+          <Radio.Button value="GET">GET</Radio.Button>
+          <Radio.Button value="POST">POST</Radio.Button>
+        </Radio.Group>
+      </Field>
+      <Field label="URL（用 {{列名}} 引用上游数据列）">
+        <Input.TextArea rows={2} value={config.url ?? ''}
+                        onChange={(e) => patch({ url: e.target.value })} />
+        <MissingColsWarning text={config.url ?? ''} inputCols={inputCols} />
+      </Field>
+      {(config.method ?? 'GET') === 'POST' && (
+        <Field label="请求体 Body（{{列名}} 可引用；JSON 字符串）">
+          <Input.TextArea rows={3} value={config.body ?? ''}
+                          onChange={(e) => patch({ body: e.target.value })} />
+          <MissingColsWarning text={config.body ?? ''} inputCols={inputCols} />
+        </Field>
+      )}
+      <Field label="请求头 Headers（值可用 {{列名}}；如 Authorization / Bearer xxx）">
+        <KvEditor pairs={config.headers ?? {}} onChange={(h) => patch({ headers: h })}
+                  keyPlaceholder="Header 名" valPlaceholder="值" />
+      </Field>
+      <Field label="提取（响应 JSON 路径 → 输出列；如 temp ← data.temp）">
+        <KvEditor pairs={config.extract ?? {}} onChange={(e) => patch({ extract: e })}
+                  keyPlaceholder="输出列名" valPlaceholder="JSON 路径 如 data.weather.0.desc" />
+      </Field>
+      <Space wrap>
+        <Field label="节点并发"><InputNumber min={1} value={config.concurrency ?? 4}
+          onChange={(v) => patch({ concurrency: v ?? 4 })} /></Field>
+        <Field label="重试次数"><InputNumber min={0} value={config.retries ?? 2}
+          onChange={(v) => patch({ retries: v ?? 2 })} /></Field>
+        <Field label="超时(秒)"><InputNumber min={1} value={config.timeout ?? 30}
+          onChange={(v) => patch({ timeout: v ?? 30 })} /></Field>
+      </Space>
+    </>
+  )
+}
+
 export default function NodeConfigForm({ type, config, onChange, workflowId, nodeId }: FormProps & {
   type: string; workflowId?: number; nodeId?: string
 }) {
@@ -504,6 +576,8 @@ export default function NodeConfigForm({ type, config, onChange, workflowId, nod
       return <>{bar}<AutoProcessForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} /></>
     case 'qc':
       return <>{bar}<QcForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} inputCols={inputCols} /></>
+    case 'http_fetch':
+      return <>{bar}<HttpFetchForm config={config} onChange={onChange} inputCols={inputCols} /></>
     case 'output':
       return <>{bar}<OutputNodeForm config={config} onChange={onChange} /></>
     default:
