@@ -21,7 +21,7 @@ async def test_gather_upstream_columns_from_dataset(auth_client, session_factory
 
 
 async def test_codegen_endpoint_returns_columns_no_preview(auth_client, session_factory, monkeypatch):
-    async def fake_generate_code(model, instruction, columns):
+    async def fake_generate_code(model, instruction, columns, current_code=""):
         return {"code": "def process(rows):\n    return rows", "output_columns": []}
     monkeypatch.setattr("app.routers.agent.generate_code", fake_generate_code)
     async with session_factory() as s:
