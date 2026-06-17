@@ -128,5 +128,24 @@ def test_input_multi_dataset_uses_intersection():
     assert cols["out"]["input"] == ["id"]
 
 
+def test_http_fetch_adds_extract_columns():
+    g = _g(
+        [{"id": "in", "type": "input", "config": {"dataset_ids": [1]}},
+         {"id": "h", "type": "http_fetch",
+          "config": {"extract": {"temp": "data.temp", "desc": "data.weather.0.desc"}}}],
+        [{"source": "in", "target": "h", "kind": "normal"}])
+    cols = propagate_columns(g, {1: ["id", "q"]})
+    assert cols["h"]["output"] == ["id", "q", "temp", "desc"]
+
+
+def test_http_fetch_no_extract_passthrough():
+    g = _g(
+        [{"id": "in", "type": "input", "config": {"dataset_ids": [1]}},
+         {"id": "h", "type": "http_fetch", "config": {"url": "http://x"}}],
+        [{"source": "in", "target": "h", "kind": "normal"}])
+    cols = propagate_columns(g, {1: ["id", "q"]})
+    assert cols["h"]["output"] == ["id", "q"]
+
+
 def test_empty_graph():
     assert propagate_columns(parse_graph({"nodes": [], "edges": []}), {}) == {}

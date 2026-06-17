@@ -1,7 +1,7 @@
 import json
 from dataclasses import dataclass
 
-NODE_TYPES = {"input", "llm_synth", "auto_process", "output", "qc"}
+NODE_TYPES = {"input", "llm_synth", "auto_process", "output", "qc", "http_fetch"}
 
 
 class GraphError(ValueError):

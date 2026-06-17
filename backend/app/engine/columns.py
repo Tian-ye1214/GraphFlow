@@ -56,6 +56,8 @@ def _node_output(node, input_cols: list[str], dataset_cols: dict[int, list[str]]
         for op in node.config.get("operations") or []:
             cols = _apply_op(cols, op)
         return cols
+    if t == "http_fetch":
+        return _ordered_union([input_cols, list((node.config.get("extract") or {}).keys())])
     return input_cols  # qc / output 透传
 
 
