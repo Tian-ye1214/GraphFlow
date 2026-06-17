@@ -34,7 +34,14 @@ function referencedCols(text: string, inputCols: string[]): string[] {
   return out
 }
 
-const MANY_COLS = 12
+// 切换某列在文本里的 {{列}} 引用：已存在则删除全部该列占位，否则在末尾追加
+function toggleColRef(text: string, col: string): string {
+  const esc = col.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  if (new RegExp('\\{\\{\\s*' + esc + '\\s*\\}\\}').test(text ?? '')) {
+    return (text ?? '').replace(new RegExp('\\{\\{\\s*' + esc + '\\s*\\}\\}', 'g'), '')
+  }
+  return (text ?? '') + `{{${col}}}`
+}
 
 function MissingColsWarning({ text, inputCols }: { text: string; inputCols: string[] }) {
   const miss = missingCols(text, inputCols)
@@ -67,33 +74,36 @@ function liveOutput(type: string, config: Record<string, any>, inputCols: string
   return inputCols
 }
 
-function ColumnsBar({ inputCols, outputCols, referenced = [], onInsert }: {
-  inputCols: string[]; outputCols: string[]; referenced?: string[]; onInsert?: (col: string) => void
+function ColumnsBar({ inputCols, outputCols, referenced = [], onToggle }: {
+  inputCols: string[]; outputCols: string[]; referenced?: string[]
+  onToggle?: (col: string) => void
 }) {
   const refSet = new Set(referenced)
-  const many = inputCols.length > MANY_COLS
+  const produced = outputCols.filter((c) => !inputCols.includes(c))
+  const passthrough = outputCols.filter((c) => inputCols.includes(c))
   return (
     <div style={{ background: '#fafafa', border: '1px solid #f0f0f0', borderRadius: 6, padding: 8, marginBottom: 12, fontSize: 12 }}>
-      <div style={{ color: '#666', marginBottom: 4 }}>
-        输入列：{inputCols.length === 0
+      <div style={{ color: '#666', marginBottom: 6 }}>
+        <span style={{ marginInlineEnd: 4 }}>输入列{onToggle ? '（点击切换是否喂给本节点）' : ''}：</span>
+        {inputCols.length === 0
           ? <span style={{ color: '#bbb' }}>（无／先连好上游）</span>
-          : many
-            ? <Select showSearch style={{ width: '100%', marginTop: 4 }} value={null} allowClear={false}
-                      listHeight={320} placeholder={`全部 ${inputCols.length} 列，点选插入 {{列}}`}
-                      onChange={(c) => c && onInsert?.(c as string)}
-                      options={inputCols.map((c) => ({ value: c, label: refSet.has(c) ? `🟢 ${c}` : c }))} />
-            : inputCols.map((c) => (
-              <Tag key={c} color={refSet.has(c) ? 'green' : undefined}
-                   style={{ cursor: onInsert ? 'pointer' : 'default', marginInlineEnd: 4 }}
-                   onClick={() => onInsert?.(c)}>{c}</Tag>))}
+          : inputCols.map((c) => (
+            <Tag key={c} color={refSet.has(c) ? 'green' : undefined}
+                 style={{ cursor: onToggle ? 'pointer' : 'default', marginInlineEnd: 4, marginBottom: 4 }}
+                 onClick={() => onToggle?.(c)}>{c}</Tag>))}
       </div>
       <div style={{ color: '#666' }}>
-        输出列：{outputCols.length === 0
+        <span style={{ marginInlineEnd: 4 }}>输出列：</span>
+        {outputCols.length === 0
           ? <span style={{ color: '#bbb' }}>（无）</span>
-          : outputCols.map((c) => <Tag key={c} color="blue" style={{ marginInlineEnd: 4 }}>{c}</Tag>)}
+          : <>
+              {passthrough.map((c) => <Tag key={c} style={{ marginInlineEnd: 4, marginBottom: 4 }}>{c}</Tag>)}
+              {produced.map((c) => <Tag key={c} color="blue" style={{ marginInlineEnd: 4, marginBottom: 4 }}>{c}</Tag>)}
+            </>}
       </div>
-      {onInsert && <div style={{ color: '#999', marginTop: 4 }}>
-        点输入列（<span style={{ color: '#52c41a' }}>绿色</span>=已被引用）插入 {'{{列}}'}{many ? '；列多已折叠为可搜索下拉框，展示全部' : ''}
+      {onToggle && <div style={{ color: '#999', marginTop: 6 }}>
+        <span style={{ color: '#52c41a' }}>绿色</span>=喂给本节点（已插入 {'{{列}}'}）；
+        其余输入列不喂给模型，但仍会<b>透传保存</b>。输出列：灰=透传，<span style={{ color: '#1677ff' }}>蓝</span>=本节点新增。
       </div>}
     </div>
   )
@@ -590,8 +600,8 @@ export default function NodeConfigForm({ type, config, onChange, workflowId, nod
   const canInsert = type === 'llm_synth' || type === 'qc' || type === 'http_fetch'
   const bar = type === 'input' ? null : (
     <ColumnsBar inputCols={inputCols} outputCols={outputCols} referenced={referenced}
-                onInsert={canInsert
-                  ? (c) => onChange({ ...config, [insertField]: (config[insertField] ?? '') + `{{${c}}}` })
+                onToggle={canInsert
+                  ? (c) => onChange({ ...config, [insertField]: toggleColRef(config[insertField] ?? '', c) })
                   : undefined} />
   )
   switch (type) {
