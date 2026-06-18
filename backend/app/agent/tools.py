@@ -10,6 +10,7 @@ from pathlib import Path
 
 from ddgs import DDGS
 
+from app.agent.data_preview import WorkflowDataPreview
 from app.agent.extract import extract_text
 from app.agent.sandbox import resolve_in
 
@@ -75,10 +76,13 @@ def _wrap(fn):
 class AgentToolkit:
     """会话级基础工具：文件读写限会话工作目录，run_command 注入 GF_STATE_FILE。"""
 
-    def __init__(self, workdir: Path, state_file: Path, confirm_delete: bool):
+    def __init__(self, workdir: Path, state_file: Path, confirm_delete: bool,
+                 session_factory=None, user_id: int | None = None):
         self._workdir = Path(workdir)
         self._state_file = Path(state_file)
         self._confirm_delete = confirm_delete
+        self._session_factory = session_factory
+        self._user_id = user_id
 
     async def read_file(self, path: str) -> str:
         """读取会话工作目录内的文件内容。
@@ -190,7 +194,23 @@ class AgentToolkit:
             return f"Security error: {e}"
         return await asyncio.to_thread(extract_text, fp)
 
+    async def preview_workflow_data(self, workflow_id: int, node_id: str | None = None,
+                                    source: str = "auto", limit: int = 5) -> str:
+        """预览当前用户工作流的数据列和少量样例行，默认只返回前 5 行。
+        Parameters:
+            workflow_id: 工作流 ID
+            node_id: 可选节点 ID；读取最近运行时返回该节点的真实输入样例
+            source: auto / dataset / latest_run；auto 优先最近运行产出，否则回退输入数据集
+            limit: 最大样例行数，默认 5，系统上限 20
+        """
+        if self._session_factory is None or self._user_id is None:
+            return '{"source":"none","run_id":null,"columns":[],"rows":[],"truncated":false,"error":"preview_unavailable"}'
+        return await WorkflowDataPreview(
+            self._session_factory, self._user_id
+        ).preview_workflow_data(workflow_id, node_id=node_id, source=source, limit=limit)
+
     @property
     def tools(self) -> list:
         return [self.read_file, self.write_file, self.list_directory,
-                self.run_command, self.search_web, self.extract_file_content]
+                self.run_command, self.search_web, self.extract_file_content,
+                self.preview_workflow_data]

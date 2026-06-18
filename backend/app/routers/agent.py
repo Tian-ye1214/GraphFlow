@@ -8,9 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent import codegen as codegen_mod
 from app.agent.codegen import gather_upstream_columns, generate_code
+from app.agent.data_preview import make_preview_tools
 from app.agent.turns import session_dir, turn_manager
 from app.auth import get_current_user, make_session_cookie
-from app.db import get_session
+from app.db import get_session, get_session_factory
 from app.engine.graph import parse_graph
 from app.events import publish
 from app.models import AgentMessage, AgentSession, ModelConfig, User, Workflow
@@ -206,7 +207,10 @@ async def codegen(body: CodegenIn, user: User = Depends(get_current_user),
     if not body.instruction.strip():
         raise HTTPException(status_code=422, detail="指令不能为空")
     columns, source = await gather_upstream_columns(session, body.workflow_id, body.node_id, user.id)
-    result = await generate_code(mc, body.instruction, columns, current_code=body.current_code or "")
+    preview_tools = make_preview_tools(get_session_factory(), user.id,
+                                       workflow_id=body.workflow_id, node_id=body.node_id)
+    result = await generate_code(mc, body.instruction, columns, current_code=body.current_code or "",
+                                 preview_tools=preview_tools)
     return {"code": result["code"], "output_columns": result["output_columns"],
             "columns": columns, "sample_source": source}
 
@@ -234,6 +238,9 @@ async def node_assist(body: NodeAssistIn, user: User = Depends(get_current_user)
     if not body.instruction.strip():
         raise HTTPException(status_code=422, detail="指令不能为空")
     columns, source = await gather_upstream_columns(session, body.workflow_id, body.node_id, user.id)
+    preview_tools = make_preview_tools(get_session_factory(), user.id,
+                                       workflow_id=body.workflow_id, node_id=body.node_id)
     config = await codegen_mod.generate_node_config(
-        mc, body.node_type, body.instruction, columns, current_config=body.current_config)
+        mc, body.node_type, body.instruction, columns, current_config=body.current_config,
+        preview_tools=preview_tools)
     return {"config": config, "sample_source": source}

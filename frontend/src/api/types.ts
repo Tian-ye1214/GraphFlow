@@ -55,12 +55,12 @@ export interface CodegenOut {
   code: string
   output_columns: string[]
   columns: string[]
-  sample_source: 'computed' | 'none'
+  sample_source: 'computed' | 'latest_run' | 'dataset' | 'none'
 }
 
 export interface NodeAssistOut {
   config: Record<string, any>
-  sample_source: 'computed' | 'none'
+  sample_source: 'computed' | 'latest_run' | 'dataset' | 'none'
 }
 
 export type ColumnsMap = Record<string, { input: string[]; output: string[] }>

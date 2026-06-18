@@ -15,11 +15,14 @@ from app.agent.tools import ROLE, AgentToolkit
 class AgentSystem:
     """models: {"coordinator"|"manager"|"worker": ModelConfig 或 pydantic-ai Model（测试）}"""
 
-    def __init__(self, *, models: dict, workdir: Path, confirm_delete: bool, emit):
+    def __init__(self, *, models: dict, workdir: Path, confirm_delete: bool, emit,
+                 user_id: int | None = None, session_factory=None):
         self.models = models
         self.workdir = Path(workdir)
         self.emit = emit
         self._confirm_delete = confirm_delete
+        self._user_id = user_id
+        self._session_factory = session_factory
         self.skills_manager = SkillsManager(SKILLS_DIR)
         self.task_manager = TaskManager()
         self._manager_history: list = []
@@ -31,7 +34,8 @@ class AgentSystem:
             skills_manager=self.skills_manager, compactor_mc=self._compactor_mc)
 
     def _make_tools(self, state_file: Path) -> list:
-        tk = AgentToolkit(self.workdir, state_file, self._confirm_delete)
+        tk = AgentToolkit(self.workdir, state_file, self._confirm_delete,
+                          session_factory=self._session_factory, user_id=self._user_id)
         sk = SkillsToolkit(self.skills_manager, state_file)
         return tk.tools + sk.tools
 

@@ -74,7 +74,8 @@ class AgentTurnManager:
         emit = self._make_emit(session_id, user_id)
         EMIT.set(emit)
         system = AgentSystem(models=models, workdir=session_dir(username, session_id),
-                             confirm_delete=text.startswith("确认"), emit=emit)
+                             confirm_delete=text.startswith("确认"), emit=emit,
+                             user_id=user_id, session_factory=sf)
         rounds, capped, input_text = 0, False, text
         try:
             while True:
@@ -129,7 +130,8 @@ class AgentTurnManager:
         emit = self._make_emit(session_id, user_id)
         EMIT.set(emit)
         system = AgentSystem(models=models, workdir=session_dir(username, session_id),
-                             confirm_delete=False, emit=emit)
+                             confirm_delete=False, emit=emit,
+                             user_id=user_id, session_factory=sf)
         threshold = rs.parse_threshold(goal_text)
         best, no_improve, round_i = -1.0, 0, 0
         input_text = gl.first_round_prompt(goal_text)

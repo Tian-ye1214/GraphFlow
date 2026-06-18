@@ -73,6 +73,7 @@ function liveOutput(type: string, config: Record<string, any>, inputCols: string
     return sub(cols)
   }
   if (type === 'http_fetch') return sub(uniq([...inputCols, ...Object.keys(config.extract ?? {})]))
+  if (type === 'qc') return sub(uniq([...inputCols, config.feedback_column || 'qc_feedback']))
   return sub(inputCols)   // qc / output 透传 - drop
 }
 
@@ -499,6 +500,10 @@ function QcForm({ config, onChange, workflowId, nodeId, inputCols }: FormProps &
       <Field label="最多回扫轮数">
         <InputNumber min={0} value={config.max_rounds ?? 3}
                      onChange={(v) => patch({ max_rounds: v ?? 3 })} />
+      </Field>
+      <Field label="反馈列名">
+        <Input value={config.feedback_column ?? 'qc_feedback'}
+               onChange={(e) => patch({ feedback_column: e.target.value || 'qc_feedback' })} />
       </Field>
       <Space wrap>
         <Field label="temperature"><InputNumber min={0} max={2} step={0.1} value={params.temperature}

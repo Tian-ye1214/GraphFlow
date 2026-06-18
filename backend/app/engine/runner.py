@@ -327,6 +327,7 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
     """质检节点：N 个判定模型 K-of-N 判定；不通过行带原因经 rescan 回扫重生，最多 max_rounds 轮。
     首轮通过数写 QcMetric；最终仍失败样本写 QcFailure；仅持久化最终通过行。"""
     cfg = node.config
+    feedback_col = cfg.get("feedback_column") or "qc_feedback"
     judge_ids = cfg.get("judge_model_ids") or (
         [cfg["model_config_id"]] if cfg.get("model_config_id") else [])
     pass_k = cfg.get("pass_k", 1)
@@ -361,9 +362,10 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
         for row, (ok, reason, u, per_model) in zip(rows, await asyncio.gather(*[judge(r) for r in rows])):
             fold(u)
             if ok:
-                passed_.append(row)
+                passed_.append({**nodes.strip_qc_internal(row), feedback_col: row.get(feedback_col, "")})
             else:
-                failed_.append({**row, "_qc_reason": reason, "_qc_per_model": per_model})
+                failed_.append({**row, feedback_col: reason,
+                                "_qc_reason": reason, "_qc_per_model": per_model})
         return passed_, failed_
 
     try:

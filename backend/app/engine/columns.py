@@ -64,6 +64,8 @@ def _typed_output(node, input_cols: list[str], dataset_cols: dict[int, list[str]
         return cols
     if t == "http_fetch":
         return _ordered_union([input_cols, list((node.config.get("extract") or {}).keys())])
+    if t == "qc":
+        return _ordered_union([input_cols, [node.config.get("feedback_column") or "qc_feedback"]])
     return input_cols  # qc / output 透传
 
 
