@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import NodeConfigForm, { THINKING_EFFORT_OPTIONS, buildCodegenPayload } from './NodeConfigForm'
 
@@ -33,6 +33,8 @@ describe('NodeConfigForm QC feedback column', () => {
 
     render(<NodeConfigForm type="qc" workflowId={1} nodeId="qc" config={{}} onChange={() => {}} />)
 
+    // 折叠布局：反馈列名在「高级」分组内，先展开
+    fireEvent.click(await screen.findByText('高级（回扫 / 反馈 / 参数）'))
     expect(await screen.findByText('反馈列名')).toBeInTheDocument()
     expect(screen.getByDisplayValue('qc_feedback')).toBeInTheDocument()
   })
@@ -59,6 +61,9 @@ describe('NodeConfigForm QC feedback column', () => {
       />,
     )
 
+    // 折叠布局：提示词在「提示词」分组内，先展开
+    fireEvent.click(await screen.findByText('提示词'))
+    await waitFor(() => expect(screen.getByDisplayValue('根据{{qc_feedback}}改写答案')).toBeInTheDocument())
     await waitFor(() => expect(screen.queryByText(/引用了上游未产出的列/)).not.toBeInTheDocument())
     const prompt = screen.getByDisplayValue('根据{{qc_feedback}}改写答案')
     expect(within(prompt.closest('div') as HTMLElement).queryByText(/引用了上游未产出的列/)).not.toBeInTheDocument()

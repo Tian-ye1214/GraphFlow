@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Button, Input, InputNumber, Popover, Radio, Select, Space, Spin, Switch, Table, Tag } from 'antd'
+import { Button, Collapse, Input, InputNumber, Popover, Radio, Select, Space, Spin, Switch, Table, Tag } from 'antd'
 import { api } from '../../api/client'
 import type { CodegenOut, ColumnsMap, Dataset, ModelConfig, RowsPage } from '../../api/types'
 import { sendAssist, setDraft, useNodeAssist } from '../../agent/nodeAssistantStore'
@@ -204,16 +204,20 @@ function InputNodeForm({ config, onChange }: FormProps) {
     .map((id: number) => datasets.find((d) => d.id === id))
     .filter(Boolean) as Dataset[]
   return (
-    <>
-      <Field label="数据集（可多选，按行拼接）">
-        <Select
-          mode="multiple" style={{ width: '100%' }} value={config.dataset_ids ?? []}
-          onChange={(v) => onChange({ ...config, dataset_ids: v })}
-          options={datasets.map((d) => ({ value: d.id, label: `${d.name}（${d.row_count} 行）` }))}
-        />
-      </Field>
-      {selected.map((d) => <DatasetHeadPreview key={d.id} ds={d} />)}
-    </>
+    <Collapse defaultActiveKey={[]} items={[
+      { key: 'dataset', label: '数据集', children: (
+        <>
+          <Field label="数据集（可多选，按行拼接）">
+            <Select
+              mode="multiple" style={{ width: '100%' }} value={config.dataset_ids ?? []}
+              onChange={(v) => onChange({ ...config, dataset_ids: v })}
+              options={datasets.map((d) => ({ value: d.id, label: `${d.name}（${d.row_count} 行）` }))}
+            />
+          </Field>
+          {selected.map((d) => <DatasetHeadPreview key={d.id} ds={d} />)}
+        </>
+      ) },
+    ]} />
   )
 }
 
@@ -279,62 +283,74 @@ function LlmSynthForm({ config, onChange, workflowId, nodeId, inputCols }: FormP
     <>
       <NodeAssist nodeType="llm_synth" workflowId={workflowId} nodeId={nodeId} config={config}
                   onApply={(c) => onChange({ ...config, ...c })} />
-      <Field label="模型">
-        <Select
-          style={{ width: '100%' }} value={config.model_config_id}
-          onChange={(v) => patch({ model_config_id: v })}
-          options={models.map((m) => ({ value: m.id, label: `${m.name}（${m.model_name}）` }))}
-        />
-      </Field>
-      <Field label="System Prompt">
-        <Input.TextArea rows={3} value={config.system_prompt ?? ''}
-                        onChange={(e) => patch({ system_prompt: e.target.value })} />
-      </Field>
-      <Field label="User Prompt（用 {{列名}} 引用上游数据列）">
-        <Input.TextArea rows={6} value={config.user_prompt ?? ''}
-                        onChange={(e) => patch({ user_prompt: e.target.value })} />
-        <MissingColsWarning text={config.user_prompt ?? ''} inputCols={inputCols} />
-      </Field>
-      <Field label="输出方式">
-        <Radio.Group value={config.output_mode ?? 'column'}
-                     onChange={(e) => patch({ output_mode: e.target.value })}>
-          <Radio.Button value="column">整段存到列</Radio.Button>
-          <Radio.Button value="json">解析 JSON 拆多列</Radio.Button>
-        </Radio.Group>
-      </Field>
-      {(config.output_mode ?? 'column') === 'json' && (
-        <Field label="JSON 输出列（解析后拆出的列名，供下游识别）">
-          <Select mode="tags" style={{ width: '100%' }} value={config.output_columns ?? []}
-                  onChange={(v) => patch({ output_columns: v })} placeholder="如 q_en、category_en" />
-        </Field>
-      )}
-      {(config.output_mode ?? 'column') === 'column' && (
-        <Field label="输出列名">
-          <Input value={config.output_column ?? 'output'}
-                 onChange={(e) => patch({ output_column: e.target.value })} />
-        </Field>
-      )}
-      <Space wrap>
-        <Field label="扇出条数"><InputNumber min={1} value={config.fanout_n ?? 1}
-          onChange={(v) => patch({ fanout_n: v ?? 1 })} /></Field>
-        <Field label="节点并发"><InputNumber min={1} value={config.concurrency ?? 4}
-          onChange={(v) => patch({ concurrency: v ?? 4 })} /></Field>
-        <Field label="重试次数"><InputNumber min={1} value={config.retries ?? 3}
-          onChange={(v) => patch({ retries: v ?? 3 })} /></Field>
-      </Space>
-      <Space wrap>
-        <Field label="temperature"><InputNumber min={0} max={2} step={0.1} value={params.temperature}
-          onChange={(v) => patchParams({ temperature: v })} /></Field>
-        <Field label="top_p"><InputNumber min={0} max={1} step={0.05} value={params.top_p}
-          onChange={(v) => patchParams({ top_p: v })} /></Field>
-        <Field label="max_tokens"><InputNumber min={1} value={params.max_tokens}
-          onChange={(v) => patchParams({ max_tokens: v })} /></Field>
-        <Field label="超时(秒)"><InputNumber min={1} value={params.timeout ?? 120}
-          onChange={(v) => patchParams({ timeout: v ?? 120 })} /></Field>
-        <Field label="JSON 模式"><Switch checked={params.json_mode ?? false}
-          onChange={(v) => patchParams({ json_mode: v })} /></Field>
-        <ThinkingControls params={params} patchParams={patchParams} />
-      </Space>
+      <Collapse defaultActiveKey={[]} items={[
+        { key: 'model', label: '模型', children: (
+          <Field label="模型">
+            <Select
+              style={{ width: '100%' }} value={config.model_config_id}
+              onChange={(v) => patch({ model_config_id: v })}
+              options={models.map((m) => ({ value: m.id, label: `${m.name}（${m.model_name}）` }))}
+            />
+          </Field>
+        ) },
+        { key: 'prompt', label: '提示词', children: (
+          <>
+            <Field label="System Prompt">
+              <Input.TextArea rows={3} value={config.system_prompt ?? ''}
+                              onChange={(e) => patch({ system_prompt: e.target.value })} />
+            </Field>
+            <Field label="User Prompt（用 {{列名}} 引用上游数据列）">
+              <Input.TextArea rows={6} value={config.user_prompt ?? ''}
+                              onChange={(e) => patch({ user_prompt: e.target.value })} />
+              <MissingColsWarning text={config.user_prompt ?? ''} inputCols={inputCols} />
+            </Field>
+          </>
+        ) },
+        { key: 'advanced', label: '高级（输出 / 采样 / 参数）', children: (
+          <>
+            <Field label="输出方式">
+              <Radio.Group value={config.output_mode ?? 'column'}
+                           onChange={(e) => patch({ output_mode: e.target.value })}>
+                <Radio.Button value="column">整段存到列</Radio.Button>
+                <Radio.Button value="json">解析 JSON 拆多列</Radio.Button>
+              </Radio.Group>
+            </Field>
+            {(config.output_mode ?? 'column') === 'json' && (
+              <Field label="JSON 输出列（解析后拆出的列名，供下游识别）">
+                <Select mode="tags" style={{ width: '100%' }} value={config.output_columns ?? []}
+                        onChange={(v) => patch({ output_columns: v })} placeholder="如 q_en、category_en" />
+              </Field>
+            )}
+            {(config.output_mode ?? 'column') === 'column' && (
+              <Field label="输出列名">
+                <Input value={config.output_column ?? 'output'}
+                       onChange={(e) => patch({ output_column: e.target.value })} />
+              </Field>
+            )}
+            <Space wrap>
+              <Field label="扇出条数"><InputNumber min={1} value={config.fanout_n ?? 1}
+                onChange={(v) => patch({ fanout_n: v ?? 1 })} /></Field>
+              <Field label="节点并发"><InputNumber min={1} value={config.concurrency ?? 4}
+                onChange={(v) => patch({ concurrency: v ?? 4 })} /></Field>
+              <Field label="重试次数"><InputNumber min={1} value={config.retries ?? 3}
+                onChange={(v) => patch({ retries: v ?? 3 })} /></Field>
+            </Space>
+            <Space wrap>
+              <Field label="temperature"><InputNumber min={0} max={2} step={0.1} value={params.temperature}
+                onChange={(v) => patchParams({ temperature: v })} /></Field>
+              <Field label="top_p"><InputNumber min={0} max={1} step={0.05} value={params.top_p}
+                onChange={(v) => patchParams({ top_p: v })} /></Field>
+              <Field label="max_tokens"><InputNumber min={1} value={params.max_tokens}
+                onChange={(v) => patchParams({ max_tokens: v })} /></Field>
+              <Field label="超时(秒)"><InputNumber min={1} value={params.timeout ?? 120}
+                onChange={(v) => patchParams({ timeout: v ?? 120 })} /></Field>
+              <Field label="JSON 模式"><Switch checked={params.json_mode ?? false}
+                onChange={(v) => patchParams({ json_mode: v })} /></Field>
+              <ThinkingControls params={params} patchParams={patchParams} />
+            </Space>
+          </>
+        ) },
+      ]} />
     </>
   )
 }
@@ -483,29 +499,33 @@ function AutoProcessForm({ config, onChange, workflowId, nodeId }: FormProps & {
   const ops: Record<string, any>[] = config.operations ?? []
   const setOps = (next: Record<string, any>[]) => onChange({ ...config, operations: next })
   return (
-    <>
-      {ops.map((op, i) => (
-        <div key={i} style={{ border: '1px solid #eee', borderRadius: 6, padding: 8, marginBottom: 8 }}>
-          <Space style={{ marginBottom: 8 }}>
-            <Select style={{ width: 130 }} value={op.op}
-                    onChange={(v) => setOps(ops.map((o, j) => (j === i ? { ...OP_DEFAULTS[v] } : o)))}
-                    options={Object.entries(OP_LABELS).map(([v, l]) => ({ value: v, label: l }))} />
-            <a onClick={() => setOps(ops.filter((_, j) => j !== i))}>删除</a>
+    <Collapse defaultActiveKey={[]} items={[
+      { key: 'ops', label: '处理操作', children: (
+        <>
+          {ops.map((op, i) => (
+            <div key={i} style={{ border: '1px solid #eee', borderRadius: 6, padding: 8, marginBottom: 8 }}>
+              <Space style={{ marginBottom: 8 }}>
+                <Select style={{ width: 130 }} value={op.op}
+                        onChange={(v) => setOps(ops.map((o, j) => (j === i ? { ...OP_DEFAULTS[v] } : o)))}
+                        options={Object.entries(OP_LABELS).map(([v, l]) => ({ value: v, label: l }))} />
+                <a onClick={() => setOps(ops.filter((_, j) => j !== i))}>删除</a>
+              </Space>
+              {op.op === 'agent'
+                ? <AgentOpFields op={op} workflowId={workflowId} nodeId={nodeId}
+                                 update={(p) => setOps(ops.map((o, j) => (j === i ? { ...o, ...p } : o)))} />
+                : <OpFields op={op} update={(p) => setOps(ops.map((o, j) => (j === i ? { ...o, ...p } : o)))} />}
+            </div>
+          ))}
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Button block onClick={() => setOps([...ops, { ...OP_DEFAULTS.dedup }])}>+ 添加操作</Button>
+            <Button block type="dashed" onClick={() => setOps([...ops, { ...OP_DEFAULTS.agent }])}>
+              ✨ 用 AI 写处理代码
+            </Button>
+            <div style={{ color: '#999', fontSize: 12 }}>复杂处理（如按 session 分组去重）建议用 AI 写代码。</div>
           </Space>
-          {op.op === 'agent'
-            ? <AgentOpFields op={op} workflowId={workflowId} nodeId={nodeId}
-                             update={(p) => setOps(ops.map((o, j) => (j === i ? { ...o, ...p } : o)))} />
-            : <OpFields op={op} update={(p) => setOps(ops.map((o, j) => (j === i ? { ...o, ...p } : o)))} />}
-        </div>
-      ))}
-      <Space direction="vertical" style={{ width: '100%' }}>
-        <Button block onClick={() => setOps([...ops, { ...OP_DEFAULTS.dedup }])}>+ 添加操作</Button>
-        <Button block type="dashed" onClick={() => setOps([...ops, { ...OP_DEFAULTS.agent }])}>
-          ✨ 用 AI 写处理代码
-        </Button>
-        <div style={{ color: '#999', fontSize: 12 }}>复杂处理（如按 session 分组去重）建议用 AI 写代码。</div>
-      </Space>
-    </>
+        </>
+      ) },
+    ]} />
   )
 }
 
@@ -523,66 +543,84 @@ function QcForm({ config, onChange, workflowId, nodeId, inputCols }: FormProps &
     <>
       <NodeAssist nodeType="qc" workflowId={workflowId} nodeId={nodeId} config={config}
                   onApply={(c) => onChange({ ...config, ...c })} />
-      <Field label="判定模型（多选，N 个模型同提示词判定）">
-        <Select mode="multiple" style={{ width: '100%' }}
-                value={config.judge_model_ids ?? (config.model_config_id ? [config.model_config_id] : [])}
-                onChange={(v) => patch({ judge_model_ids: v })}
-                options={models.map((m) => ({ value: m.id, label: `${m.name}（${m.model_name}）` }))} />
-      </Field>
-      <Field label="至少通过数 K（≥K 个模型通过即输出）">
-        <InputNumber min={1} value={config.pass_k ?? 1} onChange={(v) => patch({ pass_k: v ?? 1 })} />
-      </Field>
-      <Field label='System Prompt（判定规则；要求模型只输出 {"pass":true|false,"reason":"..."}）'>
-        <Input.TextArea rows={3} value={config.system_prompt ?? ''}
-                        onChange={(e) => patch({ system_prompt: e.target.value })} />
-      </Field>
-      <Field label="User Prompt（用 {{列名}} 引用上游数据列）">
-        <Input.TextArea rows={5} value={config.user_prompt ?? ''}
-                        onChange={(e) => patch({ user_prompt: e.target.value })} />
-        <MissingColsWarning text={config.user_prompt ?? ''} inputCols={inputCols} />
-      </Field>
-      <Field label="最多回扫轮数">
-        <InputNumber min={0} value={config.max_rounds ?? 3}
-                     onChange={(v) => patch({ max_rounds: v ?? 3 })} />
-      </Field>
-      <Field label="反馈列名">
-        <Input value={config.feedback_column ?? 'qc_feedback'}
-               onChange={(e) => patch({ feedback_column: e.target.value || 'qc_feedback' })} />
-      </Field>
-      <Space wrap>
-        <Field label="temperature"><InputNumber min={0} max={2} step={0.1} value={params.temperature}
-          onChange={(v) => patchParams({ temperature: v })} /></Field>
-        <Field label="top_p"><InputNumber min={0} max={1} step={0.05} value={params.top_p}
-          onChange={(v) => patchParams({ top_p: v })} /></Field>
-        <Field label="max_tokens"><InputNumber min={1} value={params.max_tokens}
-          onChange={(v) => patchParams({ max_tokens: v })} /></Field>
-        <Field label="超时(秒)"><InputNumber min={1} value={params.timeout ?? 120}
-          onChange={(v) => patchParams({ timeout: v ?? 120 })} /></Field>
-        <ThinkingControls params={params} patchParams={patchParams} />
-      </Space>
-      <div style={{ color: '#999', fontSize: 12 }}>判定默认 temperature 0（确定性）；留空即用 0。</div>
-      <div style={{ color: '#999', fontSize: 12 }}>
-        把质检节点底部的橙色圆点拖回上游 LLM 节点形成回扫边；不通过的行带原因重生成，满 N 轮仍不过则丢弃。
-      </div>
+      <Collapse defaultActiveKey={[]} items={[
+        { key: 'judge', label: '判定', children: (
+          <>
+            <Field label="判定模型（多选，N 个模型同提示词判定）">
+              <Select mode="multiple" style={{ width: '100%' }}
+                      value={config.judge_model_ids ?? (config.model_config_id ? [config.model_config_id] : [])}
+                      onChange={(v) => patch({ judge_model_ids: v })}
+                      options={models.map((m) => ({ value: m.id, label: `${m.name}（${m.model_name}）` }))} />
+            </Field>
+            <Field label="至少通过数 K（≥K 个模型通过即输出）">
+              <InputNumber min={1} value={config.pass_k ?? 1} onChange={(v) => patch({ pass_k: v ?? 1 })} />
+            </Field>
+          </>
+        ) },
+        { key: 'prompt', label: '提示词', children: (
+          <>
+            <Field label='System Prompt（判定规则；要求模型只输出 {"pass":true|false,"reason":"..."}）'>
+              <Input.TextArea rows={3} value={config.system_prompt ?? ''}
+                              onChange={(e) => patch({ system_prompt: e.target.value })} />
+            </Field>
+            <Field label="User Prompt（用 {{列名}} 引用上游数据列）">
+              <Input.TextArea rows={5} value={config.user_prompt ?? ''}
+                              onChange={(e) => patch({ user_prompt: e.target.value })} />
+              <MissingColsWarning text={config.user_prompt ?? ''} inputCols={inputCols} />
+            </Field>
+          </>
+        ) },
+        { key: 'advanced', label: '高级（回扫 / 反馈 / 参数）', children: (
+          <>
+            <Field label="最多回扫轮数">
+              <InputNumber min={0} value={config.max_rounds ?? 3}
+                           onChange={(v) => patch({ max_rounds: v ?? 3 })} />
+            </Field>
+            <Field label="反馈列名">
+              <Input value={config.feedback_column ?? 'qc_feedback'}
+                     onChange={(e) => patch({ feedback_column: e.target.value || 'qc_feedback' })} />
+            </Field>
+            <Space wrap>
+              <Field label="temperature"><InputNumber min={0} max={2} step={0.1} value={params.temperature}
+                onChange={(v) => patchParams({ temperature: v })} /></Field>
+              <Field label="top_p"><InputNumber min={0} max={1} step={0.05} value={params.top_p}
+                onChange={(v) => patchParams({ top_p: v })} /></Field>
+              <Field label="max_tokens"><InputNumber min={1} value={params.max_tokens}
+                onChange={(v) => patchParams({ max_tokens: v })} /></Field>
+              <Field label="超时(秒)"><InputNumber min={1} value={params.timeout ?? 120}
+                onChange={(v) => patchParams({ timeout: v ?? 120 })} /></Field>
+              <ThinkingControls params={params} patchParams={patchParams} />
+            </Space>
+            <div style={{ color: '#999', fontSize: 12 }}>判定默认 temperature 0（确定性）；留空即用 0。</div>
+            <div style={{ color: '#999', fontSize: 12 }}>
+              把质检节点底部的橙色圆点拖回上游 LLM 节点形成回扫边；不通过的行带原因重生成，满 N 轮仍不过则丢弃。
+            </div>
+          </>
+        ) },
+      ]} />
     </>
   )
 }
 
 function OutputNodeForm({ config, onChange }: FormProps) {
   return (
-    <>
-      <Field label="同时保存为新数据集">
-        <Switch checked={config.save_as_dataset ?? false}
-                onChange={(v) => onChange({ ...config, save_as_dataset: v })} />
-      </Field>
-      {config.save_as_dataset && (
-        <Field label="数据集名称">
-          <Input value={config.dataset_name ?? ''}
-                 onChange={(e) => onChange({ ...config, dataset_name: e.target.value })} />
-        </Field>
-      )}
-      <div style={{ color: '#999' }}>导出文件在运行详情页选择格式下载。</div>
-    </>
+    <Collapse defaultActiveKey={[]} items={[
+      { key: 'output', label: '输出', children: (
+        <>
+          <Field label="同时保存为新数据集">
+            <Switch checked={config.save_as_dataset ?? false}
+                    onChange={(v) => onChange({ ...config, save_as_dataset: v })} />
+          </Field>
+          {config.save_as_dataset && (
+            <Field label="数据集名称">
+              <Input value={config.dataset_name ?? ''}
+                     onChange={(e) => onChange({ ...config, dataset_name: e.target.value })} />
+            </Field>
+          )}
+          <div style={{ color: '#999' }}>导出文件在运行详情页选择格式下载。</div>
+        </>
+      ) },
+    ]} />
   )
 }
 
@@ -618,42 +656,52 @@ function KvEditor({ pairs, onChange, keyPlaceholder, valPlaceholder }: {
 function HttpFetchForm({ config, onChange, inputCols }: FormProps & { inputCols: string[] }) {
   const patch = (p: object) => onChange({ ...config, ...p })
   return (
-    <>
-      <Field label="请求方法">
-        <Radio.Group value={config.method ?? 'GET'} onChange={(e) => patch({ method: e.target.value })}>
-          <Radio.Button value="GET">GET</Radio.Button>
-          <Radio.Button value="POST">POST</Radio.Button>
-        </Radio.Group>
-      </Field>
-      <Field label="URL（用 {{列名}} 引用上游数据列）">
-        <Input.TextArea rows={2} value={config.url ?? ''}
-                        onChange={(e) => patch({ url: e.target.value })} />
-        <MissingColsWarning text={config.url ?? ''} inputCols={inputCols} />
-      </Field>
-      {(config.method ?? 'GET') === 'POST' && (
-        <Field label="请求体 Body（{{列名}} 可引用；JSON 字符串）">
-          <Input.TextArea rows={3} value={config.body ?? ''}
-                          onChange={(e) => patch({ body: e.target.value })} />
-          <MissingColsWarning text={config.body ?? ''} inputCols={inputCols} />
-        </Field>
-      )}
-      <Field label="请求头 Headers（值可用 {{列名}}；如 Authorization / Bearer xxx）">
-        <KvEditor pairs={config.headers ?? {}} onChange={(h) => patch({ headers: h })}
-                  keyPlaceholder="Header 名" valPlaceholder="值" />
-      </Field>
-      <Field label="提取（响应 JSON 路径 → 输出列；如 temp ← data.temp）">
-        <KvEditor pairs={config.extract ?? {}} onChange={(e) => patch({ extract: e })}
-                  keyPlaceholder="输出列名" valPlaceholder="JSON 路径 如 data.weather.0.desc" />
-      </Field>
-      <Space wrap>
-        <Field label="节点并发"><InputNumber min={1} value={config.concurrency ?? 4}
-          onChange={(v) => patch({ concurrency: v ?? 4 })} /></Field>
-        <Field label="重试次数"><InputNumber min={0} value={config.retries ?? 2}
-          onChange={(v) => patch({ retries: v ?? 2 })} /></Field>
-        <Field label="超时(秒)"><InputNumber min={1} value={config.timeout ?? 30}
-          onChange={(v) => patch({ timeout: v ?? 30 })} /></Field>
-      </Space>
-    </>
+    <Collapse defaultActiveKey={[]} items={[
+      { key: 'req', label: '请求', children: (
+        <>
+          <Field label="请求方法">
+            <Radio.Group value={config.method ?? 'GET'} onChange={(e) => patch({ method: e.target.value })}>
+              <Radio.Button value="GET">GET</Radio.Button>
+              <Radio.Button value="POST">POST</Radio.Button>
+            </Radio.Group>
+          </Field>
+          <Field label="URL（用 {{列名}} 引用上游数据列）">
+            <Input.TextArea rows={2} value={config.url ?? ''}
+                            onChange={(e) => patch({ url: e.target.value })} />
+            <MissingColsWarning text={config.url ?? ''} inputCols={inputCols} />
+          </Field>
+          {(config.method ?? 'GET') === 'POST' && (
+            <Field label="请求体 Body（{{列名}} 可引用；JSON 字符串）">
+              <Input.TextArea rows={3} value={config.body ?? ''}
+                              onChange={(e) => patch({ body: e.target.value })} />
+              <MissingColsWarning text={config.body ?? ''} inputCols={inputCols} />
+            </Field>
+          )}
+        </>
+      ) },
+      { key: 'auth', label: '鉴权与提取', children: (
+        <>
+          <Field label="请求头 Headers（值可用 {{列名}}；如 Authorization / Bearer xxx）">
+            <KvEditor pairs={config.headers ?? {}} onChange={(h) => patch({ headers: h })}
+                      keyPlaceholder="Header 名" valPlaceholder="值" />
+          </Field>
+          <Field label="提取（响应 JSON 路径 → 输出列；如 temp ← data.temp）">
+            <KvEditor pairs={config.extract ?? {}} onChange={(e) => patch({ extract: e })}
+                      keyPlaceholder="输出列名" valPlaceholder="JSON 路径 如 data.weather.0.desc" />
+          </Field>
+        </>
+      ) },
+      { key: 'advanced', label: '高级（并发 / 重试 / 超时）', children: (
+        <Space wrap>
+          <Field label="节点并发"><InputNumber min={1} value={config.concurrency ?? 4}
+            onChange={(v) => patch({ concurrency: v ?? 4 })} /></Field>
+          <Field label="重试次数"><InputNumber min={0} value={config.retries ?? 2}
+            onChange={(v) => patch({ retries: v ?? 2 })} /></Field>
+          <Field label="超时(秒)"><InputNumber min={1} value={config.timeout ?? 30}
+            onChange={(v) => patch({ timeout: v ?? 30 })} /></Field>
+        </Space>
+      ) },
+    ]} />
   )
 }
 
