@@ -8,6 +8,7 @@ export interface AdminUser {
 
 export interface ModelConfig {
   id: number; name: string; model_name: string; base_url: string
+  provider: 'openai' | 'azure'; api_version: string
   api_key_set: boolean; default_params: Record<string, unknown>
 }
 

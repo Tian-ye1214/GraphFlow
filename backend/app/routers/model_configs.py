@@ -1,7 +1,8 @@
 import json
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,19 +20,36 @@ class ModelConfigIn(BaseModel):
     name: str
     model_name: str
     base_url: str
+    provider: Literal["openai", "azure"] = "openai"
+    api_version: str = ""
     api_key: str = ""
-    default_params: dict = {}
+    default_params: dict = Field(default_factory=dict)
 
 
 def _out(mc: ModelConfig) -> dict:
+    provider = getattr(mc, "provider", None) or "openai"
     return {
         "id": mc.id,
         "name": mc.name,
         "model_name": mc.model_name,
         "base_url": mc.base_url,
+        "provider": provider,
+        "api_version": (getattr(mc, "api_version", None) or "") if provider == "azure" else "",
         "api_key_set": bool(mc.api_key_enc),
         "default_params": json.loads(mc.default_params_json),
     }
+
+
+def _validated_provider_fields(body: ModelConfigIn, *, existing_key: str = "") -> tuple[str, str]:
+    provider = body.provider
+    api_version = body.api_version.strip()
+    if provider == "azure":
+        if not api_version:
+            raise HTTPException(status_code=400, detail="Azure 模型必须配置 API Version")
+        if not body.api_key and not existing_key:
+            raise HTTPException(status_code=400, detail="Azure 模型必须配置 API Key")
+        return provider, api_version
+    return provider, ""
 
 
 async def _get_owned(mc_id: int, user: User, session: AsyncSession) -> ModelConfig:
@@ -52,8 +70,10 @@ async def list_models(user: User = Depends(get_current_user), session: AsyncSess
 @router.post("")
 async def create_model(body: ModelConfigIn, user: User = Depends(get_current_user),
                        session: AsyncSession = Depends(get_session)):
+    provider, api_version = _validated_provider_fields(body)
     mc = ModelConfig(
         user_id=user.id, name=body.name, model_name=body.model_name, base_url=body.base_url,
+        provider=provider, api_version=api_version,
         api_key_enc=crypto.encrypt(body.api_key) if body.api_key else "",
         default_params_json=json.dumps(body.default_params, ensure_ascii=False),
     )
@@ -67,7 +87,9 @@ async def create_model(body: ModelConfigIn, user: User = Depends(get_current_use
 async def update_model(mc_id: int, body: ModelConfigIn, user: User = Depends(get_current_user),
                        session: AsyncSession = Depends(get_session)):
     mc = await _get_owned(mc_id, user, session)
+    provider, api_version = _validated_provider_fields(body, existing_key=mc.api_key_enc)
     mc.name, mc.model_name, mc.base_url = body.name, body.model_name, body.base_url
+    mc.provider, mc.api_version = provider, api_version
     mc.default_params_json = json.dumps(body.default_params, ensure_ascii=False)
     if body.api_key:  # 留空表示不修改 key
         mc.api_key_enc = crypto.encrypt(body.api_key)
@@ -91,7 +113,7 @@ async def test_model(mc_id: int, user: User = Depends(get_current_user),
                      session: AsyncSession = Depends(get_session)):
     mc = await _get_owned(mc_id, user, session)
     try:
-        text, _ = await llm.chat(mc, "", "ping", params={"max_tokens": 8}, retries=1)
+        text, _ = await llm.chat(mc, "", "这是一次连通测试，没问题回复OK", params={"max_tokens": 512}, retries=1)
         return {"ok": True, "reply": text[:100]}
     except llm.LLMError as e:
         return {"ok": False, "error": str(e)}

@@ -3,7 +3,10 @@ import json
 
 from pydantic_ai import Agent, FunctionToolset, ModelSettings
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.azure import AzureProvider
 from pydantic_ai.providers.openai import OpenAIProvider
+
+import httpx
 
 from app import crypto
 from app.agent.tools import wrap_tools
@@ -19,9 +22,16 @@ def create_model(mc: ModelConfig) -> OpenAIChatModel:
     eb = thinking_extra_body(params)
     if eb is not None:
         kw["extra_body"] = eb
-    provider = OpenAIProvider(
-        base_url=mc.base_url,
-        api_key=crypto.decrypt(mc.api_key_enc) if mc.api_key_enc else "none")
+    api_key = crypto.decrypt(mc.api_key_enc) if mc.api_key_enc else "none"
+    if (getattr(mc, "provider", None) or "openai") == "azure":
+        provider = AzureProvider(
+            azure_endpoint=mc.base_url,
+            api_key=api_key,
+            api_version=getattr(mc, "api_version", None) or "",
+            http_client=httpx.AsyncClient(http2=True)
+        )
+    else:
+        provider = OpenAIProvider(base_url=mc.base_url, api_key=api_key, http_client=httpx.AsyncClient(http2=True))
     return OpenAIChatModel(mc.model_name, provider=provider,
                            settings=ModelSettings(**kw) if kw else None)
 

@@ -24,7 +24,22 @@ async def init_db() -> None:
     event.listen(engine.sync_engine, "connect", _set_sqlite_pragma)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        if conn.dialect.name == "sqlite":
+            await _migrate_sqlite_schema(conn)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+
+async def _migrate_sqlite_schema(conn) -> None:
+    rows = (await conn.exec_driver_sql("PRAGMA table_info(model_configs)")).all()
+    cols = {row[1] for row in rows}
+    if "provider" not in cols:
+        await conn.exec_driver_sql(
+            "ALTER TABLE model_configs ADD COLUMN provider VARCHAR NOT NULL DEFAULT 'openai'"
+        )
+    if "api_version" not in cols:
+        await conn.exec_driver_sql(
+            "ALTER TABLE model_configs ADD COLUMN api_version VARCHAR NOT NULL DEFAULT ''"
+        )
 
 
 def get_session_factory() -> async_sessionmaker:

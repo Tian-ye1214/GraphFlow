@@ -30,6 +30,8 @@ class ModelConfig(Base):
     name: Mapped[str]
     model_name: Mapped[str] = mapped_column(default="")  # 实际请求用的模型 ID，如 qwen-max
     base_url: Mapped[str]
+    provider: Mapped[str] = mapped_column(default="openai")
+    api_version: Mapped[str] = mapped_column(default="")
     api_key_enc: Mapped[str]
     default_params_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
