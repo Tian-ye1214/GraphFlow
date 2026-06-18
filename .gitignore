@@ -6,3 +6,5 @@ data/
 node_modules/
 dist/
 backend/static/
+tests/
+backend/tests
