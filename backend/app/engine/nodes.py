@@ -217,14 +217,6 @@ async def run_http_fetch_row(config: dict, row: dict) -> tuple[list[dict], dict]
     return [{**base, **extracted}], {}
 
 
-def _truthy(v) -> bool:
-    """归一化判定模型返回的 pass：字符串 "false"/"no"/"0"/"否"/"不通过"/空 一律视为不通过。
-    （直接 bool("false") 会得 True，让垃圾蒙混过检。）"""
-    if isinstance(v, str):
-        return v.strip().lower() not in ("", "false", "no", "0", "否", "不通过", "fail")
-    return bool(v)
-
-
 async def run_qc_judge_row(config: dict, row: dict, mcs: list[ModelConfig], pass_k: int,
                            user_sem: asyncio.Semaphore) -> tuple[bool, str, dict, list]:
     """多模型 K-of-N 质检判定：N 个模型共用提示词并发判定，≥pass_k 个通过即整行通过。
@@ -238,7 +230,7 @@ async def run_qc_judge_row(config: dict, row: dict, mcs: list[ModelConfig], pass
     retries = config.get("retries", 3)
 
     async def judge_one(mc: ModelConfig):
-        """单模型判定：报错/非 JSON/缺 pass/空回复/限流等一律重试，retries 次仍失败即投「不通过」票。
+        """单模型判定：报错/非 JSON/缺 status/空回复/限流等一律重试，retries 次仍失败即投「不通过」票。
         绝不向上抛——一行里某个判定模型抽风不该拖垮整个质检节点与 run（对照 llm_synth 的逐行隔离）。"""
         usage_acc = {"prompt_tokens": 0, "completion_tokens": 0}
         last_err = None
@@ -249,23 +241,23 @@ async def run_qc_judge_row(config: dict, row: dict, mcs: list[ModelConfig], pass
                 usage_acc["prompt_tokens"] += usage["prompt_tokens"]
                 usage_acc["completion_tokens"] += usage["completion_tokens"]
                 verdict = _json.loads(text)
-                if "pass" not in verdict:
-                    raise ValueError("判定未返回 pass 字段")
-                return mc.id, _truthy(verdict["pass"]), str(verdict.get("reason") or "未通过质检"), usage_acc
+                if "status" not in verdict:
+                    raise ValueError("判定未返回 status 字段")
+                return mc.id, str(verdict["status"]).strip(), str(verdict.get("reason") or "未通过质检"), usage_acc
             except Exception as e:
                 last_err = e
                 if attempt < retries - 1:
                     await asyncio.sleep(llm.BACKOFF_BASE * 2 ** attempt)
-        return mc.id, False, f"判定重试 {retries} 次仍失败：{last_err}", usage_acc
+        return mc.id, "failed", f"判定重试 {retries} 次仍失败：{last_err}", usage_acc
 
     results = await asyncio.gather(*[judge_one(mc) for mc in mcs])
     usage_total = {"prompt_tokens": 0, "completion_tokens": 0}
     per_model, n_pass, dissent = [], 0, []
-    for mc_id, ok, reason, usage in results:
+    for mc_id, status, reason, usage in results:
         usage_total["prompt_tokens"] += usage["prompt_tokens"]
         usage_total["completion_tokens"] += usage["completion_tokens"]
-        per_model.append({"model_config_id": mc_id, "pass": ok, "reason": reason})
-        if ok:
+        per_model.append({"model_config_id": mc_id, "status": status, "reason": reason})
+        if status.lower() == "pass":
             n_pass += 1
         else:
             dissent.append(reason)

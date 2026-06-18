@@ -15,27 +15,52 @@ async def test_qc_judge_parses_verdict(monkeypatch):
     async def fake(mc, system, user, params=None, retries=3):
         assert params and params.get("json_mode") is True  # 判定强制 json 模式
         assert "hello" in user  # 用 base 渲染（剥离 _qc_reason）
-        return json.dumps({"pass": False, "reason": "不是中文"}), {"prompt_tokens": 2, "completion_tokens": 3}
+        return json.dumps({"status": "failed", "reason": "不是中文"}), {"prompt_tokens": 2, "completion_tokens": 3}
 
     monkeypatch.setattr(llm, "chat", fake)
     ok, reason, usage, per_model = await nodes.run_qc_judge_row(
         {"user_prompt": "译文:{{a}}"}, {"a": "hello", "_qc_reason": "旧"}, [_FakeMC()], 1, asyncio.Semaphore(1))
     assert ok is False and reason == "不是中文"
+    assert per_model[0]["status"] == "failed"
     assert usage == {"prompt_tokens": 2, "completion_tokens": 3}
 
 
 async def test_qc_judge_pass(monkeypatch):
     async def fake(mc, system, user, params=None, retries=3):
-        return json.dumps({"pass": True}), {"prompt_tokens": 1, "completion_tokens": 1}
+        return json.dumps({"status": "pass"}), {"prompt_tokens": 1, "completion_tokens": 1}
 
     monkeypatch.setattr(llm, "chat", fake)
     ok, reason, _, per_model = await nodes.run_qc_judge_row(
         {"user_prompt": "判:{{a}}"}, {"a": "x"}, [_FakeMC()], 1, asyncio.Semaphore(1))
     assert ok is True and reason == "通过"  # 通过时 dissent 为空，返回"通过"
+    assert per_model[0]["status"] == "pass"
 
 
-async def test_qc_judge_missing_pass_votes_fail(monkeypatch):
-    """判定缺 pass 字段：重试耗尽后判该模型「不通过」，不再抛错拖垮整个 run。"""
+async def test_qc_judge_status_normalized(monkeypatch):
+    """status 归一：大小写/空白不敏感，"PASS"/" pass " 记为通过票。"""
+    async def fake(mc, system, user, params=None, retries=3):
+        return json.dumps({"status": " PASS "}), {"prompt_tokens": 1, "completion_tokens": 1}
+
+    monkeypatch.setattr(llm, "chat", fake)
+    ok, *_ = await nodes.run_qc_judge_row(
+        {"user_prompt": "判:{{a}}"}, {"a": "x"}, [_FakeMC()], 1, asyncio.Semaphore(1))
+    assert ok is True
+
+
+async def test_qc_judge_non_pass_status_fails(monkeypatch):
+    """非 pass 的枚举值（如 factual_error）一律算不通过。"""
+    async def fake(mc, system, user, params=None, retries=3):
+        return json.dumps({"status": "factual_error", "reason": "事实错误"}), {"prompt_tokens": 1, "completion_tokens": 1}
+
+    monkeypatch.setattr(llm, "chat", fake)
+    ok, reason, _, per_model = await nodes.run_qc_judge_row(
+        {"user_prompt": "判:{{a}}"}, {"a": "x"}, [_FakeMC()], 1, asyncio.Semaphore(1))
+    assert ok is False and "事实错误" in reason
+    assert per_model[0]["status"] == "factual_error"  # 枚举原值保留供 jsonl 归类
+
+
+async def test_qc_judge_missing_status_votes_fail(monkeypatch):
+    """判定缺 status 字段：重试耗尽后判该模型「不通过」，不再抛错拖垮整个 run。"""
     monkeypatch.setattr(llm, "BACKOFF_BASE", 0)
 
     async def fake(mc, system, user, params=None, retries=3):
@@ -46,7 +71,7 @@ async def test_qc_judge_missing_pass_votes_fail(monkeypatch):
         {"user_prompt": "p"}, {"a": "x"}, [_FakeMC()], 1, asyncio.Semaphore(1))
     assert ok is False                                            # 拿不准 → 判不过
     assert usage == {"prompt_tokens": 3, "completion_tokens": 3}  # 3 次重试都真实调用了模型
-    assert per_model[0]["pass"] is False
+    assert per_model[0]["status"] == "failed"
 
 
 async def test_qc_multi_model_metric_and_failures(auth_client, monkeypatch, session_factory):
@@ -65,8 +90,6 @@ async def test_qc_multi_model_metric_and_failures(auth_client, monkeypatch, sess
         "name": "judge2", "model_name": "qwen", "base_url": "http://x/v1",
         "api_key": "k2", "default_params": {}})).json()
 
-    # 工作流：input -> llm_synth(mc1) -> qc(judge_model_ids=[mc1,mc2], pass_k=2)
-    # model_config_id=mc1["id"] 让 runs.py 资源校验通过（backward compat）
     graph = {
         "nodes": [
             {"id": "in", "type": "input", "config": {"dataset_ids": [ds["id"]]}},
@@ -87,18 +110,15 @@ async def test_qc_multi_model_metric_and_failures(auth_client, monkeypatch, sess
     wf = (await auth_client.post("/api/workflows", json={"name": "qc多模型"})).json()
     await auth_client.put(f"/api/workflows/{wf['id']}", json={"graph": graph})
 
-    # mock: llm_synth 调用（无 json_mode）返回纯文本；QC 判定调用（json_mode=True）按模型 id 分别返回
-    # mc1 始终 pass=True；mc2 始终 pass=False → 每行 1/2 < pass_k=2 → 全部失败
     call_count = {"n": 0}
 
     async def fake_chat(mc, system, user, params=None, retries=3):
         if params and params.get("json_mode"):
             # QC 判定：mc1 通过，mc2 不通过
             if mc.id == mc1["id"]:
-                return _json.dumps({"pass": True, "reason": "好"}), {"prompt_tokens": 1, "completion_tokens": 1}
+                return _json.dumps({"status": "pass", "reason": "好"}), {"prompt_tokens": 1, "completion_tokens": 1}
             else:
-                return _json.dumps({"pass": False, "reason": "不合格"}), {"prompt_tokens": 1, "completion_tokens": 1}
-        # llm_synth
+                return _json.dumps({"status": "failed", "reason": "不合格"}), {"prompt_tokens": 1, "completion_tokens": 1}
         call_count["n"] += 1
         return f"答{call_count['n']}", {"prompt_tokens": 1, "completion_tokens": 1}
 
@@ -106,7 +126,6 @@ async def test_qc_multi_model_metric_and_failures(auth_client, monkeypatch, sess
 
     run_id = (await auth_client.post("/api/runs", json={"workflow_id": wf["id"]})).json()["id"]
 
-    # 等待运行完成
     for _ in range(100):
         await asyncio.sleep(0.05)
         r = (await auth_client.get(f"/api/runs/{run_id}")).json()
@@ -121,13 +140,13 @@ async def test_qc_multi_model_metric_and_failures(auth_client, monkeypatch, sess
 
     assert metrics, "QcMetric 应写入"
     assert all(0 <= m.first_round_pass <= m.total for m in metrics)
-    assert metrics[0].total == 3  # 3 行输入
-    # mc2 全部不通过 → 1/2 < pass_k=2 → 所有行失败
+    assert metrics[0].total == 3
     assert metrics[0].first_round_pass == 0
     assert failures, "QcFailure 应写入"
-    assert len(failures) == 3  # 3 行全部失败
+    assert len(failures) == 3
     for f in failures:
         reasons = _json.loads(f.reasons_json)
         assert isinstance(reasons, list)
+        assert reasons[0]["status"] == "pass" and reasons[1]["status"] == "failed"  # per-model 存 status
         sample = _json.loads(f.sample_json)
         assert "_qc_reason" not in sample and "_qc_per_model" not in sample

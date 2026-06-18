@@ -9,7 +9,7 @@ async def test_qc_params_user_overrides_temperature(monkeypatch):
 
     async def fake_chat(mc, system, user, params=None, retries=3):
         seen["params"] = params
-        return '{"pass": true, "reason": "ok"}', {"prompt_tokens": 1, "completion_tokens": 1}
+        return '{"status": "pass", "reason": "ok"}', {"prompt_tokens": 1, "completion_tokens": 1}
 
     monkeypatch.setattr(nodes.llm, "chat", fake_chat)
     mc = ModelConfig(user_id=1, name="m", base_url="http://x", api_key_enc="")
@@ -26,7 +26,7 @@ async def test_qc_params_default_temperature_zero(monkeypatch):
 
     async def fake_chat(mc, system, user, params=None, retries=3):
         seen["params"] = params
-        return '{"pass": true, "reason": "ok"}', {"prompt_tokens": 1, "completion_tokens": 1}
+        return '{"status": "pass", "reason": "ok"}', {"prompt_tokens": 1, "completion_tokens": 1}
 
     monkeypatch.setattr(nodes.llm, "chat", fake_chat)
     mc = ModelConfig(user_id=1, name="m", base_url="http://x", api_key_enc="")
