@@ -127,7 +127,7 @@ async def test_cross_user_isolation(auth_client, mc_id, no_run):
 async def test_codegen_endpoint(auth_client, mc_id, monkeypatch):
     from app.routers import agent as agent_router
 
-    async def fake(model, instruction, columns, current_code=""):
+    async def fake(model, instruction, columns, current_code="", preview_tools=None, params=None):
         assert instruction == "去重"
         return {"code": "def process(rows):\n    return rows", "output_columns": []}
 
@@ -155,7 +155,8 @@ async def test_codegen_ownership(auth_client, mc_id):
 async def test_node_assist_guards(auth_client, monkeypatch):
     from app.agent import codegen
 
-    async def fake_cfg(model, node_type, instruction, columns, current_config=None):
+    async def fake_cfg(model, node_type, instruction, columns, current_config=None,
+                       preview_tools=None, params=None):
         return {"system_prompt": "s", "user_prompt": "翻译:{{q}}", "output_column": "q_en"}
 
     monkeypatch.setattr(codegen, "generate_node_config", fake_cfg)

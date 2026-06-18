@@ -33,7 +33,7 @@ async def _setup(auth_client):
 
 
 async def test_goal_loop_full_stack(auth_client, monkeypatch):
-    monkeypatch.setattr(factory, "create_model", lambda mc: _goal_model())
+    monkeypatch.setattr(factory, "create_model", lambda mc, params=None: _goal_model())
     sid = await _setup(auth_client)
     await auth_client.post(f"/api/agent/sessions/{sid}/messages",
                            json={"text": "把通过率调到 90% 以上"})
@@ -47,7 +47,7 @@ async def test_goal_loop_full_stack(auth_client, monkeypatch):
 
 
 async def test_goal_user_message_resets_round(auth_client, monkeypatch):
-    monkeypatch.setattr(factory, "create_model", lambda mc: _goal_model())
+    monkeypatch.setattr(factory, "create_model", lambda mc, params=None: _goal_model())
     sid = await _setup(auth_client)
     await auth_client.post(f"/api/agent/sessions/{sid}/messages", json={"text": "目标一"})
     await asyncio.wait_for(turns.turn_manager.tasks[sid], 20)

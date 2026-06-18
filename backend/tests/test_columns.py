@@ -103,7 +103,7 @@ def test_qc_passthrough_and_rescan_ignored():
          {"source": "ls", "target": "qc", "kind": "normal"},
          {"source": "qc", "target": "ls", "kind": "rescan"}])
     cols = propagate_columns(g, {1: ["q"]})
-    assert cols["qc"]["output"] == ["q", "a"]
+    assert cols["qc"]["output"] == ["q", "a", "qc_feedback"]   # qc 产出含反馈列
 
 
 def test_ordered_union_dedupes_across_upstreams():

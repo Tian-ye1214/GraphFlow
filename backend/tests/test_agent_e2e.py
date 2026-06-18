@@ -62,7 +62,7 @@ async def _login_and_model(c: httpx.AsyncClient) -> int:
 
 async def test_one_sentence_builds_graph_with_sse(live, monkeypatch):
     monkeypatch.setattr(factory, "create_model",
-                        lambda mc: FunctionModel(stream_function=_coordinator_stream))
+                        lambda mc, params=None: FunctionModel(stream_function=_coordinator_stream))
     async with httpx.AsyncClient(base_url=live, timeout=30) as c:
         mc_id = await _login_and_model(c)
         sid = (await c.post("/api/agent/sessions",

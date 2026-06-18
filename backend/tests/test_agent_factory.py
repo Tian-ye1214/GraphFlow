@@ -15,13 +15,13 @@ def _mc(**over):
 
 def test_create_model_decrypts_key(monkeypatch):
     captured = {}
-    real = factory.OpenAIProvider
+    real = factory.make_agent_provider
 
-    def spy(base_url, api_key):
-        captured.update(base_url=base_url, api_key=api_key)
-        return real(base_url=base_url, api_key=api_key)
+    def spy(mc, *, responses=False):
+        captured.update(base_url=mc.base_url, api_key=crypto.decrypt(mc.api_key_enc))
+        return real(mc, responses=responses)
 
-    monkeypatch.setattr(factory, "OpenAIProvider", spy)
+    monkeypatch.setattr(factory, "make_agent_provider", spy)
     model = factory.create_model(_mc())
     assert captured == {"base_url": "http://llm.local/v1", "api_key": "sk-test"}
     assert model.model_name == "qwen-max"
@@ -33,13 +33,13 @@ def test_create_model_decrypts_key(monkeypatch):
 def test_create_model_no_key():
     model = factory.create_model(_mc(api_key_enc="", default_params_json="{}"))
     assert model.model_name == "qwen-max"
-    # 思考默认开启 → settings 带 extra_body，不再为 None
-    assert model.settings["extra_body"] == {
-        "thinking": {"type": "enabled"}, "reasoning_effort": "high"}
+    # 思考默认开启 → settings 带 extra_body（agent 路径仅发 thinking.enabled，不含 reasoning_effort）
+    assert model.settings["extra_body"] == {"thinking": {"type": "enabled"}}
 
 
 def test_create_model_thinking_disabled():
-    model = factory.create_model(_mc(default_params_json='{"thinking_enabled": false}'))
+    # agent 路径思考由调用方 params 控制（非 default_params_json）：显式关闭则不发 extra_body
+    model = factory.create_model(_mc(), params={"thinking_enabled": False})
     assert "extra_body" not in (model.settings or {})
 
 

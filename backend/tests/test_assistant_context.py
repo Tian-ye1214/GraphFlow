@@ -67,7 +67,7 @@ async def _make_model_and_wf(auth_client, node_id, node_type):
 async def test_codegen_endpoint_passes_current_code(auth_client, monkeypatch):
     cap = {}
 
-    async def fake_gen(model, instruction, columns, current_code=""):
+    async def fake_gen(model, instruction, columns, current_code="", preview_tools=None, params=None):
         cap["current_code"] = current_code
         return {"code": "x", "output_columns": []}
 
@@ -83,7 +83,8 @@ async def test_codegen_endpoint_passes_current_code(auth_client, monkeypatch):
 async def test_node_assist_endpoint_passes_current_config(auth_client, monkeypatch):
     cap = {}
 
-    async def fake_cfg(model, node_type, instruction, columns, current_config=None):
+    async def fake_cfg(model, node_type, instruction, columns, current_config=None,
+                       preview_tools=None, params=None):
         cap["current_config"] = current_config
         return {"system_prompt": "s", "user_prompt": "u"}
 
