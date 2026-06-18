@@ -25,10 +25,10 @@ def _user_prompt(instruction: str, columns: list[str]) -> str:
 
 
 async def generate_code(model, instruction: str, columns: list[str], current_code: str = "",
-                        preview_tools: list | None = None) -> dict:
+                        preview_tools: list | None = None, params: dict | None = None) -> dict:
     """按指令+上游列名生成 {code, output_columns}；不执行、不预览。
     传入 current_code 时要求模型在其基础上增量修改、保留已有处理。"""
-    agent = create_agent(model, preview_tools or [], INSTRUCTIONS)
+    agent = create_agent(model, preview_tools or [], INSTRUCTIONS, params=params)
     prompt = _user_prompt(instruction, columns)
     if current_code.strip():
         prompt += ("\n\n现有代码（请在此基础上增量修改，保留已有处理逻辑，"
@@ -46,10 +46,11 @@ NODE_ASSIST_INSTRUCTIONS = {
 
 async def generate_node_config(model, node_type: str, instruction: str, columns: list[str],
                                current_config: dict | None = None,
-                               preview_tools: list | None = None) -> dict:
+                               preview_tools: list | None = None,
+                               params: dict | None = None) -> dict:
     """临时单 Agent 为指定节点产出配置 JSON（不跑代码，仅生成提示词）。未知 node_type 抛 KeyError。
     传入 current_config 时要求模型在其基础上增量修改、保留已有提示词与需求。"""
-    agent = create_agent(model, preview_tools or [], NODE_ASSIST_INSTRUCTIONS[node_type])
+    agent = create_agent(model, preview_tools or [], NODE_ASSIST_INSTRUCTIONS[node_type], params=params)
     prompt = _user_prompt(instruction, columns)
     if current_config:
         prompt += ("\n\n现有节点配置（请在此基础上增量修改，保留已有提示词中的处理，"

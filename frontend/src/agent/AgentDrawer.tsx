@@ -8,7 +8,56 @@ import type {
 } from '../api/types'
 import { extractConfirmDeletes, stripGoalMarkers } from './parse'
 
-const ROLES = ['coordinator', 'manager', 'worker'] as const
+export const AGENT_ROLES = ['coordinator', 'manager', 'worker', 'compactor'] as const
+const THINKING_EFFORT_OPTIONS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+
+function withThinkingParamDefaults(params?: Record<string, any>) {
+  return {
+    ...(params ?? {}),
+    thinking_enabled: params?.thinking_enabled ?? true,
+    reasoning_effort: params?.reasoning_effort ?? 'high',
+  }
+}
+
+export function buildSessionPayload({
+  advanced,
+  modelSel,
+  roleSel,
+  sharedParams,
+  roleParams,
+}: {
+  advanced: boolean
+  modelSel?: number
+  roleSel: Record<string, number | undefined>
+  sharedParams: Record<string, any>
+  roleParams: Record<string, Record<string, any>>
+}) {
+  const useAdvanced = advanced && AGENT_ROLES.every((r) => roleSel[r])
+  const modelParams = Object.fromEntries(AGENT_ROLES.map((role) => [
+    role,
+    withThinkingParamDefaults(useAdvanced ? roleParams[role] : sharedParams),
+  ]))
+  if (useAdvanced) return { models: roleSel, model_params: modelParams }
+  return { model_config_id: modelSel, model_params: modelParams }
+}
+
+function ThinkingControls({ params, patchParams }: {
+  params: Record<string, any>
+  patchParams: (p: object) => void
+}) {
+  const thinking = withThinkingParamDefaults(params)
+  return (
+    <>
+      <span style={{ fontSize: 12 }}>思考
+        <Switch size="small" style={{ marginLeft: 4 }} checked={thinking.thinking_enabled}
+                onChange={(v) => patchParams({ thinking_enabled: v })} /></span>
+      <Select size="small" style={{ width: 90 }} value={thinking.reasoning_effort}
+              disabled={!thinking.thinking_enabled}
+              onChange={(v) => patchParams({ reasoning_effort: v })}
+              options={THINKING_EFFORT_OPTIONS.map((e) => ({ value: e, label: e }))} />
+    </>
+  )
+}
 
 export default function AgentDrawer() {
   const [open, setOpen] = useState(false)
@@ -18,6 +67,8 @@ export default function AgentDrawer() {
   const [modelSel, setModelSel] = useState<number>()
   const [advanced, setAdvanced] = useState(false)
   const [roleSel, setRoleSel] = useState<Record<string, number | undefined>>({})
+  const [sharedParams, setSharedParams] = useState<Record<string, any>>({})
+  const [roleParams, setRoleParams] = useState<Record<string, Record<string, any>>>({})
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState('')
   const [liveTools, setLiveTools] = useState<AgentToolContent[]>([])
@@ -108,12 +159,12 @@ export default function AgentDrawer() {
   })
 
   const newSession = async () => {
-    const useAdvanced = advanced && ROLES.every((r) => roleSel[r])
+    const useAdvanced = advanced && AGENT_ROLES.every((r) => roleSel[r])
     if (!useAdvanced && !modelSel) {
       message.warning('先选择模型配置')
       return
     }
-    const body = useAdvanced ? { models: roleSel } : { model_config_id: modelSel }
+    const body = buildSessionPayload({ advanced, modelSel, roleSel, sharedParams, roleParams })
     try {
       const s = await api.post<AgentSessionSummary>('/api/agent/sessions', body)
       setSessions((list) => [s, ...list])
@@ -223,13 +274,25 @@ export default function AgentDrawer() {
               }>
         {advanced && (
           <Space style={{ marginBottom: 8 }} wrap>
-            {ROLES.map((r) => (
+            {AGENT_ROLES.map((r) => (
               <Select key={r} size="small" style={{ width: 130 }} placeholder={r}
                       value={roleSel[r]} onChange={(v) => setRoleSel({ ...roleSel, [r]: v })}
                       options={models.map((m) => ({ value: m.id, label: `${r}: ${m.name}` }))} />
             ))}
           </Space>
         )}
+        <Space style={{ marginBottom: 8 }} wrap>
+          {advanced
+            ? AGENT_ROLES.map((r) => (
+              <Space key={r}>
+                <Tag>{r}</Tag>
+                <ThinkingControls params={roleParams[r] ?? {}}
+                                  patchParams={(p) => setRoleParams({ ...roleParams, [r]: { ...(roleParams[r] ?? {}), ...p } })} />
+              </Space>
+            ))
+            : <ThinkingControls params={sharedParams}
+                                patchParams={(p) => setSharedParams({ ...sharedParams, ...p })} />}
+        </Space>
         {goalMode && detail && !running && (
           <Space style={{ marginBottom: 8 }} wrap>
             <Select size="small" style={{ width: 160 }} placeholder="目标工作流"

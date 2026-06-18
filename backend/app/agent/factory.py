@@ -1,44 +1,53 @@
-"""从 GraphFlow ModelConfig 构造 pydantic-ai Agent（OpenAI 兼容直连，api_key 现解密现用）。"""
 import json
 
 from pydantic_ai import Agent, FunctionToolset, ModelSettings
-from pydantic_ai.models.openai import OpenAIChatModel
-from pydantic_ai.providers.azure import AzureProvider
-from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 
-import httpx
-
-from app import crypto
 from app.agent.tools import wrap_tools
+from app.llm_clients import azure_api_mode, make_agent_provider, provider_name
 from app.models import ModelConfig
-from app.thinking import thinking_extra_body
+from app.thinking import agent_chat_settings, agent_responses_settings, thinking_enabled
 
 SETTINGS_KEYS = ("temperature", "top_p", "max_tokens", "timeout")
 
 
-def create_model(mc: ModelConfig) -> OpenAIChatModel:
-    params = json.loads(mc.default_params_json)
-    kw = {k: params[k] for k in SETTINGS_KEYS if params.get(k) is not None}
-    eb = thinking_extra_body(params)
-    if eb is not None:
-        kw["extra_body"] = eb
-    api_key = crypto.decrypt(mc.api_key_enc) if mc.api_key_enc else "none"
-    if (getattr(mc, "provider", None) or "openai") == "azure":
-        provider = AzureProvider(
-            azure_endpoint=mc.base_url,
-            api_key=api_key,
-            api_version=getattr(mc, "api_version", None) or "",
-            http_client=httpx.AsyncClient(http2=True)
-        )
+class AzureLegacyChatModel(OpenAIChatModel):
+    """Accept AIDP/Azure legacy proxy ChatCompletion responses with null choice indexes."""
+
+    def _validate_completion(self, response):
+        for idx, choice in enumerate(response.choices or []):
+            if getattr(choice, "index", None) is None:
+                choice.index = idx
+        return super()._validate_completion(response)
+
+
+def create_model(mc: ModelConfig, params: dict | None = None) -> OpenAIChatModel | OpenAIResponsesModel:
+    default_params = json.loads(mc.default_params_json)
+    call_params = dict(params or {})
+    merged = {**default_params, **call_params}
+    kw = {k: merged[k] for k in SETTINGS_KEYS if merged.get(k) is not None}
+    provider = provider_name(mc)
+    azure_mode = azure_api_mode(mc) if provider == "azure" else ""
+    use_responses = provider == "azure" and azure_mode == "v1" and thinking_enabled(call_params)
+    if use_responses:
+        kw.update(agent_responses_settings(call_params, provider=provider))
     else:
-        provider = OpenAIProvider(base_url=mc.base_url, api_key=api_key, http_client=httpx.AsyncClient(http2=True))
-    return OpenAIChatModel(mc.model_name, provider=provider,
-                           settings=ModelSettings(**kw) if kw else None)
+        kw.update(agent_chat_settings(call_params, provider=provider))
+    if use_responses:
+        model_cls = OpenAIResponsesModel
+    elif provider == "azure" and azure_mode == "legacy":
+        model_cls = AzureLegacyChatModel
+    else:
+        model_cls = OpenAIChatModel
+    return model_cls(
+        mc.model_name,
+        provider=make_agent_provider(mc, responses=use_responses),
+        settings=ModelSettings(**kw) if kw else None,
+    )
 
 
-def create_agent(model, tools: list, instructions: str) -> Agent:
-    """model 可传 ModelConfig（按配置构造）或现成 Model 实例（测试用 TestModel/FunctionModel）。"""
+def create_agent(model, tools: list, instructions: str, params: dict | None = None) -> Agent:
     if isinstance(model, ModelConfig):
-        model = create_model(model)
+        model = create_model(model, params=params)
     return Agent(model, toolsets=[FunctionToolset(wrap_tools(tools), id="default")],
                  instructions=instructions)

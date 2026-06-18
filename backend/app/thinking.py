@@ -1,9 +1,48 @@
-"""思考模式配置：把「是否开启思考 + 力度」翻译成 OpenAI 兼容请求的 extra_body。
-默认开启、力度 high；关闭则整段不发（返回 None）。节点路径与 Agent 路径共用。"""
+DEFAULT_REASONING_EFFORT = "high"
+EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 
 
-def thinking_extra_body(params: dict) -> dict | None:
-    if not params.get("thinking_enabled", True):
-        return None
-    return {"thinking": {"type": "enabled"},
-            "reasoning_effort": params.get("reasoning_effort", "high")}
+def with_thinking_defaults(params: dict | None) -> dict:
+    out = dict(params or {})
+    out.setdefault("thinking_enabled", True)
+    out.setdefault("reasoning_effort", DEFAULT_REASONING_EFFORT)
+    return out
+
+
+def thinking_enabled(params: dict | None) -> bool:
+    return bool(with_thinking_defaults(params).get("thinking_enabled"))
+
+
+def reasoning_effort(params: dict | None, *, provider: str = "openai") -> str:
+    effort = str(with_thinking_defaults(params).get("reasoning_effort") or DEFAULT_REASONING_EFFORT)
+    if effort not in EFFORTS:
+        effort = DEFAULT_REASONING_EFFORT
+    if provider == "azure" and effort == "max":
+        return "xhigh"
+    return effort
+
+
+def chat_thinking_kwargs(params: dict | None, *, provider: str = "openai") -> dict:
+    if not thinking_enabled(params):
+        return {}
+    effort = reasoning_effort(params, provider=provider)
+    if provider == "azure":
+        return {"reasoning_effort": effort}
+    return {
+        "reasoning_effort": effort,
+        "extra_body": {"thinking": {"type": "enabled"}},
+    }
+
+
+def agent_chat_settings(params: dict | None, *, provider: str = "openai") -> dict:
+    if not thinking_enabled(params):
+        return {}
+    if provider == "azure":
+        return {}
+    return {"extra_body": {"thinking": {"type": "enabled"}}}
+
+
+def agent_responses_settings(params: dict | None, *, provider: str = "openai") -> dict:
+    if not thinking_enabled(params):
+        return {}
+    return {"openai_reasoning_effort": reasoning_effort(params, provider=provider)}

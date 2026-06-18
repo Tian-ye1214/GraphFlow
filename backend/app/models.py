@@ -31,6 +31,7 @@ class ModelConfig(Base):
     model_name: Mapped[str] = mapped_column(default="")  # 实际请求用的模型 ID，如 qwen-max
     base_url: Mapped[str]
     provider: Mapped[str] = mapped_column(default="openai")
+    azure_api_mode: Mapped[str] = mapped_column(default="legacy")
     api_version: Mapped[str] = mapped_column(default="")
     api_key_enc: Mapped[str]
     default_params_json: Mapped[str] = mapped_column(Text, default="{}")
@@ -159,6 +160,7 @@ class AgentSession(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     title: Mapped[str] = mapped_column(default="")
     models_json: Mapped[str] = mapped_column(Text)  # {"coordinator": 1, "manager": 1, "worker": 2}
+    model_params_json: Mapped[str] = mapped_column(Text, default="{}")
     history_json: Mapped[str] = mapped_column(Text, default="[]")  # pydantic-ai ModelMessage 全量历史
     status: Mapped[str] = mapped_column(default="idle")  # idle / running
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

@@ -8,12 +8,55 @@ export interface FormProps {
   onChange: (config: Record<string, any>) => void
 }
 
+export const THINKING_EFFORT_OPTIONS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+
+function withThinkingParamDefaults(params?: Record<string, any>) {
+  return {
+    ...(params ?? {}),
+    thinking_enabled: params?.thinking_enabled ?? true,
+    reasoning_effort: params?.reasoning_effort ?? 'high',
+  }
+}
+
+export function buildCodegenPayload(
+  workflowId: number,
+  nodeId: string,
+  modelSel: number,
+  op: Record<string, any>,
+) {
+  return {
+    workflow_id: workflowId,
+    node_id: nodeId,
+    instruction: op.instruction,
+    model_config_id: modelSel,
+    current_code: op.code,
+    params: withThinkingParamDefaults(op.params),
+  }
+}
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div style={{ marginBottom: 12 }}>
       <div style={{ marginBottom: 4, color: '#666' }}>{label}</div>
       {children}
     </div>
+  )
+}
+
+function ThinkingControls({ params, patchParams }: {
+  params: Record<string, any>
+  patchParams: (p: object) => void
+}) {
+  const thinking = withThinkingParamDefaults(params)
+  return (
+    <>
+      <Field label="开启思考"><Switch checked={thinking.thinking_enabled}
+        onChange={(v) => patchParams({ thinking_enabled: v })} /></Field>
+      <Field label="思考力度"><Select style={{ width: 100 }}
+        value={thinking.reasoning_effort} disabled={!thinking.thinking_enabled}
+        onChange={(v) => patchParams({ reasoning_effort: v })}
+        options={THINKING_EFFORT_OPTIONS.map((e) => ({ value: e, label: e }))} /></Field>
+    </>
   )
 }
 
@@ -194,6 +237,7 @@ function NodeAssist({ nodeType, workflowId, nodeId, config, onApply }: {
       const r = await api.post<NodeAssistOut>('/api/agent/node-assist', {
         workflow_id: workflowId, node_id: nodeId, node_type: nodeType,
         instruction, model_config_id: modelSel, current_config: config,
+        params: withThinkingParamDefaults(config.params),
       })
       onApply(r.config)
       if (r.sample_source === 'none') setInfo('未检测到上游列，可先连好上游')
@@ -287,12 +331,7 @@ function LlmSynthForm({ config, onChange, workflowId, nodeId, inputCols }: FormP
           onChange={(v) => patchParams({ timeout: v ?? 120 })} /></Field>
         <Field label="JSON 模式"><Switch checked={params.json_mode ?? false}
           onChange={(v) => patchParams({ json_mode: v })} /></Field>
-        <Field label="开启思考"><Switch checked={params.thinking_enabled ?? true}
-          onChange={(v) => patchParams({ thinking_enabled: v })} /></Field>
-        <Field label="思考力度"><Select style={{ width: 100 }}
-          value={params.reasoning_effort ?? 'high'} disabled={!(params.thinking_enabled ?? true)}
-          onChange={(v) => patchParams({ reasoning_effort: v })}
-          options={['low', 'medium', 'high', 'xhigh'].map((e) => ({ value: e, label: e }))} /></Field>
+        <ThinkingControls params={params} patchParams={patchParams} />
       </Space>
     </>
   )
@@ -387,6 +426,8 @@ function AgentOpFields({ op, update, workflowId, nodeId }: {
   const [modelSel, setModelSel] = useState<number>()
   const [busy, setBusy] = useState(false)
   const [info, setInfo] = useState('')
+  const params = op.params ?? {}
+  const patchParams = (p: object) => update({ params: { ...params, ...p } })
   useEffect(() => {
     void api.get<ModelConfig[]>('/api/models').then(setModels)
   }, [])
@@ -395,10 +436,8 @@ function AgentOpFields({ op, update, workflowId, nodeId }: {
     setBusy(true)
     setInfo('')
     try {
-      const r = await api.post<CodegenOut>('/api/agent/codegen', {
-        workflow_id: workflowId, node_id: nodeId,
-        instruction: op.instruction, model_config_id: modelSel, current_code: op.code,
-      })
+      const r = await api.post<CodegenOut>('/api/agent/codegen',
+        buildCodegenPayload(workflowId, nodeId, modelSel, op))
       update({ code: r.code, output_columns: r.output_columns })
       if (r.sample_source === 'none') setInfo('未检测到上游列（先连好上游/上传数据集），AI 仅按指令生成')
     } catch (e) {
@@ -416,6 +455,9 @@ function AgentOpFields({ op, update, workflowId, nodeId }: {
                 onChange={setModelSel} options={models.map((m) => ({ value: m.id, label: m.name }))} />
         <Button size="small" loading={busy} disabled={!op.instruction || !modelSel}
                 onClick={() => void generate()}>生成代码</Button>
+      </Space>
+      <Space wrap>
+        <ThinkingControls params={params} patchParams={patchParams} />
       </Space>
       {info && <div style={{ color: '#d46b08', fontSize: 12, marginBottom: 4 }}>{info}</div>}
       {op.code && (
@@ -514,12 +556,7 @@ function QcForm({ config, onChange, workflowId, nodeId, inputCols }: FormProps &
           onChange={(v) => patchParams({ max_tokens: v })} /></Field>
         <Field label="超时(秒)"><InputNumber min={1} value={params.timeout ?? 120}
           onChange={(v) => patchParams({ timeout: v ?? 120 })} /></Field>
-        <Field label="开启思考"><Switch checked={params.thinking_enabled ?? true}
-          onChange={(v) => patchParams({ thinking_enabled: v })} /></Field>
-        <Field label="思考力度"><Select style={{ width: 100 }}
-          value={params.reasoning_effort ?? 'high'} disabled={!(params.thinking_enabled ?? true)}
-          onChange={(v) => patchParams({ reasoning_effort: v })}
-          options={['low', 'medium', 'high', 'xhigh'].map((e) => ({ value: e, label: e }))} /></Field>
+        <ThinkingControls params={params} patchParams={patchParams} />
       </Space>
       <div style={{ color: '#999', fontSize: 12 }}>判定默认 temperature 0（确定性）；留空即用 0。</div>
       <div style={{ color: '#999', fontSize: 12 }}>

@@ -10,14 +10,20 @@ from app.agent.prompts import (get_coordinator_system_prompt, get_manager_system
                                load_prompt)
 from app.agent.skills import SKILLS_DIR, SkillsManager, SkillsToolkit
 from app.agent.tools import ROLE, AgentToolkit
+from app.thinking import with_thinking_defaults
 
 
 class AgentSystem:
     """models: {"coordinator"|"manager"|"worker": ModelConfig 或 pydantic-ai Model（测试）}"""
 
     def __init__(self, *, models: dict, workdir: Path, confirm_delete: bool, emit,
-                 user_id: int | None = None, session_factory=None):
+                 user_id: int | None = None, session_factory=None,
+                 model_params: dict | None = None):
         self.models = models
+        self.model_params = {
+            role: with_thinking_defaults((model_params or {}).get(role))
+            for role in ("coordinator", "manager", "worker", "compactor")
+        }
         self.workdir = Path(workdir)
         self.emit = emit
         self._confirm_delete = confirm_delete
@@ -31,7 +37,9 @@ class AgentSystem:
         self.orchestrator = WorkerOrchestrator(
             task_manager=self.task_manager, worker_model=models["worker"],
             workdir=self.workdir, make_tools=self._make_tools,
-            skills_manager=self.skills_manager, compactor_mc=self._compactor_mc)
+            skills_manager=self.skills_manager, compactor_mc=self._compactor_mc,
+            worker_params=self.model_params["worker"],
+            compactor_params=self.model_params["compactor"])
 
     def _make_tools(self, state_file: Path) -> list:
         tk = AgentToolkit(self.workdir, state_file, self._confirm_delete,
@@ -43,7 +51,8 @@ class AgentSystem:
         if self._compactor_mc is None:
             return history
         return await maybe_compact(history, compactor_mc=self._compactor_mc,
-                                   running_mc=running_mc, emit=self.emit)
+                                   running_mc=running_mc, emit=self.emit,
+                                   compactor_params=self.model_params["compactor"])
 
     async def run_turn(self, text: str, history: list) -> tuple[list, str]:
         """跑一轮 coordinator，返回 (新的全量历史, 输出文本)。"""
@@ -51,7 +60,8 @@ class AgentSystem:
         tools += self._make_tools(self._main_state)
         coord = self.models["coordinator"]
         history = await self._compact(history, coord)
-        agent = create_agent(coord, tools, get_coordinator_system_prompt(self.skills_manager))
+        agent = create_agent(coord, tools, get_coordinator_system_prompt(self.skills_manager),
+                             params=self.model_params["coordinator"])
         result = await agent.run(text, message_history=history,
                                  event_stream_handler=self._on_stream if self.emit else None)
         return result.all_messages(), str(result.output or "")
@@ -76,7 +86,8 @@ class AgentSystem:
         manager_agent = create_agent(
             self.models["manager"],
             [self.task_manager.create_todo_list, self.task_manager.get_todo_list],
-            get_manager_system_prompt(self.skills_manager))
+            get_manager_system_prompt(self.skills_manager),
+            params=self.model_params["manager"])
 
         if continue_from_previous:
             planning = load_prompt("manager_planning_continue.md").format(

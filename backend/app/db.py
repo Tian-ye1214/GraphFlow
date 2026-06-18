@@ -32,13 +32,24 @@ async def init_db() -> None:
 async def _migrate_sqlite_schema(conn) -> None:
     rows = (await conn.exec_driver_sql("PRAGMA table_info(model_configs)")).all()
     cols = {row[1] for row in rows}
-    if "provider" not in cols:
+    if rows and "provider" not in cols:
         await conn.exec_driver_sql(
             "ALTER TABLE model_configs ADD COLUMN provider VARCHAR NOT NULL DEFAULT 'openai'"
         )
-    if "api_version" not in cols:
+    if rows and "api_version" not in cols:
         await conn.exec_driver_sql(
             "ALTER TABLE model_configs ADD COLUMN api_version VARCHAR NOT NULL DEFAULT ''"
+        )
+    if rows and "azure_api_mode" not in cols:
+        await conn.exec_driver_sql(
+            "ALTER TABLE model_configs ADD COLUMN azure_api_mode VARCHAR NOT NULL DEFAULT 'legacy'"
+        )
+
+    rows = (await conn.exec_driver_sql("PRAGMA table_info(agent_sessions)")).all()
+    cols = {row[1] for row in rows}
+    if rows and "model_params_json" not in cols:
+        await conn.exec_driver_sql(
+            "ALTER TABLE agent_sessions ADD COLUMN model_params_json TEXT NOT NULL DEFAULT '{}'"
         )
 
 

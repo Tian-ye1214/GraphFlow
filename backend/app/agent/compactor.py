@@ -28,16 +28,16 @@ def _strip_to_text(history: list) -> str:
     return "\n".join(lines)
 
 
-async def _default_summarize(compactor_mc, text: str) -> str:
+async def _default_summarize(compactor_mc, text: str, params: dict | None = None) -> str:
     from app.services import llm
     from app.agent.prompts import load_prompt
     system = load_prompt("compactor_system.md")
-    out, _usage = await llm.chat(compactor_mc, system, text, params={}, retries=2)
+    out, _usage = await llm.chat(compactor_mc, system, text, params=params or {}, retries=2)
     return out
 
 
 async def maybe_compact(history: list, *, compactor_mc, running_mc, window: int | None = None,
-                        summarize=None, emit=None) -> list:
+                        summarize=None, emit=None, compactor_params: dict | None = None) -> list:
     """达 75% 窗口才压缩；否则原样返回。summarize 可注入（测试用），默认走 compactor LLM。
     压缩失败时返回原历史。"""
     if window is None:
@@ -52,7 +52,7 @@ async def maybe_compact(history: list, *, compactor_mc, running_mc, window: int 
         return history
     if summarize is None:
         async def summarize(text):
-            return await _default_summarize(compactor_mc, text)
+            return await _default_summarize(compactor_mc, text, params=compactor_params)
     try:
         if emit:
             await emit("compacting", {"before": len(history)})

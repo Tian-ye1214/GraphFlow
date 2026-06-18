@@ -69,13 +69,15 @@ class AgentTurnManager:
             models = {role: await s.get(ModelConfig, mid)
                       for role, mid in json.loads(sess.models_json).items()}
             models.setdefault("compactor", models.get("coordinator"))
+            model_params = json.loads(getattr(sess, "model_params_json", "{}") or "{}")
             user = await s.get(User, user_id)
             username = user.username
         emit = self._make_emit(session_id, user_id)
         EMIT.set(emit)
         system = AgentSystem(models=models, workdir=session_dir(username, session_id),
                              confirm_delete=text.startswith("确认"), emit=emit,
-                             user_id=user_id, session_factory=sf)
+                             user_id=user_id, session_factory=sf,
+                             model_params=model_params)
         rounds, capped, input_text = 0, False, text
         try:
             while True:
@@ -125,13 +127,15 @@ class AgentTurnManager:
             models = {role: await s.get(ModelConfig, mid)
                       for role, mid in json.loads(sess.models_json).items()}
             models.setdefault("compactor", models.get("coordinator"))
+            model_params = json.loads(getattr(sess, "model_params_json", "{}") or "{}")
             user = await s.get(User, user_id)
             username = user.username
         emit = self._make_emit(session_id, user_id)
         EMIT.set(emit)
         system = AgentSystem(models=models, workdir=session_dir(username, session_id),
                              confirm_delete=False, emit=emit,
-                             user_id=user_id, session_factory=sf)
+                             user_id=user_id, session_factory=sf,
+                             model_params=model_params)
         threshold = rs.parse_threshold(goal_text)
         best, no_improve, round_i = -1.0, 0, 0
         input_text = gl.first_round_prompt(goal_text)

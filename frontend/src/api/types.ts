@@ -8,7 +8,7 @@ export interface AdminUser {
 
 export interface ModelConfig {
   id: number; name: string; model_name: string; base_url: string
-  provider: 'openai' | 'azure'; api_version: string
+  provider: 'openai' | 'azure'; azure_api_mode: 'legacy' | 'v1'; api_version: string
   api_key_set: boolean; default_params: Record<string, unknown>
 }
 
@@ -47,7 +47,8 @@ export interface AgentMessageOut {
 }
 export interface AgentSessionSummary {
   id: number; title: string; status: string
-  models: Record<string, number>; created_at: string; updated_at: string
+  models: Record<string, number>; model_params: Record<string, Record<string, unknown>>
+  created_at: string; updated_at: string
 }
 export interface AgentSessionDetail extends AgentSessionSummary { messages: AgentMessageOut[] }
 

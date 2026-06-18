@@ -227,13 +227,16 @@ class WorkerOrchestrator:
     """Worker 执行编排：单任务（adhoc）与依赖分波并行。每个 Worker 复制独立 gf 状态文件。"""
 
     def __init__(self, *, task_manager: TaskManager, worker_model, workdir: Path,
-                 make_tools, skills_manager, compactor_mc=None):
+                 make_tools, skills_manager, compactor_mc=None,
+                 worker_params: dict | None = None, compactor_params: dict | None = None):
         self._tm = task_manager
         self._worker_model = worker_model
         self._workdir = Path(workdir)
         self._make_tools = make_tools  # (state_file: Path) -> list[tool]
         self._skills_manager = skills_manager
         self._compactor_mc = compactor_mc
+        self._worker_params = worker_params or {}
+        self._compactor_params = compactor_params or {}
         self._adhoc_seq = 0
 
     def _spawn_state(self, label) -> Path:
@@ -248,7 +251,8 @@ class WorkerOrchestrator:
         self._adhoc_seq += 1
         state = self._spawn_state(f"adhoc_{self._adhoc_seq}")
         agent = create_agent(self._worker_model, self._make_tools(state),
-                             get_worker_system_prompt(self._skills_manager))
+                             get_worker_system_prompt(self._skills_manager),
+                             params=self._worker_params)
         prompt = f"[用户最终目标]\n{user_goal}\n\n[当前任务]\n{task_description}"
         if retry_info:
             prompt += f"\n\n这是重试。上次失败详情：\n{retry_info}\n请换一种方式完成。"
@@ -300,7 +304,8 @@ class WorkerOrchestrator:
         bt = _BoardTools(board, worker_id, task.description)
         tools = tools + [bt.check_other_workers_progress, bt.report_progress]
         agent = create_agent(self._worker_model, tools,
-                             get_worker_system_prompt(self._skills_manager, parallel=True))
+                             get_worker_system_prompt(self._skills_manager, parallel=True),
+                             params=self._worker_params)
 
         parts = [f"[用户最终目标]\n{user_goal}\n"]
         dep_parts = [f"[任务 {d}: {self._tm.tasks[d].description}]\n{self._tm.tasks[d].result}"
@@ -320,7 +325,8 @@ class WorkerOrchestrator:
 
         if self._compactor_mc is not None:
             task.history = await maybe_compact(task.history, compactor_mc=self._compactor_mc,
-                                               running_mc=self._worker_model)
+                                               running_mc=self._worker_model,
+                                               compactor_params=self._compactor_params)
         token = ROLE.set(worker_id)
         try:
             result = await agent.run(prompt, message_history=task.history)

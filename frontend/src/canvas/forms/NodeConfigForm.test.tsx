@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import NodeConfigForm from './NodeConfigForm'
+import NodeConfigForm, { THINKING_EFFORT_OPTIONS, buildCodegenPayload } from './NodeConfigForm'
 
 class ResizeObserverStub {
   observe() {}
@@ -62,5 +62,27 @@ describe('NodeConfigForm QC feedback column', () => {
     await waitFor(() => expect(screen.queryByText(/引用了上游未产出的列/)).not.toBeInTheDocument())
     const prompt = screen.getByDisplayValue('根据{{qc_feedback}}改写答案')
     expect(within(prompt.closest('div') as HTMLElement).queryByText(/引用了上游未产出的列/)).not.toBeInTheDocument()
+  })
+})
+
+describe('NodeConfigForm thinking params', () => {
+  it('offers max reasoning effort', () => {
+    expect(THINKING_EFFORT_OPTIONS).toContain('max')
+  })
+
+  it('builds smart processing codegen payload with op params', () => {
+    const payload = buildCodegenPayload(1, 'ap', 10, {
+      instruction: 'write code',
+      code: 'old',
+      params: { thinking_enabled: false, reasoning_effort: 'max' },
+    })
+
+    expect(payload).toMatchObject({
+      workflow_id: 1,
+      node_id: 'ap',
+      model_config_id: 10,
+      current_code: 'old',
+      params: { thinking_enabled: false, reasoning_effort: 'max' },
+    })
   })
 })

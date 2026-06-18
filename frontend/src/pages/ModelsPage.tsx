@@ -5,10 +5,12 @@ import type { ModelConfig } from '../api/types'
 import { useEvents } from '../api/events'
 
 type ModelProvider = 'openai' | 'azure'
+type AzureApiMode = 'legacy' | 'v1'
 
 export interface FormValues {
   name: string; model_name: string; base_url: string; provider?: ModelProvider
-  api_version?: string; api_key?: string; temperature?: number; top_p?: number; max_tokens?: number
+  azure_api_mode?: AzureApiMode; api_version?: string; api_key?: string
+  temperature?: number; top_p?: number; max_tokens?: number
 }
 
 export function endpointLabelForProvider(provider?: ModelProvider) {
@@ -17,9 +19,12 @@ export function endpointLabelForProvider(provider?: ModelProvider) {
 
 export function buildModelPayload(v: FormValues) {
   const provider = v.provider ?? 'openai'
+  const azureApiMode = provider === 'azure' ? (v.azure_api_mode ?? 'legacy') : 'legacy'
   return {
     name: v.name, model_name: v.model_name, base_url: v.base_url,
-    provider, api_version: provider === 'azure' ? (v.api_version ?? '').trim() : '',
+    provider,
+    azure_api_mode: azureApiMode,
+    api_version: provider === 'azure' && azureApiMode === 'legacy' ? (v.api_version ?? '').trim() : '',
     api_key: v.api_key ?? '',
     default_params: { temperature: v.temperature, top_p: v.top_p, max_tokens: v.max_tokens },
   }
@@ -30,6 +35,7 @@ export default function ModelsPage() {
   const [editing, setEditing] = useState<ModelConfig | null | 'new'>(null)
   const [form] = Form.useForm<FormValues>()
   const provider = Form.useWatch('provider', form) ?? 'openai'
+  const azureApiMode = Form.useWatch('azure_api_mode', form) ?? 'legacy'
 
   const reload = () => api.get<ModelConfig[]>('/api/models').then(setList)
   useEffect(() => {
@@ -44,10 +50,12 @@ export default function ModelsPage() {
     setEditing(mc)
     if (mc === 'new') {
       form.resetFields()
-      form.setFieldsValue({ provider: 'openai' })
+      form.setFieldsValue({ provider: 'openai', azure_api_mode: 'legacy' })
     } else form.setFieldsValue({
       ...mc, ...(mc.default_params as object),
-      provider: mc.provider ?? 'openai', api_version: mc.api_version ?? '',
+      provider: mc.provider ?? 'openai',
+      azure_api_mode: mc.azure_api_mode ?? 'legacy',
+      api_version: mc.api_version ?? '',
     })
   }
 
@@ -78,9 +86,9 @@ export default function ModelsPage() {
         columns={[
           { title: '名称', dataIndex: 'name' },
           { title: '模型 ID', dataIndex: 'model_name' },
-          { title: 'Provider', dataIndex: 'provider', render: (v: ModelProvider) => (v === 'azure' ? 'Azure' : 'OpenAI') },
+          { title: 'Provider', dataIndex: 'provider', render: (v: ModelProvider, mc) => (v === 'azure' ? `Azure ${mc.azure_api_mode ?? 'legacy'}` : 'OpenAI') },
           { title: 'Base URL', dataIndex: 'base_url' },
-          { title: 'API Version', dataIndex: 'api_version', render: (_: string, mc) => (mc.provider === 'azure' ? mc.api_version || '-' : '-') },
+          { title: 'API Version', dataIndex: 'api_version', render: (_: string, mc) => (mc.provider === 'azure' && mc.azure_api_mode !== 'v1' ? mc.api_version || '-' : '-') },
           { title: 'Key', dataIndex: 'api_key_set', render: (v: boolean) => (v ? '已配置' : '未配置') },
           {
             title: '操作',
@@ -111,15 +119,36 @@ export default function ModelsPage() {
                 { value: 'openai', label: 'OpenAI Compatible' },
                 { value: 'azure', label: 'Azure OpenAI' },
               ]}
-              onChange={(value: ModelProvider) => { if (value === 'openai') form.setFieldValue('api_version', '') }}
+              onChange={(value: ModelProvider) => {
+                if (value === 'openai') {
+                  form.setFieldsValue({ api_version: '', azure_api_mode: 'legacy' })
+                } else {
+                  form.setFieldValue('azure_api_mode', form.getFieldValue('azure_api_mode') ?? 'legacy')
+                }
+              }}
             />
           </Form.Item>
+          {provider === 'azure' && (
+            <Form.Item name="azure_api_mode" label="Azure API" initialValue="legacy">
+              <Select
+                options={[
+                  { value: 'legacy', label: 'Legacy: endpoint + api-version' },
+                  { value: 'v1', label: 'v1: /openai/v1' },
+                ]}
+                onChange={(value: AzureApiMode) => {
+                  if (value === 'v1') form.setFieldValue('api_version', '')
+                }}
+              />
+            </Form.Item>
+          )}
           <Form.Item name="base_url" label={endpointLabelForProvider(provider)} rules={[{ required: true }]}>
             <Input placeholder={provider === 'azure'
-              ? 'https://your-resource.openai.azure.com'
+              ? azureApiMode === 'v1'
+                ? 'https://your-resource.openai.azure.com/openai/v1'
+                : 'https://your-resource.openai.azure.com'
               : 'http://10.0.0.1:8000/v1'} />
           </Form.Item>
-          {provider === 'azure' && (
+          {provider === 'azure' && azureApiMode !== 'v1' && (
             <Form.Item name="api_version" label="API Version" rules={[{ required: true }]}>
               <Input placeholder="2024-03-01-preview" />
             </Form.Item>

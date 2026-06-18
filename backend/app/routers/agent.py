@@ -2,6 +2,7 @@ import json
 import shutil
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic import BaseModel
 from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,15 +17,18 @@ from app.engine.graph import parse_graph
 from app.events import publish
 from app.models import AgentMessage, AgentSession, ModelConfig, User, Workflow
 from app.services.run_service import workflow_has_qc
+from app.thinking import with_thinking_defaults
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
 ROLES = ("coordinator", "manager", "worker")
+AGENT_ROLES = ("coordinator", "manager", "worker", "compactor")
 
 
 class SessionIn(BaseModel):
     model_config_id: int | None = None
     models: dict[str, int] | None = None
+    model_params: dict[str, dict] | None = None
 
 
 class MessageIn(BaseModel):
@@ -34,8 +38,38 @@ class MessageIn(BaseModel):
 def _out(sess: AgentSession) -> dict:
     return {"id": sess.id, "title": sess.title, "status": sess.status,
             "models": json.loads(sess.models_json),
+            "model_params": json.loads(getattr(sess, "model_params_json", "{}") or "{}"),
             "created_at": sess.created_at.isoformat(),
             "updated_at": sess.updated_at.isoformat()}
+
+
+def _role_model_params(model_params: dict[str, dict] | None) -> dict[str, dict]:
+    return {role: with_thinking_defaults((model_params or {}).get(role)) for role in AGENT_ROLES}
+
+
+def _raise_model_http_error(exc: ModelHTTPError, mc: ModelConfig) -> None:
+    if (getattr(mc, "provider", None) or "openai") == "azure" and exc.status_code in (400, 404):
+        azure_mode = (getattr(mc, "azure_api_mode", None) or "legacy").lower()
+        if azure_mode == "v1":
+            detail = (
+                "Azure v1 Responses API 调用失败。请确认 base_url 已指向 /openai/v1、"
+                "region、deployment name 和模型能力支持 Responses API/function tools。"
+                f"deployment={mc.model_name}; status={exc.status_code}; body={exc.body}"
+            )
+        else:
+            api_version = getattr(mc, "api_version", None) or "<empty>"
+            responses_url = f"{mc.base_url.rstrip('/')}/openai/responses?api-version={api_version}"
+            detail = (
+                "Azure legacy Responses API 调用失败。当前会通过 Azure SDK 请求 "
+                f"{responses_url}。请确认内部 Azure 代理支持 Responses API/function tools；"
+                "如果不支持，只能关闭该 Agent 节点思考或改用明确支持 Responses 的 v1 网关配置。"
+                f"deployment={mc.model_name}; status={exc.status_code}; body={exc.body}"
+            )
+        raise HTTPException(
+            status_code=422,
+            detail=detail,
+        ) from exc
+    raise exc
 
 
 async def _get_owned(sid: int, user: User, session: AsyncSession) -> AgentSession:
@@ -64,7 +98,12 @@ async def create_session(body: SessionIn, request: Request,
     await _check_models(models, user, session)
     seq = (await session.scalar(select(func.count()).select_from(AgentSession)
                                 .where(AgentSession.user_id == user.id))) + 1
-    sess = AgentSession(user_id=user.id, title=f"会话 {seq}", models_json=json.dumps(models))
+    sess = AgentSession(
+        user_id=user.id,
+        title=f"会话 {seq}",
+        models_json=json.dumps(models),
+        model_params_json=json.dumps(_role_model_params(body.model_params), ensure_ascii=False),
+    )
     session.add(sess)
     await session.commit()
     wd = session_dir(user.username, sess.id)
@@ -193,6 +232,7 @@ class CodegenIn(BaseModel):
     instruction: str
     model_config_id: int
     current_code: str | None = None
+    params: dict | None = None
 
 
 @router.post("/codegen")
@@ -209,8 +249,11 @@ async def codegen(body: CodegenIn, user: User = Depends(get_current_user),
     columns, source = await gather_upstream_columns(session, body.workflow_id, body.node_id, user.id)
     preview_tools = make_preview_tools(get_session_factory(), user.id,
                                        workflow_id=body.workflow_id, node_id=body.node_id)
-    result = await generate_code(mc, body.instruction, columns, current_code=body.current_code or "",
-                                 preview_tools=preview_tools)
+    try:
+        result = await generate_code(mc, body.instruction, columns, current_code=body.current_code or "",
+                                     preview_tools=preview_tools, params=body.params)
+    except ModelHTTPError as exc:
+        _raise_model_http_error(exc, mc)
     return {"code": result["code"], "output_columns": result["output_columns"],
             "columns": columns, "sample_source": source}
 
@@ -222,6 +265,7 @@ class NodeAssistIn(BaseModel):
     instruction: str
     model_config_id: int
     current_config: dict | None = None
+    params: dict | None = None
 
 
 @router.post("/node-assist")
@@ -240,7 +284,10 @@ async def node_assist(body: NodeAssistIn, user: User = Depends(get_current_user)
     columns, source = await gather_upstream_columns(session, body.workflow_id, body.node_id, user.id)
     preview_tools = make_preview_tools(get_session_factory(), user.id,
                                        workflow_id=body.workflow_id, node_id=body.node_id)
-    config = await codegen_mod.generate_node_config(
-        mc, body.node_type, body.instruction, columns, current_config=body.current_config,
-        preview_tools=preview_tools)
+    try:
+        config = await codegen_mod.generate_node_config(
+            mc, body.node_type, body.instruction, columns, current_config=body.current_config,
+            preview_tools=preview_tools, params=body.params)
+    except ModelHTTPError as exc:
+        _raise_model_http_error(exc, mc)
     return {"config": config, "sample_source": source}
