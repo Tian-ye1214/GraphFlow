@@ -3,7 +3,7 @@ import { Alert, Button, Card, Popconfirm, Progress, Select, Space, Table, Tabs, 
 import { useParams } from 'react-router-dom'
 import { api } from '../api/client'
 import { useEvents } from '../api/events'
-import type { NodeState, QcFailureEntry, RowsPage, RunDetail, RunLogEntry } from '../api/types'
+import type { ModelLogEntry, NodeState, QcFailureEntry, RowsPage, RunDetail, RunLogEntry } from '../api/types'
 import { formatRunLog } from './runLog'
 import { NODE_LABELS } from '../canvas/serialize'
 import { STATUS_COLORS, STATUS_LABELS } from './RunsPage'
@@ -21,6 +21,7 @@ export default function RunDetailPage() {
   const [format, setFormat] = useState('jsonl')
   const [logs, setLogs] = useState<RunLogEntry[]>([])
   const [qcFailures, setQcFailures] = useState<QcFailureEntry[]>([])
+  const [modelLogs, setModelLogs] = useState<ModelLogEntry[]>([])
   const refreshLogs = useCallback(
     () => api.get<RunLogEntry[]>(`/api/runs/${id}/logs`).then(setLogs), [id])
   useEffect(() => { void refreshLogs() }, [refreshLogs])
@@ -73,6 +74,10 @@ export default function RunDetailPage() {
   useEffect(() => {
     if (!run || isActive) return
     void api.get<QcFailureEntry[]>(`/api/runs/${id}/qc-failures`).then(setQcFailures)
+  }, [run?.status, id, isActive])
+  useEffect(() => {
+    if (!run || isActive) return
+    void api.get<ModelLogEntry[]>(`/api/runs/${id}/model-logs`).then(setModelLogs)
   }, [run?.status, id, isActive])
 
   const nodeLabel = useCallback((nid: string) => {
@@ -197,6 +202,20 @@ export default function RunDetailPage() {
                                  ]}
                                  pagination={{ current: failedPage, pageSize: 20, total: failed.total, onChange: setFailedPage }}
                                  size="small" />,
+              },
+              {
+                key: 'modellog', label: `模型对话（${modelLogs.length}）`,
+                children: <Table rowKey="id" dataSource={modelLogs} size="small"
+                                 pagination={{ pageSize: 10 }}
+                                 expandable={{ expandedRowRender: (r) => (
+                                   <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>
+{JSON.stringify(r.request, null, 2)}{'\n--- 响应 ---\n'}{r.response}</pre>
+                                 ) }}
+                                 columns={[
+                                   { title: '来源', dataIndex: 'source' },
+                                   { title: '节点', dataIndex: 'node_id' },
+                                   { title: '模型', dataIndex: 'model_name' },
+                                 ]} />,
               },
             ]}
           />

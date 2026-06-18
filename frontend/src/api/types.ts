@@ -70,6 +70,14 @@ export interface NodeAssistReply {
   sample_source: 'computed' | 'latest_run' | 'dataset' | 'none'
 }
 
+export interface ModelLogEntry {
+  id: number; source: string; node_id: string; run_id: number | null
+  workflow_id: number | null; session_id: number | null
+  model_name: string; provider: string
+  request: { role: string; content: string }[] | unknown
+  response: string; prompt_tokens: number; completion_tokens: number; created_at: string
+}
+
 export type ColumnsMap = Record<string, { input: string[]; output: string[] }>
 
 export interface RunLogEntry { created_at: string; node_id: string; level: string; message: string }
