@@ -16,6 +16,7 @@ from app.db import get_session, get_session_factory
 from app.engine.graph import parse_graph
 from app.events import publish
 from app.models import AgentMessage, AgentSession, ModelConfig, User, Workflow
+from app.services.model_log import log_context
 from app.services.run_service import workflow_has_qc
 from app.thinking import with_thinking_defaults
 
@@ -250,8 +251,10 @@ async def codegen(body: CodegenIn, user: User = Depends(get_current_user),
     preview_tools = make_preview_tools(get_session_factory(), user.id,
                                        workflow_id=body.workflow_id, node_id=body.node_id)
     try:
-        result = await generate_code(mc, body.instruction, columns, current_code=body.current_code or "",
-                                     preview_tools=preview_tools, params=body.params)
+        with log_context(user_id=user.id, workflow_id=body.workflow_id,
+                         node_id=body.node_id, source="codegen"):
+            result = await generate_code(mc, body.instruction, columns, current_code=body.current_code or "",
+                                         preview_tools=preview_tools, params=body.params)
     except ModelHTTPError as exc:
         _raise_model_http_error(exc, mc)
     return {"code": result["code"], "output_columns": result["output_columns"],
@@ -285,9 +288,11 @@ async def node_assist(body: NodeAssistIn, user: User = Depends(get_current_user)
     preview_tools = make_preview_tools(get_session_factory(), user.id,
                                        workflow_id=body.workflow_id, node_id=body.node_id)
     try:
-        config = await codegen_mod.generate_node_config(
-            mc, body.node_type, body.instruction, columns, current_config=body.current_config,
-            preview_tools=preview_tools, params=body.params)
+        with log_context(user_id=user.id, workflow_id=body.workflow_id,
+                         node_id=body.node_id, source="assistant"):
+            config = await codegen_mod.generate_node_config(
+                mc, body.node_type, body.instruction, columns, current_config=body.current_config,
+                preview_tools=preview_tools, params=body.params)
     except ModelHTTPError as exc:
         _raise_model_http_error(exc, mc)
     return {"config": config, "sample_source": source}

@@ -5,6 +5,7 @@ from openai import AsyncAzureOpenAI, AsyncOpenAI
 
 from app.llm_clients import azure_api_mode, make_chat_client, provider_name
 from app.models import ModelConfig
+from app.services.model_log import log_model_call
 from app.thinking import chat_thinking_kwargs, thinking_enabled
 
 BACKOFF_BASE = 1
@@ -58,6 +59,7 @@ async def chat(mc: ModelConfig, system_prompt: str, user_prompt: str,
     messages.append({"role": "user", "content": user_prompt})
 
     client = _client(mc)
+    provider = provider_name(mc)
     last_err: Exception | None = None
     for attempt in range(retries):
         try:
@@ -72,9 +74,15 @@ async def chat(mc: ModelConfig, system_prompt: str, user_prompt: str,
                 raise LLMError("模型返回空内容")
             usage = {"prompt_tokens": resp.usage.prompt_tokens if resp.usage else 0,
                      "completion_tokens": resp.usage.completion_tokens if resp.usage else 0}
+            await log_model_call(messages=messages, response_text=content, ok=True,
+                                 model_name=mc.model_name, provider=provider,
+                                 prompt_tokens=usage["prompt_tokens"],
+                                 completion_tokens=usage["completion_tokens"], model_config_id=mc.id)
             return content, usage
         except Exception as e:
             last_err = e
             if attempt < retries - 1:
                 await asyncio.sleep(BACKOFF_BASE * 2 ** attempt)
+    await log_model_call(messages=messages, response_text=f"[失败] {last_err}", ok=False,
+                         model_name=mc.model_name, provider=provider, model_config_id=mc.id)
     raise LLMError(str(last_err))

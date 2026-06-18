@@ -11,6 +11,7 @@ from app.events import publish
 from app.models import (DatasetRow, ModelConfig, QcFailure, QcMetric, Run, RunLog,
                         RunNodeState, RunRow, WorkflowVersion)
 from app.routers.datasets import create_dataset
+from app.services.model_log import log_context
 
 
 def _now() -> datetime:
@@ -262,8 +263,9 @@ async def _run_llm_node(session_factory, run_id, user_id, node: Node, inputs,
             if cancel_event.is_set():
                 return
             try:
-                out_rows, usage = await _cancellable(
-                    nodes.run_llm_synth_row(cfg, inputs[idx], mc, user_sem), cancel_event)
+                with log_context(run_id=run_id, node_id=node.id, user_id=user_id, source="synth"):
+                    out_rows, usage = await _cancellable(
+                        nodes.run_llm_synth_row(cfg, inputs[idx], mc, user_sem), cancel_event)
             except asyncio.CancelledError:
                 return  # 硬中断：在途请求已 abort，该行不落库（保持 pending）
             except Exception as e:
@@ -356,8 +358,9 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
     async def judge_all(rows):
         async def judge(row):
             async with sem:
-                return await _cancellable(
-                    nodes.run_qc_judge_row(cfg, row, jmcs, pass_k, user_sem), cancel_event)
+                with log_context(run_id=run_id, node_id=node.id, user_id=user_id, source="qc"):
+                    return await _cancellable(
+                        nodes.run_qc_judge_row(cfg, row, jmcs, pass_k, user_sem), cancel_event)
         passed_, failed_ = [], []
         for row, (ok, reason, u, per_model) in zip(rows, await asyncio.gather(*[judge(r) for r in rows])):
             fold(u)
@@ -388,8 +391,9 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
 
             async def regen(row):
                 async with rsem:
-                    return await _cancellable(
-                        nodes.run_llm_synth_row(regen_cfg, row, tmc, user_sem), cancel_event)
+                    with log_context(run_id=run_id, node_id=target_id, user_id=user_id, source="synth"):
+                        return await _cancellable(
+                            nodes.run_llm_synth_row(regen_cfg, row, tmc, user_sem), cancel_event)
 
             while failed and rounds < cfg.get("max_rounds", 3):
                 rounds += 1

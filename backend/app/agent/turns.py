@@ -14,6 +14,7 @@ from app.config import settings
 from app.db import get_session_factory
 from app.events import publish
 from app.models import AgentMessage, AgentSession, ModelConfig, User
+from app.services.model_log import log_context
 
 
 def _safe(name: str) -> str:
@@ -81,7 +82,8 @@ class AgentTurnManager:
         rounds, capped, input_text = 0, False, text
         try:
             while True:
-                history, output = await system.run_turn(input_text, history)
+                with log_context(user_id=user_id, session_id=session_id, source="redlotus"):
+                    history, output = await system.run_turn(input_text, history)
                 signal, cleaned = parse_goal(output)
                 await self._add_message(session_id, user_id, "assistant", {"text": cleaned})
                 if capped or signal != "CONTINUE":
@@ -141,7 +143,8 @@ class AgentTurnManager:
         input_text = gl.first_round_prompt(goal_text)
         try:
             while True:
-                history, output = await system.run_turn(input_text, history)
+                with log_context(user_id=user_id, session_id=session_id, source="redlotus"):
+                    history, output = await system.run_turn(input_text, history)
                 signal, cleaned = parse_goal(output)
                 await self._add_message(session_id, user_id, "assistant", {"text": cleaned})
                 if signal == "DONE" or session_id in self.stop_flags:

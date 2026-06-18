@@ -3,6 +3,7 @@ import json
 from pydantic_ai import Agent, FunctionToolset, ModelSettings
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 
+from app.agent.logging_model import LoggingModel
 from app.agent.tools import wrap_tools
 from app.llm_clients import azure_api_mode, make_agent_provider, provider_name
 from app.models import ModelConfig
@@ -39,11 +40,12 @@ def create_model(mc: ModelConfig, params: dict | None = None) -> OpenAIChatModel
         model_cls = AzureLegacyChatModel
     else:
         model_cls = OpenAIChatModel
-    return model_cls(
+    model = model_cls(
         mc.model_name,
         provider=make_agent_provider(mc, responses=use_responses),
         settings=ModelSettings(**kw) if kw else None,
     )
+    return LoggingModel(model)
 
 
 def create_agent(model, tools: list, instructions: str, params: dict | None = None) -> Agent:
