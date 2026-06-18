@@ -174,3 +174,23 @@ class AgentMessage(Base):
     role: Mapped[str]  # user / assistant / tool
     content_json: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ModelCallLog(Base):
+    """模型/Agent 调用日志：网关出口落库。铁律：只记 messages 与响应，绝不记 api_key/Authorization。"""
+    __tablename__ = "model_call_logs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(index=True, default=0)
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("runs.id"), index=True, default=None)
+    workflow_id: Mapped[int | None] = mapped_column(ForeignKey("workflows.id"), index=True, default=None)
+    session_id: Mapped[int | None] = mapped_column(ForeignKey("agent_sessions.id"), index=True, default=None)
+    node_id: Mapped[str] = mapped_column(default="")
+    source: Mapped[str] = mapped_column(default="")  # synth/qc/redlotus/codegen/assistant/compactor
+    model_config_id: Mapped[int | None] = mapped_column(default=None)
+    model_name: Mapped[str] = mapped_column(default="")
+    provider: Mapped[str] = mapped_column(default="")
+    request_json: Mapped[str] = mapped_column(Text, default="[]")
+    response_json: Mapped[str] = mapped_column(Text, default="")
+    prompt_tokens: Mapped[int] = mapped_column(default=0)
+    completion_tokens: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
