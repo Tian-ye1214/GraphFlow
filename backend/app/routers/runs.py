@@ -15,8 +15,8 @@ from app.db import get_session, get_session_factory
 from app.events import publish
 from app.engine.graph import GraphError, descendants, parse_graph, validate_graph
 from app.engine.manager import manager
-from app.models import (Dataset, ModelConfig, QcFailure, QcMetric, Run, RunLog, RunNodeState,
-                        RunRow, User, Workflow, WorkflowVersion)
+from app.models import (Dataset, ModelCallLog, ModelConfig, QcFailure, QcMetric, Run, RunLog,
+                        RunNodeState, RunRow, User, Workflow, WorkflowVersion)
 from app.routers.workflows import get_owned_workflow
 from app.services.export import export_rows
 
@@ -121,6 +121,22 @@ async def run_logs(run_id: int, user: User = Depends(get_current_user),
              "level": l.level, "message": l.message} for l in logs]
 
 
+@router.get("/{run_id}/model-logs")
+async def run_model_logs(run_id: int, node_id: str | None = None, source: str | None = None,
+                         limit: int = 200, user: User = Depends(get_current_user),
+                         session: AsyncSession = Depends(get_session)):
+    await _get_owned_run(run_id, user, session)
+    from app.routers.model_logs import _out
+    stmt = select(ModelCallLog).where(ModelCallLog.run_id == run_id)
+    if node_id is not None:
+        stmt = stmt.where(ModelCallLog.node_id == node_id)
+    if source is not None:
+        stmt = stmt.where(ModelCallLog.source == source)
+    rows = (await session.execute(
+        stmt.order_by(ModelCallLog.id.desc()).limit(min(limit, 500)))).scalars().all()
+    return [_out(r) for r in rows]
+
+
 @router.get("/{run_id}/qc-metrics")
 async def run_qc_metrics(run_id: int, user: User = Depends(get_current_user),
                          session: AsyncSession = Depends(get_session)):
@@ -153,7 +169,7 @@ async def delete_all_runs(user: User = Depends(get_current_user),
     run_ids = [r.id for r in runs]
     ver_ids = [r.workflow_version_id for r in runs]
     if run_ids:
-        for Model in (RunRow, RunNodeState, RunLog, QcMetric, QcFailure):
+        for Model in (RunRow, RunNodeState, RunLog, QcMetric, QcFailure, ModelCallLog):
             await session.execute(sa_delete(Model).where(Model.run_id.in_(run_ids)))
         await session.execute(sa_delete(Run).where(Run.id.in_(run_ids)))
         await session.execute(sa_delete(WorkflowVersion).where(WorkflowVersion.id.in_(ver_ids)))
@@ -176,6 +192,7 @@ async def delete_run(run_id: int, user: User = Depends(get_current_user),
     await session.execute(sa_delete(RunLog).where(RunLog.run_id == run_id))
     await session.execute(sa_delete(QcMetric).where(QcMetric.run_id == run_id))
     await session.execute(sa_delete(QcFailure).where(QcFailure.run_id == run_id))
+    await session.execute(sa_delete(ModelCallLog).where(ModelCallLog.run_id == run_id))
     await session.execute(sa_delete(Run).where(Run.id == run_id))
     await session.execute(sa_delete(WorkflowVersion).where(WorkflowVersion.id == ver_id))
     await session.commit()

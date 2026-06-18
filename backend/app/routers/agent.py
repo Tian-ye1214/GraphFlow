@@ -15,7 +15,7 @@ from app.auth import get_current_user, make_session_cookie
 from app.db import get_session, get_session_factory
 from app.engine.graph import parse_graph
 from app.events import publish
-from app.models import AgentMessage, AgentSession, ModelConfig, User, Workflow
+from app.models import AgentMessage, AgentSession, ModelCallLog, ModelConfig, User, Workflow
 from app.services.model_log import log_context
 from app.services.run_service import workflow_has_qc
 from app.thinking import with_thinking_defaults
@@ -208,6 +208,7 @@ async def delete_all_sessions(user: User = Depends(get_current_user),
         turn_manager.cancel(sid)
     if sids:
         await session.execute(sa_delete(AgentMessage).where(AgentMessage.session_id.in_(sids)))
+        await session.execute(sa_delete(ModelCallLog).where(ModelCallLog.session_id.in_(sids)))
         await session.execute(sa_delete(AgentSession).where(AgentSession.id.in_(sids)))
         await session.commit()
         for sid in sids:
@@ -221,6 +222,7 @@ async def delete_session(sid: int, user: User = Depends(get_current_user),
     await _get_owned(sid, user, session)
     turn_manager.cancel(sid)
     await session.execute(sa_delete(AgentMessage).where(AgentMessage.session_id == sid))
+    await session.execute(sa_delete(ModelCallLog).where(ModelCallLog.session_id == sid))
     await session.execute(sa_delete(AgentSession).where(AgentSession.id == sid))
     await session.commit()
     shutil.rmtree(session_dir(user.username, sid), ignore_errors=True)
