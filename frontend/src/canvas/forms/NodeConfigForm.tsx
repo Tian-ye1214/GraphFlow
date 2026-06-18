@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Button, Input, InputNumber, Popover, Radio, Select, Space, Switch, Table, Tag } from 'antd'
+import { Button, Input, InputNumber, Popover, Radio, Select, Space, Spin, Switch, Table, Tag } from 'antd'
 import { api } from '../../api/client'
-import type { CodegenOut, ColumnsMap, Dataset, ModelConfig, NodeAssistOut, RowsPage } from '../../api/types'
+import type { CodegenOut, ColumnsMap, Dataset, ModelConfig, RowsPage } from '../../api/types'
+import { sendAssist, setDraft, useNodeAssist } from '../../agent/nodeAssistantStore'
 
 export interface FormProps {
   config: Record<string, any>
@@ -223,42 +224,43 @@ function NodeAssist({ nodeType, workflowId, nodeId, config, onApply }: {
 }) {
   const [models, setModels] = useState<ModelConfig[]>([])
   const [modelSel, setModelSel] = useState<number>()
-  const [instruction, setInstruction] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [info, setInfo] = useState('')
+  const key = `${workflowId ?? 0}:${nodeId ?? ''}`
+  const st = useNodeAssist(key)
   useEffect(() => {
     void api.get<ModelConfig[]>('/api/models').then(setModels)
   }, [])
-  const run = async () => {
+  const send = () => {
     if (!modelSel || !workflowId || !nodeId) return
-    setBusy(true)
-    setInfo('')
-    try {
-      const r = await api.post<NodeAssistOut>('/api/agent/node-assist', {
-        workflow_id: workflowId, node_id: nodeId, node_type: nodeType,
-        instruction, model_config_id: modelSel, current_config: config,
-        params: withThinkingParamDefaults(config.params),
-      })
-      onApply(r.config)
-      if (r.sample_source === 'none') setInfo('未检测到上游列，可先连好上游')
-    } catch (e) {
-      setInfo((e as Error).message)
-    } finally {
-      setBusy(false)
-    }
+    void sendAssist(key, {
+      workflow_id: workflowId, node_id: nodeId, node_type: nodeType, model_config_id: modelSel,
+      current_config: config, params: withThinkingParamDefaults(config.params),
+    })
   }
   return (
     <div style={{ border: '1px dashed #d9d9d9', borderRadius: 6, padding: 8, marginBottom: 12 }}>
-      <div style={{ color: '#722ed1', marginBottom: 4 }}>RedLotus 助手：描述需求，自动写提示词</div>
-      <Input.TextArea rows={2} value={instruction} placeholder="如：把 q 列翻译成英文存到 q_en"
-                      onChange={(e) => setInstruction(e.target.value)} />
+      <div style={{ color: '#722ed1', marginBottom: 4 }}>RedLotus 助手：多轮对话配置本节点</div>
+      <div style={{ maxHeight: 200, overflowY: 'auto', marginBottom: 8 }}>
+        {st.messages.map((m, i) => (
+          <div key={i} style={{ textAlign: m.role === 'user' ? 'right' : 'left', margin: '4px 0' }}>
+            <span style={{ background: m.role === 'user' ? '#e6f4ff' : '#f6ffed',
+                           borderRadius: 8, padding: '4px 8px', display: 'inline-block',
+                           whiteSpace: 'pre-wrap', fontSize: 12 }}>{m.text}</span>
+            {m.config && (
+              <div><Button size="small" type="link"
+                           onClick={() => onApply(m.config!)}>应用到节点</Button></div>
+            )}
+          </div>
+        ))}
+        {st.pending && <Spin size="small" style={{ display: 'block', margin: 4 }} />}
+      </div>
+      <Input.TextArea rows={2} value={st.draft} placeholder="如：把 q 列翻译成英文存到 q_en；再严格点…"
+                      onChange={(e) => setDraft(key, e.target.value)} />
       <Space style={{ marginTop: 8 }}>
         <Select size="small" style={{ width: 150 }} placeholder="生成用模型" value={modelSel}
                 onChange={setModelSel} options={models.map((m) => ({ value: m.id, label: m.name }))} />
-        <Button size="small" loading={busy} disabled={!instruction || !modelSel}
-                onClick={() => void run()}>让 RedLotus 配置</Button>
+        <Button size="small" loading={st.pending} disabled={!st.draft.trim() || !modelSel}
+                onClick={send}>发送</Button>
       </Space>
-      {info && <div style={{ color: '#d46b08', fontSize: 12, marginTop: 4 }}>{info}</div>}
     </div>
   )
 }

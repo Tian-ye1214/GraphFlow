@@ -64,6 +64,12 @@ export interface NodeAssistOut {
   sample_source: 'computed' | 'latest_run' | 'dataset' | 'none'
 }
 
+export interface NodeAssistReply {
+  reply: string
+  config: Record<string, any> | null
+  sample_source: 'computed' | 'latest_run' | 'dataset' | 'none'
+}
+
 export type ColumnsMap = Record<string, { input: string[]; output: string[] }>
 
 export interface RunLogEntry { created_at: string; node_id: string; level: string; message: string }
