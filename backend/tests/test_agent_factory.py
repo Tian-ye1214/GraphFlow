@@ -33,14 +33,16 @@ def test_create_model_decrypts_key(monkeypatch):
 def test_create_model_no_key():
     model = factory.create_model(_mc(api_key_enc="", default_params_json="{}"))
     assert model.model_name == "qwen-max"
-    # 思考默认开启 → settings 带 extra_body（agent 路径仅发 thinking.enabled，不含 reasoning_effort）
-    assert model.settings["extra_body"] == {"thinking": {"type": "enabled"}}
+    # 强制 xhigh：agent 路径 extra_body 含 thinking + reasoning_effort=xhigh
+    assert model.settings["extra_body"] == {
+        "thinking": {"type": "enabled"}, "reasoning_effort": "xhigh"}
 
 
-def test_create_model_thinking_disabled():
-    # agent 路径思考由调用方 params 控制（非 default_params_json）：显式关闭则不发 extra_body
-    model = factory.create_model(_mc(), params={"thinking_enabled": False})
-    assert "extra_body" not in (model.settings or {})
+def test_create_model_thinking_forced_xhigh_even_if_disabled():
+    # 硬编码：即便请求方传 thinking_enabled:false / 低力度，仍强制 xhigh-on
+    model = factory.create_model(_mc(), params={"thinking_enabled": False, "reasoning_effort": "low"})
+    assert model.settings["extra_body"] == {
+        "thinking": {"type": "enabled"}, "reasoning_effort": "xhigh"}
 
 
 async def test_create_agent_runs_tools():

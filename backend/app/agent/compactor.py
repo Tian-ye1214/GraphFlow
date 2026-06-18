@@ -31,8 +31,9 @@ def _strip_to_text(history: list) -> str:
 async def _default_summarize(compactor_mc, text: str, params: dict | None = None) -> str:
     from app.services import llm
     from app.agent.prompts import load_prompt
+    from app.thinking import force_xhigh
     system = load_prompt("compactor_system.md")
-    out, _usage = await llm.chat(compactor_mc, system, text, params=params or {}, retries=2)
+    out, _usage = await llm.chat(compactor_mc, system, text, params=force_xhigh(params), retries=2)
     return out
 
 

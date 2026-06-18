@@ -37,3 +37,24 @@ async def test_compaction_skips_on_summarize_failure():
     out = await cp.maybe_compact(history, compactor_mc=object(), running_mc=object(),
                                  window=10, summarize=boom)
     assert out is history                          # 压缩失败 -> 用原历史
+
+
+async def test_default_summarize_forces_xhigh(monkeypatch):
+    """compactor 属 RedLotus：经 llm.chat 的思考被强制 xhigh，忽略传入的关闭/低力度。"""
+    from app.services import llm as llm_mod
+    from app import crypto
+    from app.models import ModelConfig
+
+    seen = {}
+
+    async def fake_chat(mc, system, user, params=None, retries=3):
+        seen["params"] = params
+        return "摘要", {"prompt_tokens": 1, "completion_tokens": 1}
+
+    monkeypatch.setattr(llm_mod, "chat", fake_chat)
+    mc = ModelConfig(user_id=1, name="c", model_name="m", base_url="http://x/v1",
+                     api_key_enc=crypto.encrypt("sk"), default_params_json="{}")
+    out = await cp._default_summarize(mc, "一些历史文本", params={"thinking_enabled": False})
+    assert out == "摘要"
+    assert seen["params"]["thinking_enabled"] is True
+    assert seen["params"]["reasoning_effort"] == "xhigh"

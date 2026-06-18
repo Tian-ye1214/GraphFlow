@@ -1,5 +1,5 @@
 from app.thinking import (agent_chat_settings, agent_responses_settings, chat_thinking_kwargs,
-                          reasoning_effort, thinking_enabled, with_thinking_defaults)
+                          force_xhigh, reasoning_effort, thinking_enabled, with_thinking_defaults)
 
 
 def test_with_thinking_defaults_fills_enabled_high():
@@ -46,9 +46,21 @@ def test_chat_thinking_kwargs_disabled_empty():
 
 
 def test_agent_chat_settings():
-    assert agent_chat_settings({}) == {"extra_body": {"thinking": {"type": "enabled"}}}
+    assert agent_chat_settings({}) == {
+        "extra_body": {"thinking": {"type": "enabled"}, "reasoning_effort": "high"}}
     assert agent_chat_settings({}, provider="azure") == {}            # azure 走 responses 设置
     assert agent_chat_settings({"thinking_enabled": False}) == {}
+
+
+def test_force_xhigh_overrides():
+    assert force_xhigh(None) == {"thinking_enabled": True, "reasoning_effort": "xhigh"}
+    assert force_xhigh({"thinking_enabled": False, "reasoning_effort": "low", "temperature": 0.3}) == {
+        "thinking_enabled": True, "reasoning_effort": "xhigh", "temperature": 0.3}
+
+
+def test_agent_chat_settings_carries_effort():
+    assert agent_chat_settings({"reasoning_effort": "xhigh"}) == {
+        "extra_body": {"thinking": {"type": "enabled"}, "reasoning_effort": "xhigh"}}
 
 
 def test_agent_responses_settings():
