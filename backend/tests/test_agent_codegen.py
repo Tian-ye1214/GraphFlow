@@ -103,20 +103,20 @@ async def test_columns_skip_foreign_dataset(client, session_factory):
 
 
 async def test_generate_node_config_llm_synth():
-    out = json.dumps({"system_prompt": "你是翻译", "user_prompt": "翻译:{{q}}", "output_column": "q_en"},
-                     ensure_ascii=False)
+    cfg_obj = {"system_prompt": "你是翻译", "user_prompt": "翻译:{{q}}", "output_column": "q_en"}
+    out = json.dumps({"reply": "已生成翻译配置", "config": cfg_obj}, ensure_ascii=False)
     model = FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(f"```json\n{out}\n```")]))
-    cfg = await codegen.generate_node_config(model, "llm_synth", "把 q 翻译成英文", ["q"])
-    assert cfg == {"system_prompt": "你是翻译", "user_prompt": "翻译:{{q}}", "output_column": "q_en"}
+    r = await codegen.generate_node_config(model, "llm_synth", "把 q 翻译成英文", ["q"])
+    assert r["config"] == cfg_obj
 
 
 async def test_generate_node_config_llm_synth_json_mode():
-    out = json.dumps({"system_prompt": "你是翻译", "user_prompt": "翻译 {{q}} {{category}}",
-                      "output_mode": "json", "output_columns": ["q_en", "category_en"]},
-                     ensure_ascii=False)
+    cfg_obj = {"system_prompt": "你是翻译", "user_prompt": "翻译 {{q}} {{category}}",
+               "output_mode": "json", "output_columns": ["q_en", "category_en"]}
+    out = json.dumps({"reply": "拆两列", "config": cfg_obj}, ensure_ascii=False)
     model = FunctionModel(lambda m, i: ModelResponse(parts=[TextPart(out)]))
-    cfg = await codegen.generate_node_config(model, "llm_synth", "把 q、category 翻译成英文拆两列", ["q", "category"])
-    assert cfg["output_mode"] == "json" and cfg["output_columns"] == ["q_en", "category_en"]
+    r = await codegen.generate_node_config(model, "llm_synth", "把 q、category 翻译成英文拆两列", ["q", "category"])
+    assert r["config"]["output_mode"] == "json" and r["config"]["output_columns"] == ["q_en", "category_en"]
 
 
 async def test_generate_node_config_rejects_unknown_type():

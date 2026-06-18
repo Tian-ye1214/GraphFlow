@@ -156,8 +156,9 @@ async def test_node_assist_guards(auth_client, monkeypatch):
     from app.agent import codegen
 
     async def fake_cfg(model, node_type, instruction, columns, current_config=None,
-                       preview_tools=None, params=None):
-        return {"system_prompt": "s", "user_prompt": "翻译:{{q}}", "output_column": "q_en"}
+                       preview_tools=None, params=None, history=None):
+        return {"reply": "好", "config": {
+            "system_prompt": "s", "user_prompt": "翻译:{{q}}", "output_column": "q_en"}}
 
     monkeypatch.setattr(codegen, "generate_node_config", fake_cfg)
     wf = (await auth_client.post("/api/workflows", json={"name": "w"})).json()

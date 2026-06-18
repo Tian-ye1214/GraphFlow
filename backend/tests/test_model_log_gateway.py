@@ -65,3 +65,28 @@ async def test_logging_model_wraps_agent_run(session_factory):
             select(ModelCallLog).where(ModelCallLog.source == "redlotus"))).scalars().all()
     assert len(rows) >= 1 and "hi" in rows[0].request_json and "你好" in rows[0].response_json
 
+
+async def test_node_assist_logs_source_assistant(auth_client, session_factory, monkeypatch):
+    from app.routers import agent as agent_router
+    from app.services.model_log import current_ctx, log_model_call
+
+    async def fake_cfg(model, node_type, instruction, columns, current_config=None,
+                       preview_tools=None, params=None, history=None):
+        assert current_ctx()["source"] == "assistant"
+        await log_model_call(messages=[{"role": "user", "content": instruction}],
+                             response_text="ok", ok=True, model_name="m", provider="openai")
+        return {"reply": "已生成", "config": {"system_prompt": "s", "user_prompt": "u"}}
+
+    monkeypatch.setattr(agent_router.codegen_mod, "generate_node_config", fake_cfg)
+    wf = (await auth_client.post("/api/workflows", json={"name": "w"})).json()
+    mc = (await auth_client.post("/api/models", json={
+        "name": "m", "model_name": "x", "base_url": "http://x", "api_key": "k"})).json()
+    r = await auth_client.post("/api/agent/node-assist", json={
+        "workflow_id": wf["id"], "node_id": "ls", "node_type": "llm_synth",
+        "instruction": "翻译", "model_config_id": mc["id"]})
+    assert r.status_code == 200
+    async with session_factory() as s:
+        row = (await s.execute(
+            select(ModelCallLog).where(ModelCallLog.source == "assistant"))).scalars().first()
+    assert row is not None and row.workflow_id == wf["id"] and row.node_id == "ls"
+

@@ -13,7 +13,7 @@ class _StubAgent:
         self._captured = captured
         self._output = output
 
-    async def run(self, prompt):
+    async def run(self, prompt, message_history=None):
         self._captured["prompt"] = prompt
         return _StubResult(self._output)
 
@@ -84,9 +84,9 @@ async def test_node_assist_endpoint_passes_current_config(auth_client, monkeypat
     cap = {}
 
     async def fake_cfg(model, node_type, instruction, columns, current_config=None,
-                       preview_tools=None, params=None):
+                       preview_tools=None, params=None, history=None):
         cap["current_config"] = current_config
-        return {"system_prompt": "s", "user_prompt": "u"}
+        return {"reply": "ok", "config": {"system_prompt": "s", "user_prompt": "u"}}
 
     monkeypatch.setattr("app.agent.codegen.generate_node_config", fake_cfg)
     mc, wf = await _make_model_and_wf(auth_client, "ls", "llm_synth")

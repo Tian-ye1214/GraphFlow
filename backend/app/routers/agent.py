@@ -271,6 +271,7 @@ class NodeAssistIn(BaseModel):
     model_config_id: int
     current_config: dict | None = None
     params: dict | None = None
+    history: list[dict] = []
 
 
 @router.post("/node-assist")
@@ -292,9 +293,9 @@ async def node_assist(body: NodeAssistIn, user: User = Depends(get_current_user)
     try:
         with log_context(user_id=user.id, workflow_id=body.workflow_id,
                          node_id=body.node_id, source="assistant"):
-            config = await codegen_mod.generate_node_config(
+            r = await codegen_mod.generate_node_config(
                 mc, body.node_type, body.instruction, columns, current_config=body.current_config,
-                preview_tools=preview_tools, params=body.params)
+                preview_tools=preview_tools, params=body.params, history=body.history)
     except ModelHTTPError as exc:
         _raise_model_http_error(exc, mc)
-    return {"config": config, "sample_source": source}
+    return {"reply": r["reply"], "config": r["config"], "sample_source": source}

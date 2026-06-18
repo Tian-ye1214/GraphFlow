@@ -1,5 +1,8 @@
-"""智能处理操作的代码生成：临时单 Agent（零工具、零历史、请求级生命周期）+ 仅采上游列名（不跑数、不预览）。"""
+"""智能处理操作的代码生成：临时单 Agent（零工具、请求级生命周期）+ 仅采上游列名（不跑数、不预览）。
+节点助手为多轮：前端每轮带该节点 history，后端无状态跑一轮。"""
 import json
+
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
 from app.agent.factory import create_agent
 from app.agent.prompts import load_prompt
@@ -44,19 +47,31 @@ NODE_ASSIST_INSTRUCTIONS = {
 }
 
 
+def _to_history(history: list[dict] | None) -> list:
+    msgs = []
+    for h in history or []:
+        if h.get("role") == "user":
+            msgs.append(ModelRequest(parts=[UserPromptPart(content=h.get("text", ""))]))
+        else:
+            msgs.append(ModelResponse(parts=[TextPart(content=h.get("text", ""))]))
+    return msgs
+
+
 async def generate_node_config(model, node_type: str, instruction: str, columns: list[str],
                                current_config: dict | None = None,
                                preview_tools: list | None = None,
-                               params: dict | None = None) -> dict:
-    """临时单 Agent 为指定节点产出配置 JSON（不跑代码，仅生成提示词）。未知 node_type 抛 KeyError。
-    传入 current_config 时要求模型在其基础上增量修改、保留已有提示词与需求。"""
+                               params: dict | None = None,
+                               history: list[dict] | None = None) -> dict:
+    """多轮：带该节点 history 跑一轮，返回 {reply, config}。config 为 None 表示本轮只对话不产配置。
+    未知 node_type 抛 KeyError。传入 current_config 时要求模型在其基础上增量修改。"""
     agent = create_agent(model, preview_tools or [], NODE_ASSIST_INSTRUCTIONS[node_type], params=params)
     prompt = _user_prompt(instruction, columns)
     if current_config:
         prompt += ("\n\n现有节点配置（请在此基础上增量修改，保留已有提示词中的处理，"
                    "不要丢失之前的需求）：\n" + json.dumps(current_config, ensure_ascii=False))
-    result = await agent.run(prompt)
-    return json.loads(strip_code_fences(str(result.output or "")))
+    result = await agent.run(prompt, message_history=_to_history(history))
+    data = json.loads(strip_code_fences(str(result.output or "")))
+    return {"reply": data.get("reply", ""), "config": data.get("config")}
 
 
 async def gather_upstream_columns(s, workflow_id: int, node_id: str, user_id: int):
