@@ -110,3 +110,33 @@ async def test_export_dataset_rejects_foreign(auth_client, session_factory):
         ds = Dataset(user_id=stranger.id, name="他人集", row_count=0, columns_json="[]")
         s.add(ds); await s.commit(); did = ds.id
     assert (await auth_client.get(f"/api/datasets/{did}/export")).status_code == 404
+
+
+async def test_upload_nan_json_rows_renderable(auth_client):
+    """上传含 NaN/Infinity 的 JSON：归一为 null，上传 200 且 /rows 不再永久 500。"""
+    r = await upload(auth_client, ("nan.json", b'[{"x": NaN, "y": Infinity, "ok": "v"}]'))
+    assert r.status_code == 200
+    ds = r.json()[0]
+    rr = await auth_client.get(f"/api/datasets/{ds['id']}/rows")
+    assert rr.status_code == 200
+    assert rr.json()["rows"] == [{"x": None, "y": None, "ok": "v"}]
+
+
+async def test_upload_deep_nested_json_422(auth_client):
+    """深层嵌套 JSON 上传 → 422，不逃逸 500（RecursionError）。"""
+    deep = ('[{"x":' + '[' * 6000 + '1' + ']' * 6000 + '}]').encode()
+    r = await upload(auth_client, ("deep.json", deep))
+    assert r.status_code == 422
+
+
+async def test_export_control_char_name_no_500(auth_client, session_factory):
+    r"""数据集名含控制字符(\r\n\t，可经构造多 sheet Excel 注入)时导出不应 500（清洗文件名）。"""
+    from sqlalchemy import select
+    from app.models import DatasetRow, User
+    async with session_factory() as s:
+        uid = (await s.execute(select(User.id).where(User.username == "tester"))).scalar_one()
+        ds = Dataset(user_id=uid, name="book-bad\r\n\tx", row_count=1, columns_json='["q"]')
+        s.add(ds); await s.commit(); did = ds.id
+        s.add(DatasetRow(dataset_id=did, idx=0, data_json='{"q": "v"}')); await s.commit()
+    r = await auth_client.get(f"/api/datasets/{did}/export", params={"format": "jsonl"})
+    assert r.status_code == 200
