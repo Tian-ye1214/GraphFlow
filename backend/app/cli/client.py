@@ -13,7 +13,7 @@ NODE_TYPES = {"input": "input", "llm": "llm_synth", "auto": "auto_process", "out
               "http": "http_fetch", "http_fetch": "http_fetch"}
 NODE_LABELS = {"input": "输入", "llm_synth": "LLM 合成", "auto_process": "自动处理",
                "output": "输出", "qc": "质检", "http_fetch": "HTTP 取数"}
-KIND_LABELS = {"workflows": "工作流", "datasets": "数据集", "models": "模型配置"}
+KIND_LABELS = {"workflows": "工作流", "datasets": "数据集", "models": "模型配置", "prompts": "提示词"}
 STATUS_LABELS = {"queued": "排队中", "running": "运行中", "completed": "已完成",
                  "failed": "失败", "cancelled": "已取消", "pending": "等待", "done": "完成"}
 
