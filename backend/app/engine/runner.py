@@ -54,18 +54,20 @@ async def _resolve_prompt_refs(session_factory, graph, user_id: int) -> None:
     """run 启动解析：节点 system_prompt_ref/user_prompt_ref → 该提示词最新版 body 填入对应字段。
     任一引用缺失（不存在或非本人）抛 ValueError → execute_run 落 run.failed，不起跑节点。"""
     bodies: dict[int, str] = {}
+    ref_node: dict[int, str] = {}   # pid -> 首个引用它的节点 id，用于缺失时点名节点
     for node in graph.nodes:
         for slot in ("system_prompt", "user_prompt"):
             pid = node.config.get(f"{slot}_ref")
             if pid:
                 bodies[pid] = ""
+                ref_node.setdefault(pid, node.id)
     if not bodies:
         return
     async with session_factory() as s:
         for pid in bodies:
             p = await s.get(Prompt, pid)
             if p is None or p.user_id != user_id:
-                raise ValueError(f"引用的提示词 #{pid} 不存在")
+                raise ValueError(f"节点 {ref_node[pid]} 引用的提示词 #{pid} 不存在")
             pv = (await s.execute(select(PromptVersion).where(PromptVersion.prompt_id == pid)
                   .order_by(PromptVersion.version.desc()).limit(1))).scalar_one()
             bodies[pid] = pv.body

@@ -42,7 +42,12 @@ def parse_file(filename: str, content: bytes) -> list[dict]:
 def _read_excel(buf, sheet_name=0):
     # dtype=object 保单元格存储类型（文本保文本"007"/真数值保数值/日期保日期），不像 dtype=str 把数字也变串；
     # keep_default_na=False 保 "None"/"NA" 字面量。配合 read_excel 默认推断会把文本 "007"→7、"false"→bool。
-    return pd.read_excel(buf, sheet_name=sheet_name, dtype=object, keep_default_na=False)
+    # 损坏/非法 Excel（如 zip 魔数但非合法 zip）openpyxl 会抛 BadZipFile 等非 ValueError 异常——
+    # 统一归一为 ValueError，让上传边界按「解析失败」转 422，而非逃逸成 500。
+    try:
+        return pd.read_excel(buf, sheet_name=sheet_name, dtype=object, keep_default_na=False)
+    except Exception as e:
+        raise ValueError(f"无法解析 Excel 文件: {e}") from e
 
 
 def parse_sheets(filename: str, content: bytes) -> list[tuple[str, list[dict]]]:
