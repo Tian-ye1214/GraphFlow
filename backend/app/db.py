@@ -52,6 +52,11 @@ async def _migrate_sqlite_schema(conn) -> None:
             "ALTER TABLE agent_sessions ADD COLUMN model_params_json TEXT NOT NULL DEFAULT '{}'"
         )
 
+    rows = (await conn.exec_driver_sql("PRAGMA table_info(datasets)")).all()
+    cols = {row[1] for row in rows}
+    if rows and "run_id" not in cols:
+        await conn.exec_driver_sql("ALTER TABLE datasets ADD COLUMN run_id INTEGER")
+
 
 def get_session_factory() -> async_sessionmaker:
     assert session_factory is not None, "init_db() 未调用"

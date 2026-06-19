@@ -47,13 +47,23 @@ async def _get_owned(ds_id: int, user: User, session: AsyncSession) -> Dataset:
 
 async def create_dataset(session: AsyncSession, user_id: int, name: str, rows: list[dict],
                          source: str = "upload", original_filename: str = "",
-                         file_path: str = "") -> Dataset:
-    """供上传与（后续）运行结果保存共用。"""
-    ds = Dataset(user_id=user_id, name=name, source=source, original_filename=original_filename,
-                 file_path=file_path,
-                 row_count=len(rows), columns_json=json.dumps(union_columns(rows), ensure_ascii=False))
-    session.add(ds)
-    await session.flush()
+                         file_path: str = "", run_id: int | None = None) -> Dataset:
+    """供上传与运行结果保存共用。传 run_id（save_as_dataset）时按 (run_id, name) 幂等：
+    同一 run 重算同名 output 覆盖更新，而非产生重复数据集（rerun-failed 会重算下游 output）。"""
+    ds = None
+    if run_id is not None:
+        ds = (await session.execute(select(Dataset).where(
+            Dataset.run_id == run_id, Dataset.name == name, Dataset.user_id == user_id))).scalars().first()
+    if ds is not None:                       # 覆盖更新：清旧行、重置 schema/计数
+        await session.execute(sa_delete(DatasetRow).where(DatasetRow.dataset_id == ds.id))
+        ds.row_count = len(rows)
+        ds.columns_json = json.dumps(union_columns(rows), ensure_ascii=False)
+    else:
+        ds = Dataset(user_id=user_id, name=name, source=source, original_filename=original_filename,
+                     file_path=file_path, run_id=run_id,
+                     row_count=len(rows), columns_json=json.dumps(union_columns(rows), ensure_ascii=False))
+        session.add(ds)
+        await session.flush()
     if rows:
         await session.execute(insert(DatasetRow), [
             {"dataset_id": ds.id, "idx": i, "data_json": json.dumps(r, ensure_ascii=False)}

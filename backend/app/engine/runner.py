@@ -239,7 +239,7 @@ async def _run_barrier_node(session_factory, run_id, user_id, node: Node, inputs
         return  # 断点续跑：单元已完成；补写状态以修复「单元已写、状态未写」的崩溃窗口
     await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running", total=1, done=0, failed=0)
     try:
-        out = await _barrier_output(session_factory, user_id, node, inputs)
+        out = await _barrier_output(session_factory, user_id, node, inputs, run_id=run_id)
     except Exception as e:
         await _write_unit(session_factory, run_id, node.id, 0, "failed", [], str(e))
         await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="failed", total=1, done=0, failed=1)
@@ -249,7 +249,7 @@ async def _run_barrier_node(session_factory, run_id, user_id, node: Node, inputs
     await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="done", total=1, done=1, failed=0)
 
 
-async def _barrier_output(session_factory, user_id, node: Node, inputs) -> list[dict]:
+async def _barrier_output(session_factory, user_id, node: Node, inputs, run_id: int | None = None) -> list[dict]:
     cfg = node.config
     if node.type == "input":
         rows: list[dict] = []
@@ -270,7 +270,7 @@ async def _barrier_output(session_factory, user_id, node: Node, inputs) -> list[
         if cfg.get("save_as_dataset"):
             async with session_factory() as s:
                 await create_dataset(s, user_id, cfg.get("dataset_name", "运行结果"),
-                                     out, source="run")
+                                     out, source="run", run_id=run_id)
         return out
     raise ValueError(f"未知节点类型: {node.type}")
 

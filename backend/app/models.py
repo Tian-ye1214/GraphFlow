@@ -48,6 +48,8 @@ class Dataset(Base):
     file_path: Mapped[str] = mapped_column(default="")
     row_count: Mapped[int] = mapped_column(default=0)
     columns_json: Mapped[str] = mapped_column(Text, default="[]")
+    # 来源 run（save_as_dataset）；上传为 None。同一 run 重算同名 output 走 upsert，不产生重复数据集
+    run_id: Mapped[int | None] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
