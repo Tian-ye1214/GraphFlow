@@ -40,8 +40,10 @@ def parse_file(filename: str, content: bytes) -> list[dict]:
         rows = data if isinstance(data, list) else [data]
     elif suffix == ".csv":
         # dtype=str 禁类型推断（"007"→7、长 ID→float 丢精度、"true"→bool）；
-        # keep_default_na=False 保留 "None"/"NA"/"null" 等字面量（不被默认 NA 列表当缺失吞掉）。
-        rows = _records(pd.read_csv(io.StringIO(_decode(content)), dtype=str, keep_default_na=False))
+        # keep_default_na=False 保留 "None"/"NA"/"null" 等字面量（不被默认 NA 列表当缺失吞掉）；
+        # 剔除 \x00：pandas C 解析器遇 NUL 会静默截断单元格，丢掉其后内容（不可信上传边界的静默丢数）。
+        text = _decode(content).replace("\x00", "")
+        rows = _records(pd.read_csv(io.StringIO(text), dtype=str, keep_default_na=False))
     elif suffix in (".xlsx", ".xls"):
         rows = _records(_read_excel(io.BytesIO(content)))
     else:

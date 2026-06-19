@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from app.models import Dataset
+from sqlalchemy import select
+
+from app.models import Dataset, User
 
 JSONL = '{"q": "你好"}\n{"q": "第二"}\n{"q": "第三"}\n'.encode("utf-8")
 
@@ -8,6 +10,50 @@ JSONL = '{"q": "你好"}\n{"q": "第二"}\n{"q": "第三"}\n'.encode("utf-8")
 async def upload(client, *files):
     payload = [("files", (name, content, "application/octet-stream")) for name, content in files]
     return await client.post("/api/datasets/upload", files=payload)
+
+
+async def test_upload_overlong_filename_no_500(auth_client):
+    """超长上传文件名不得令 write_bytes 抛 OSError(NTFS 255/MAX_PATH 260)逃逸成 500；
+    _safe_filename 限长 + 写入处 OSError→422 兜底：写得下则 200，写不下则优雅 422，绝不 500。"""
+    r = await upload(auth_client, ("n" * 300 + ".jsonl", JSONL))
+    assert r.status_code in (200, 422)
+
+
+async def test_export_overlong_dataset_name_no_500(auth_client, session_factory):
+    """超长数据集名导出不得令 write_text 抛 OSError 逃逸成 500；_safe_filename 限长 + OSError→422 兜底。"""
+    async with session_factory() as s:
+        uid = (await s.execute(select(User.id).where(User.username == "tester"))).scalar_one()
+        ds = Dataset(user_id=uid, name="x" * 300, source="run", row_count=0, columns_json="[]")
+        s.add(ds)
+        await s.commit()
+        ds_id = ds.id
+    e = await auth_client.get(f"/api/datasets/{ds_id}/export?format=jsonl")
+    assert e.status_code in (200, 422)
+
+
+async def test_upload_oserror_degrades_422(auth_client, monkeypatch):
+    """确定性锁住 OSError→422 兜底：写盘抛 OSError(如路径超 MAX_PATH)须 422 优雅降级，绝不 500。"""
+    def boom(self, data):
+        raise OSError("path too long")
+    monkeypatch.setattr(Path, "write_bytes", boom)
+    r = await upload(auth_client, ("ok.jsonl", JSONL))
+    assert r.status_code == 422
+
+
+async def test_export_oserror_degrades_422(auth_client, session_factory, monkeypatch):
+    """确定性锁住 export OSError→422 兜底。"""
+    async with session_factory() as s:
+        uid = (await s.execute(select(User.id).where(User.username == "tester"))).scalar_one()
+        ds = Dataset(user_id=uid, name="d", source="run", row_count=0, columns_json="[]")
+        s.add(ds)
+        await s.commit()
+        ds_id = ds.id
+
+    def boom(*a, **k):
+        raise OSError("path too long")
+    monkeypatch.setattr("app.routers.datasets.export_rows", boom)
+    e = await auth_client.get(f"/api/datasets/{ds_id}/export?format=jsonl")
+    assert e.status_code == 422
 
 
 async def test_upload_single(auth_client):

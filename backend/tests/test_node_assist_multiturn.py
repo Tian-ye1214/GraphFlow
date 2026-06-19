@@ -27,3 +27,15 @@ async def test_generate_node_config_passes_history():
     r = await codegen.generate_node_config(FunctionModel(fn), "qc", "再严格点", ["q"], history=history)
     assert r["config"] is None and r["reply"] == "好"
     assert seen["n_user"] == 2   # 历史里 1 条 user + 本轮 instruction 1 条
+
+
+async def test_generate_node_config_nonstring_history_no_crash():
+    """前端不可信 history 的非字符串 text(int/float/bool)经真实 pydantic_ai 消息映射路径不得抛
+    TypeError(`for part in content`)→端点 500；强转 str 后正常返回。"""
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart('{"reply":"好","config":null}')])
+
+    history = [{"role": "user", "text": 123}, {"role": "assistant", "text": 4.5},
+               {"role": "user", "text": True}]
+    r = await codegen.generate_node_config(FunctionModel(fn), "qc", "再严格点", ["q"], history=history)
+    assert r["reply"] == "好" and r["config"] is None

@@ -138,3 +138,27 @@ async def test_http_node_resume_skips_done(session_factory, monkeypatch):
         await s.commit()
     await run_it(session_factory, run_id)
     assert len(calls) == 2                                 # 只跑未完成的两行
+
+
+@pytest.mark.parametrize("bad_cfg, kw", [
+    ({"url": {"bad": 1}}, "url"),
+    ({"url": "http://x", "body": [1]}, "body"),
+    ({"url": "http://x", "headers": ["a"]}, "headers"),
+    ({"url": "http://x", "extract": ["a"]}, "extract"),
+])
+async def test_http_node_dirty_config_fails_run_named(session_factory, monkeypatch, bad_cfg, kw):
+    """脏草稿 config(非字符串 url/body、非 dict headers/extract)是节点配置错误，应整 run failed 并
+    点名节点/键(对照 _run_llm_node 的 fanout_n 预校验)，而非逐行裸 Python 错误且 run 误报 completed。"""
+    async def fake_fetch(method, url, headers=None, body=None, timeout=30, retries=2):
+        return 200, "{}"
+
+    monkeypatch.setattr("app.services.http.fetch", fake_fetch)
+    graph = json.loads(json.dumps(HTTP_GRAPH))
+    for n in graph["nodes"]:
+        if n["type"] == "http_fetch":
+            n["config"] = {**n["config"], **bad_cfg}
+    run_id = await make_run(session_factory, graph=graph)
+    await run_it(session_factory, run_id)
+    run = await get_run(session_factory, run_id)
+    assert run.status == "failed"
+    assert "fetch" in (run.error or "") and kw in (run.error or "")

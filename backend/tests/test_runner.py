@@ -5,7 +5,7 @@ from sqlalchemy import select
 
 from app import crypto
 from app.engine import runner
-from app.models import (Dataset, DatasetRow, ModelConfig, Run, RunNodeState, RunRow,
+from app.models import (Dataset, DatasetRow, ModelConfig, QcMetric, Run, RunNodeState, RunRow,
                         User, Workflow, WorkflowVersion)
 from app.services import llm
 
@@ -91,6 +91,101 @@ RESCAN_GRAPH = {
               {"source": "qc", "target": "out", "kind": "normal"},
               {"source": "qc", "target": "gen", "kind": "rescan"}],
 }
+
+# 直链质检图（无 rescan）：失败行不回扫重生，便于断言通过/不通过拆分
+QC_LINE_GRAPH = {
+    "nodes": [
+        {"id": "in", "type": "input", "config": {"dataset_ids": []}},
+        {"id": "gen", "type": "llm_synth",
+         "config": {"model_config_id": 0, "user_prompt": "Q:{{q}}", "output_column": "a",
+                    "concurrency": 4, "retries": 1}},
+        {"id": "qc", "type": "qc",
+         "config": {"model_config_id": 0, "user_prompt": "判定:{{a}}", "max_rounds": 1}},
+        {"id": "out", "type": "output", "config": {}},
+    ],
+    "edges": [{"source": "in", "target": "gen", "kind": "normal"},
+              {"source": "gen", "target": "qc", "kind": "normal"},
+              {"source": "qc", "target": "out", "kind": "normal"}],
+}
+
+
+async def test_qc_pass_k_zero_clamped_no_bypass(session_factory, monkeypatch):
+    """pass_k<=0 不得让所有样本无条件过检(n_pass>=pass_k 恒真→门禁绕过+污染 first_round_rate)：
+    钳到 [1,模型数]后，judge 全投 failed 时 0 行通过。"""
+    patch_chat(monkeypatch, fn=lambda u: ('{"status": "failed", "reason": "no"}',
+                                          {"prompt_tokens": 1, "completion_tokens": 1}))
+    graph = json.loads(json.dumps(QC_LINE_GRAPH))
+    for n in graph["nodes"]:
+        if n["type"] == "qc":
+            n["config"]["pass_k"] = 0
+    run_id = await make_run(session_factory, graph=graph)
+    await run_it(session_factory, run_id)
+    run = await get_run(session_factory, run_id)
+    assert run.status == "completed"
+    assert await runner._node_outputs(session_factory, run_id, "qc") == []   # 0 行通过
+    async with session_factory() as s:
+        m = (await s.execute(select(QcMetric).where(QcMetric.run_id == run_id))).scalar_one()
+    assert m.first_round_pass == 0 and m.total == 3
+
+
+async def test_qc_status_column_collision_fails_run_named(session_factory, monkeypatch):
+    """status_column 撞输入已有数据列 → 整 run failed 点名(对照 rename 撞列已 raise)，不静默覆盖原始数据。"""
+    patch_chat(monkeypatch, fn=lambda u: ('{"status": "pass"}',
+                                          {"prompt_tokens": 1, "completion_tokens": 1}))
+    graph = json.loads(json.dumps(QC_LINE_GRAPH))
+    for n in graph["nodes"]:
+        if n["type"] == "qc":
+            n["config"]["status_column"] = "q"   # 撞输入已有列 q
+    run_id = await make_run(session_factory, graph=graph)
+    await run_it(session_factory, run_id)
+    run = await get_run(session_factory, run_id)
+    assert run.status == "failed"
+    assert "qc" in (run.error or "") and "q" in (run.error or "")
+
+
+async def test_qc_chain_default_columns_no_collision(session_factory, monkeypatch):
+    """链式 QC→QC 用默认列名不应被撞列护栏误报：上游 QC 产出的 qc_status/qc_feedback 是合法透传列，
+    允许被下游 QC 覆盖刷新（只对真正的用户/其它数据列撞名才报错）。"""
+    patch_chat(monkeypatch, fn=lambda u: ('{"status": "pass"}',
+                                          {"prompt_tokens": 1, "completion_tokens": 1}))
+    graph = {
+        "nodes": [
+            {"id": "in", "type": "input", "config": {"dataset_ids": []}},
+            {"id": "gen", "type": "llm_synth",
+             "config": {"model_config_id": 0, "user_prompt": "Q:{{q}}", "output_column": "a",
+                        "concurrency": 4, "retries": 1}},
+            {"id": "qc1", "type": "qc", "config": {"model_config_id": 0, "user_prompt": "判定:{{a}}", "max_rounds": 1}},
+            {"id": "qc2", "type": "qc", "config": {"model_config_id": 0, "user_prompt": "复检:{{a}}", "max_rounds": 1}},
+            {"id": "out", "type": "output", "config": {}},
+        ],
+        "edges": [{"source": "in", "target": "gen", "kind": "normal"},
+                  {"source": "gen", "target": "qc1", "kind": "normal"},
+                  {"source": "qc1", "target": "qc2", "kind": "normal"},
+                  {"source": "qc2", "target": "out", "kind": "normal"}],
+    }
+    run_id = await make_run(session_factory, graph=graph)
+    await run_it(session_factory, run_id)
+    run = await get_run(session_factory, run_id)
+    assert run.status == "completed"   # 不因 qc1 产出列撞 qc2 默认列而误判 failed
+
+
+async def test_cancel_marks_running_node_states_terminal(session_factory, monkeypatch):
+    """run 取消后不得有 RunNodeState 卡在 'running'(否则前端在已结束 run 上渲染永久「运行中」)。"""
+    cancel = asyncio.Event()
+
+    async def fake(mc, system, user, params=None, retries=3):
+        cancel.set()                       # 首次模型调用即请求取消，令 gen 节点停在 running
+        return "答", {"prompt_tokens": 1, "completion_tokens": 2}
+
+    monkeypatch.setattr(llm, "chat", fake)
+    run_id = await make_run(session_factory)
+    await run_it(session_factory, run_id, cancel=cancel)
+    run = await get_run(session_factory, run_id)
+    assert run.status == "cancelled"
+    async with session_factory() as s:
+        states = (await s.execute(select(RunNodeState).where(
+            RunNodeState.run_id == run_id))).scalars().all()
+    assert states and all(st.status != "running" for st in states)
 
 
 DROP_GRAPH = {

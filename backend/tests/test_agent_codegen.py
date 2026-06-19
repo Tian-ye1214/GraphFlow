@@ -12,6 +12,17 @@ GOOD = "def process(rows):\n    return [{**r, 'ok': True} for r in rows]"
 
 def test_strip_code_fences():
     assert codegen.strip_code_fences(f"```python\n{GOOD}\n```") == GOOD
+
+
+def test_to_history_coerces_nonstring_text():
+    """前端不可信 history 的非字符串 text(int/float/bool)须强转为 str，否则 pydantic_ai
+    在估算 token/映射消息时 `for part in content` 抛 TypeError，node-assist 端点未捕获→500。"""
+    msgs = codegen._to_history([
+        {"role": "user", "text": 123},
+        {"role": "assistant", "text": 4.5},
+        {"role": "user", "text": True},
+    ])
+    assert [p.content for m in msgs for p in m.parts] == ["123", "4.5", "True"]
     assert codegen.strip_code_fences(GOOD) == GOOD
 
 

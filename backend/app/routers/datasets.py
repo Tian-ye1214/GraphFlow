@@ -26,7 +26,9 @@ _ILLEGAL_FN = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 
 def _safe_filename(name: str) -> str:
-    cleaned = _ILLEGAL_FN.sub("_", name).strip(" .")
+    # 限长 200：尽量让单段文件名落在 NTFS 255 / Windows MAX_PATH 260 之内，减少超限概率
+    # （非精确上界——补充平面字符 1 码点=2 UTF-16 码元；真超限仍有写入处 OSError→422 兜底）
+    cleaned = _ILLEGAL_FN.sub("_", name).strip(" .")[:200].strip(" .")
     return cleaned or "untitled"
 
 
@@ -93,7 +95,10 @@ async def upload(files: list[UploadFile], user: User = Depends(get_current_user)
         upload_dir = settings.data_dir / "uploads" / str(user.id)
         upload_dir.mkdir(parents=True, exist_ok=True)
         file_path = upload_dir / f"{uuid4().hex[:8]}_{safe_name}"
-        file_path.write_bytes(content)
+        try:   # 兜底：路径/文件名过长(Windows MAX_PATH 260) write 抛 OSError → 422 优雅降级，不 500
+            file_path.write_bytes(content)
+        except OSError:   # 不回显 {e}：OSError 含服务端绝对路径，避免泄漏内部目录布局
+            raise HTTPException(status_code=422, detail=f"{f.filename} 保存失败（文件名过长）")
         for name, rows in parsed:
             ds = await create_dataset(session, user.id, name, rows,
                                       original_filename=f.filename, file_path=str(file_path))
@@ -132,8 +137,11 @@ async def export_dataset(ds_id: int, format: Literal["jsonl", "csv", "xlsx"] = "
     rows = [json.loads(r.data_json) for r in recs]
     safe = _safe_filename(ds.name)   # 与 upload 同款清洗，杜绝路径穿越/控制字符 → OSError 500
     filename = f"{safe}.{format}"
-    path = await asyncio.to_thread(
-        export_rows, rows, format, settings.data_dir / "exports" / filename)
+    try:   # 兜底：数据集名过长致路径超 MAX_PATH，write 抛 OSError → 422 优雅降级，不 500
+        path = await asyncio.to_thread(
+            export_rows, rows, format, settings.data_dir / "exports" / filename)
+    except OSError:   # 不回显 {e}：OSError 含服务端绝对路径，避免泄漏内部目录布局
+        raise HTTPException(status_code=422, detail="导出失败（数据集名过长）")
     return FileResponse(path, filename=filename)
 
 
