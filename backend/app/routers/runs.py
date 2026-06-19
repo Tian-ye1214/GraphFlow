@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import delete as sa_delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -159,6 +159,27 @@ async def run_qc_failures(run_id: int, node_id: str | None = None, limit: int = 
     return [{"node_id": f.node_id, "sample": json.loads(f.sample_json),
              "reasons": json.loads(f.reasons_json), "created_at": f.created_at.isoformat()}
             for f in rows]
+
+
+@router.get("/{run_id}/qc-failures.jsonl")
+async def run_qc_failures_jsonl(run_id: int, node_id: str | None = None,
+                                user: User = Depends(get_current_user),
+                                session: AsyncSession = Depends(get_session)):
+    """最终失败样本全量导出为 jsonl：每行 = 样本字段 + 各判定模型平铺 model_i/model_i_reason。"""
+    await _get_owned_run(run_id, user, session)
+    stmt = select(QcFailure).where(QcFailure.run_id == run_id)
+    if node_id is not None:
+        stmt = stmt.where(QcFailure.node_id == node_id)
+    rows = (await session.execute(stmt.order_by(QcFailure.id))).scalars().all()
+    lines = []
+    for f in rows:
+        rec = json.loads(f.sample_json)
+        for i, pm in enumerate(json.loads(f.reasons_json), start=1):
+            rec[f"model_{i}"] = pm.get("status", "")
+            rec[f"model_{i}_reason"] = pm.get("reason", "")
+        lines.append(json.dumps(rec, ensure_ascii=False))
+    return Response(content="\n".join(lines), media_type="application/x-ndjson",
+                    headers={"Content-Disposition": f'attachment; filename="run{run_id}_qc_failures.jsonl"'})
 
 
 @router.delete("")
