@@ -387,3 +387,43 @@ def test_node_set_judge_models_and_pass_k(server, capsys):
     node = json.loads(capsys.readouterr().out)
     assert node["config"]["judge_model_ids"] == [1, 2]
     assert node["config"]["pass_k"] == 2
+
+
+def test_wf_rename(server, capsys):
+    login_and_wf(server, "旧名")
+    gf("wf", "rename", "旧名", "新名")
+    capsys.readouterr()
+    gf("wf", "ls")
+    out = capsys.readouterr().out
+    assert "新名" in out and "旧名" not in out
+
+
+def test_cols_shows_lineage(server, capsys, tmp_path):
+    gf("login", "tester", "--server", server)
+    seed = tmp_path / "种子.jsonl"
+    seed.write_text('{"q": "问0"}\n', encoding="utf-8")
+    gf("data", "up", str(seed))
+    gf("wf", "add", "血缘流"); gf("use", "血缘流")
+    gf("node", "add", "input"); gf("node", "set", "input_1", "dataset=种子")
+    gf("node", "add", "llm"); gf("node", "set", "llm_synth_1", "out=a")
+    gf("link", "input_1", "llm_synth_1")
+    capsys.readouterr()
+    gf("cols")
+    out = capsys.readouterr().out
+    assert "llm_synth_1" in out and "q" in out and "a" in out
+
+
+def test_wf_dump_load_roundtrip(server, capsys, tmp_path):
+    login_and_wf(server, "导出流")
+    gf("node", "add", "input"); gf("node", "add", "output")
+    gf("link", "input_1", "output_1")
+    dump = tmp_path / "graph.json"
+    gf("wf", "dump", "-o", str(dump))
+    graph = json.loads(dump.read_text(encoding="utf-8"))
+    assert {n["id"] for n in graph["nodes"]} == {"input_1", "output_1"}
+    # 改名后 load 回去
+    gf("wf", "add", "空流"); gf("use", "空流")
+    gf("wf", "load", str(dump))
+    capsys.readouterr()
+    gf("show")
+    assert "input_1 -> output_1" in capsys.readouterr().out

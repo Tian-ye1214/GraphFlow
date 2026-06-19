@@ -1,4 +1,7 @@
-"""工作流与图结构：wf ls|add|rm|restore / use / show / link / unlink / node add|rm。"""
+"""工作流与图结构：wf ls|add|rm|restore|rename|dump|load / use / show / cols / link / unlink / node add|rm。"""
+import json
+from pathlib import Path
+
 from app.cli import save_state
 from app.cli.client import Cli, die, find_node, summarize, NODE_TYPES, NODE_LABELS
 from app.cli.commands.node import node_actions
@@ -115,12 +118,54 @@ def cmd_unlink(args):
     print(f"已断开 {args.source} -> {args.target}")
 
 
+def cmd_wf_rename(args):
+    cli = Cli()
+    wf_id = cli.resolve("workflows", args.ref)
+    cli.req("PUT", f"/api/workflows/{wf_id}", json={"name": args.name})
+    print(f"已重命名工作流 #{wf_id} -> {args.name}")
+
+
+def cmd_cols(args):
+    cli = Cli()
+    wf_id = cli.current_wf()
+    cols = cli.req("GET", f"/api/workflows/{wf_id}/columns")
+    items = {args.node: cols[args.node]} if args.node else cols
+    if args.node and args.node not in cols:
+        die(f"节点 {args.node} 不存在")
+    for nid, io in items.items():
+        print(f"{nid}")
+        print(f"  输入: {', '.join(io['input']) or '（无）'}")
+        print(f"  输出: {', '.join(io['output']) or '（无）'}")
+
+
+def cmd_wf_dump(args):
+    cli = Cli()
+    wf = cli.get_wf()
+    out = Path(args.output or f"{wf['name']}.json")
+    out.write_text(json.dumps(wf["graph"], ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"已导出工作流图到 {out}")
+
+
+def cmd_wf_load(args):
+    cli = Cli()
+    path = Path(args.file)
+    if not path.is_file():
+        die(f"文件不存在: {args.file}")
+    graph = json.loads(path.read_text(encoding="utf-8"))
+    wf_id = cli.current_wf()
+    cli.put_graph(wf_id, graph)
+    print(f"已从 {args.file} 载入工作流图（#{wf_id}）")
+
+
 def register(sub):
     wf = sub.add_parser("wf", help="工作流管理").add_subparsers(dest="action", required=True)
     s = wf.add_parser("ls"); s.set_defaults(func=cmd_wf_ls)
     s = wf.add_parser("add"); s.add_argument("name"); s.set_defaults(func=cmd_wf_add)
     s = wf.add_parser("rm"); s.add_argument("ref"); s.set_defaults(func=cmd_wf_rm)
     s = wf.add_parser("restore"); s.add_argument("run_id", type=int); s.set_defaults(func=cmd_wf_restore)
+    s = wf.add_parser("rename"); s.add_argument("ref"); s.add_argument("name"); s.set_defaults(func=cmd_wf_rename)
+    s = wf.add_parser("dump"); s.add_argument("-o", "--output"); s.set_defaults(func=cmd_wf_dump)
+    s = wf.add_parser("load"); s.add_argument("file"); s.set_defaults(func=cmd_wf_load)
 
     s = sub.add_parser("use", help="设当前工作流")
     s.add_argument("ref")
@@ -128,6 +173,10 @@ def register(sub):
 
     s = sub.add_parser("show", help="查看当前工作流图")
     s.set_defaults(func=cmd_show)
+
+    s = sub.add_parser("cols", help="列血缘（各节点输入/输出列）")
+    s.add_argument("node", nargs="?")
+    s.set_defaults(func=cmd_cols)
 
     node = node_actions(sub)
     s = node.add_parser("add"); s.add_argument("type"); s.add_argument("id", nargs="?"); s.set_defaults(func=cmd_node_add)
