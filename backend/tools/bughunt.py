@@ -72,7 +72,7 @@ async def bug_delete_workflow_orphans():
     from app.models import (QcFailure, QcMetric, Run, RunLog, RunNodeState, RunRow,
                             WorkflowVersion)
     _patch(lambda u: (f"答[{u}]", U) if not u.startswith("判定:")
-           else (json.dumps({"pass": True, "reason": ""}), U))
+           else (json.dumps({"status": "pass", "reason": ""}), U))
     c = await _client()
     await _login(c, "userB")
     mc = await _mk_model(c)
@@ -136,7 +136,7 @@ async def bug_rerun_failed_dup_qc_metric():
 
     def fn(user):
         if user.startswith("判定:"):
-            return json.dumps({"pass": True, "reason": ""}), U
+            return json.dumps({"status": "pass", "reason": ""}), U
         if broken["on"] and "问1" in user:
             raise RuntimeError("临时故障")
         return f"答[{user}]", U
@@ -193,7 +193,7 @@ async def bug_rescan_fanout_inflation():
     def fn(user):
         if user.startswith("判定:"):
             bad = "bad" in user
-            return J.dumps({"pass": not bad, "reason": "bad" if bad else ""}), U
+            return J.dumps({"status": "failed" if bad else "pass", "reason": "bad" if bad else ""}), U
         if "质检未通过" in user:   # 回扫重生成
             return "good", U
         return "bad", U            # 首轮生成
@@ -260,7 +260,7 @@ async def bug_resume_clobbers_qc_state():
     def fn(user):
         if user.startswith("判定:"):
             ok = "问1" not in user
-            return J.dumps({"pass": ok, "reason": "" if ok else "坏"}), U
+            return J.dumps({"status": "pass" if ok else "failed", "reason": "" if ok else "坏"}), U
         return f"答[{user}]", U
 
     _patch(fn)
@@ -328,7 +328,7 @@ async def stress_volume():
     from app.models import (Dataset, DatasetRow, ModelConfig, Run, RunNodeState, RunRow, User,
                             Workflow, WorkflowVersion)
     _patch(lambda u: (f"答[{u}]", U) if not u.startswith("判定:")
-           else (J.dumps({"pass": True, "reason": ""}), U))
+           else (J.dumps({"status": "pass", "reason": ""}), U))
     N = 200
     graph = {"nodes": [
         {"id": "in", "type": "input", "config": {"dataset_ids": []}},

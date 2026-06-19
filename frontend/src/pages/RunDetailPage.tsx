@@ -164,7 +164,7 @@ export default function RunDetailPage() {
                      render: (v: object) => JSON.stringify(v) },
                    { title: '各模型理由', dataIndex: 'reasons',
                      render: (rs: QcFailureEntry['reasons']) =>
-                       rs.map((r) => `${r.status === 'pass' ? '✓' : '✗'} ${r.status}：${r.reason}`).join('；') },
+                       rs.map((r) => `${r.status.toLowerCase() === 'pass' ? '✓' : '✗'} ${r.status}：${r.reason}`).join('；') },
                  ]} />
         </Card>
       )}

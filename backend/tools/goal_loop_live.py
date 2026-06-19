@@ -37,7 +37,7 @@ def _graph(ds_id, mc_id):
             {"id": "qc", "type": "qc", "config": {
                 "judge_model_ids": [mc_id], "pass_k": 1, "max_rounds": 1, "concurrency": 4,
                 "system_prompt": "你是严格质检员：答案必须【正确】且【不超过15个汉字】才算通过，超长一律不通过。",
-                "user_prompt": '问题：{{q}}\n答案：{{answer}}\n返回 JSON：{"pass": true/false, "reason": "理由"}',
+                "user_prompt": '问题：{{q}}\n答案：{{answer}}\n返回 JSON：{"status": "pass" 或 "failed", "reason": "理由"}',
                 "params": {"temperature": 0}}},
             {"id": "out", "type": "output", "config": {}},
         ],

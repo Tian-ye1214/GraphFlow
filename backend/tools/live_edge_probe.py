@@ -33,7 +33,7 @@ ROWS = [
 
 def _graph(ds_id, mc_id):
     judge_sys = "你是质检员：答案是否切题、非空、合理地回应了问题？返回 JSON。"
-    judge_user = '问题：{{q}}\n答案：{{answer}}\n返回 JSON：{"pass": true/false, "reason": "理由"}'
+    judge_user = '问题：{{q}}\n答案：{{answer}}\n返回 JSON：{"status": "pass" 或 "failed", "reason": "理由"}'
     return {"nodes": [
         {"id": "in", "type": "input", "config": {"dataset_ids": [ds_id]}},
         {"id": "gen", "type": "llm_synth", "config": {

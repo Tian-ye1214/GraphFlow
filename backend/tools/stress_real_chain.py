@@ -137,7 +137,7 @@ async def scenario_rescan(sf, user_id, mc_id):
         ds = await create_dataset(s, user_id, "压测-rescan", rows, source="upload")
         ds_id = ds.id
     judge_sys = "你是格式质检员。只有当答案是【恰好一个 emoji、不含任何文字/数字/标点】时才算通过。"
-    judge_user = '问题：{{q}}\n答案：{{answer}}\n返回 JSON：{"pass": true/false, "reason": "理由"}'
+    judge_user = '问题：{{q}}\n答案：{{answer}}\n返回 JSON：{"status": "pass" 或 "failed", "reason": "理由"}'
     graph = {
         "nodes": [
             {"id": "in", "type": "input", "config": {"dataset_ids": [ds_id]}},

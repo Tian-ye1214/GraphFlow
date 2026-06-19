@@ -89,7 +89,7 @@ def _chain1_graph(ds_id, mc_id):
 def _chain2_graph(ds_id, mc_id):
     """真实合成（刻意限长，逼出部分不过检）→ 真实质检 → 回扫重生一轮。"""
     judge_sys = "你是严格质检员：答案必须【正确回答了问题】且【不超过15个汉字】才算通过，超长或答错一律不通过。"
-    judge_user = '问题：{{q}}\n答案：{{answer}}\n返回 JSON：{"pass": true/false, "reason": "理由"}'
+    judge_user = '问题：{{q}}\n答案：{{answer}}\n返回 JSON：{"status": "pass" 或 "failed", "reason": "理由"}'
     return {"nodes": [
         {"id": "in", "type": "input", "config": {"dataset_ids": [ds_id]}},
         {"id": "clean", "type": "auto_process", "config": {"seed": 7, "operations": [
