@@ -413,6 +413,15 @@ def test_cols_shows_lineage(server, capsys, tmp_path):
     assert "llm_synth_1" in out and "q" in out and "a" in out
 
 
+def test_cols_unknown_node_dies(server, capsys):
+    login_and_wf(server)
+    gf("node", "add", "llm")
+    with pytest.raises(SystemExit) as e:
+        gf("cols", "不存在节点")
+    assert e.value.code == 1
+    assert "不存在" in capsys.readouterr().err
+
+
 def test_wf_dump_load_roundtrip(server, capsys, tmp_path):
     login_and_wf(server, "导出流")
     gf("node", "add", "input"); gf("node", "add", "output")

@@ -129,9 +129,9 @@ def cmd_cols(args):
     cli = Cli()
     wf_id = cli.current_wf()
     cols = cli.req("GET", f"/api/workflows/{wf_id}/columns")
-    items = {args.node: cols[args.node]} if args.node else cols
     if args.node and args.node not in cols:
         die(f"节点 {args.node} 不存在")
+    items = {args.node: cols[args.node]} if args.node else cols
     for nid, io in items.items():
         print(f"{nid}")
         print(f"  输入: {', '.join(io['input']) or '（无）'}")
