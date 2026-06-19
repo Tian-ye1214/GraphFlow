@@ -568,3 +568,36 @@ def test_logs_shows_timeline(server, capsys, tmp_path, monkeypatch):
     gf("logs", "1")
     out = capsys.readouterr().out
     assert out.strip()   # 至少有日志行（含节点名/级别）
+
+
+def test_qc_prints_metrics_and_failures(server, capsys, tmp_path):
+    import json as _json
+    from app.config import settings as _s
+    from app.db import get_session_factory
+    from app.models import Run, User, QcMetric, QcFailure
+    from sqlalchemy import select
+    import asyncio
+
+    gf("login", "tester", "--server", server)
+
+    async def seed():
+        sf = get_session_factory()
+        async with sf() as s:
+            uid = (await s.execute(select(User).where(User.username == "tester"))).scalar_one().id
+            run = Run(user_id=uid, workflow_id=0, workflow_version_id=0, status="completed")
+            s.add(run); await s.commit(); rid = run.id
+            s.add(QcMetric(run_id=rid, node_id="qc1", total=10, first_round_pass=6))
+            s.add(QcFailure(run_id=rid, node_id="qc1", sample_json='{"q":"x"}',
+                            reasons_json=_json.dumps([{"model_config_id": 1, "status": "failed", "reason": "短"}])))
+            await s.commit()
+            return rid
+
+    rid = asyncio.new_event_loop().run_until_complete(seed())
+    capsys.readouterr()
+    gf("qc", str(rid))
+    out = capsys.readouterr().out
+    assert "60" in out and "短" in out   # 首轮通过率 60% + 失败原因
+    dl = tmp_path / "fail.jsonl"
+    gf("qc", str(rid), "--download", "-o", str(dl))
+    rec = _json.loads(dl.read_text(encoding="utf-8").strip().splitlines()[0])
+    assert rec["_qc_model_1"] == "failed"

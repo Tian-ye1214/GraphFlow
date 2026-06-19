@@ -84,6 +84,24 @@ def cmd_logs(args):
             print(f"[{l['created_at'][:19]}] {l['level'].upper()} {l['node_id'] or '-'}  {l['message']}")
 
 
+def cmd_qc(args):
+    cli = Cli()
+    if args.download:
+        r = cli.check(cli.http.get(f"/api/runs/{args.run_id}/qc-failures.jsonl"))
+        out = Path(args.output or f"run{args.run_id}_qc_failures.jsonl")
+        out.write_bytes(r.content)
+        print(f"已下载失败样本 {out}（{len(r.content)} 字节）")
+        return
+    for m in cli.req("GET", f"/api/runs/{args.run_id}/qc-metrics"):
+        print(f"{m['node_id']}  首轮通过 {m['first_round_pass']}/{m['total']}"
+              f"（{round(m['first_round_rate'] * 100)}%）")
+    fails = cli.req("GET", f"/api/runs/{args.run_id}/qc-failures")
+    print(f"失败样本（{len(fails)}）:")
+    for f in fails:
+        reasons = "；".join(f"{r.get('status', '')}:{r['reason']}" for r in f["reasons"])
+        print(f"  {json.dumps(f['sample'], ensure_ascii=False)}  -> {reasons}")
+
+
 def register(sub):
     s = sub.add_parser("run", help="运行当前工作流")
     s.add_argument("-f", "--follow", action="store_true")
@@ -120,3 +138,8 @@ def register(sub):
     s = sub.add_parser("logs", help="看运行日志（--model 看模型对话）")
     s.add_argument("run_id", type=int); s.add_argument("--model", action="store_true")
     s.set_defaults(func=cmd_logs)
+
+    s = sub.add_parser("qc", help="看质检指标+失败样本（--download 落 jsonl）")
+    s.add_argument("run_id", type=int)
+    s.add_argument("--download", action="store_true"); s.add_argument("-o", "--output")
+    s.set_defaults(func=cmd_qc)
