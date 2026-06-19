@@ -83,4 +83,4 @@ export type ColumnsMap = Record<string, { input: string[]; output: string[] }>
 export interface RunLogEntry { created_at: string; node_id: string; level: string; message: string }
 
 export interface QcMetricEntry { node_id: string; total: number; first_round_pass: number; first_round_rate: number }
-export interface QcFailureEntry { node_id: string; sample: Record<string, any>; reasons: { model_config_id: number; pass: boolean; reason: string }[]; created_at: string }
+export interface QcFailureEntry { node_id: string; sample: Record<string, any>; reasons: { model_config_id: number; status: string; reason: string }[]; created_at: string }

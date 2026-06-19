@@ -103,7 +103,18 @@ def test_qc_passthrough_and_rescan_ignored():
          {"source": "ls", "target": "qc", "kind": "normal"},
          {"source": "qc", "target": "ls", "kind": "rescan"}])
     cols = propagate_columns(g, {1: ["q"]})
-    assert cols["qc"]["output"] == ["q", "a", "qc_feedback"]   # qc 产出含反馈列
+    assert cols["qc"]["output"] == ["q", "a", "qc_status", "qc_feedback"]   # qc 产出含状态列+反馈列
+
+
+def test_qc_custom_status_and_feedback_columns():
+    g = _g(
+        [{"id": "in", "type": "input", "config": {"dataset_ids": [1]}},
+         {"id": "ls", "type": "llm_synth", "config": {"output_column": "a"}},
+         {"id": "qc", "type": "qc", "config": {"status_column": "verdict", "feedback_column": "fb"}}],
+        [{"source": "in", "target": "ls", "kind": "normal"},
+         {"source": "ls", "target": "qc", "kind": "normal"}])
+    cols = propagate_columns(g, {1: ["q"]})
+    assert cols["qc"]["output"] == ["q", "a", "verdict", "fb"]
 
 
 def test_ordered_union_dedupes_across_upstreams():

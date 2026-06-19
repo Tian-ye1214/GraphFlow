@@ -320,7 +320,7 @@ async def test_rerun_failed_no_duplicate_qc_metric(auth_client, monkeypatch):
 
     def fn(user):
         if user.startswith("判:"):
-            return json.dumps({"pass": True, "reason": ""}), {"prompt_tokens": 1, "completion_tokens": 1}
+            return json.dumps({"status": "pass", "reason": ""}), {"prompt_tokens": 1, "completion_tokens": 1}
         if broken["on"] and "问1" in user:
             raise RuntimeError("临时故障")
         return f"答[{user}]", {"prompt_tokens": 1, "completion_tokens": 1}

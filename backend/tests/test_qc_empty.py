@@ -20,7 +20,7 @@ async def test_judge_uses_temperature_zero_and_anchor(monkeypatch):
     seen = {}
     async def fake_chat(mc, system, user, params=None, retries=3):
         seen.update(params or {}); seen["system"] = system
-        return '{"pass": true, "reason": "ok"}', {"prompt_tokens": 1, "completion_tokens": 1}
+        return '{"status": "pass", "reason": "ok"}', {"prompt_tokens": 1, "completion_tokens": 1}
     monkeypatch.setattr(nodes.llm, "chat", fake_chat)
     class MC: id = 7
     ok, *_ = await nodes.run_qc_judge_row(
@@ -28,4 +28,4 @@ async def test_judge_uses_temperature_zero_and_anchor(monkeypatch):
         asyncio.Semaphore(4))
     assert ok is True
     assert seen.get("temperature") == 0
-    assert "pass:false" in seen["system"]
+    assert "status:failed" in seen["system"]

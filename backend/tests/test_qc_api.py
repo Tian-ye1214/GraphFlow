@@ -40,3 +40,39 @@ async def test_qc_endpoints_reject_foreign_run(auth_client, session_factory):
         rid = run.id
     # auth_client is logged in as "tester" — requesting stranger's run must return 404
     assert (await auth_client.get(f"/api/runs/{rid}/qc-metrics")).status_code == 404
+
+
+async def test_qc_failures_jsonl_export(auth_client, session_factory):
+    import json as _json
+    from sqlalchemy import select
+    from app.models import Run, User
+    async with session_factory() as s:
+        uid = (await s.execute(select(User).where(User.username == "tester"))).scalar_one().id
+        run = Run(user_id=uid, workflow_id=0, workflow_version_id=0, status="completed")
+        s.add(run); await s.commit(); run_id = run.id
+        s.add(QcFailure(run_id=run_id, node_id="qc1",
+                        sample_json='{"q":"x","a":"答"}',
+                        reasons_json=_json.dumps([
+                            {"model_config_id": 1, "status": "pass", "reason": "好"},
+                            {"model_config_id": 2, "status": "factual_error", "reason": "事实错"}])))
+        await s.commit()
+    resp = await auth_client.get(f"/api/runs/{run_id}/qc-failures.jsonl")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/x-ndjson")
+    lines = [l for l in resp.text.splitlines() if l]
+    assert len(lines) == 1
+    rec = _json.loads(lines[0])
+    assert rec["q"] == "x" and rec["a"] == "答"
+    assert rec["model_1"] == "pass" and rec["model_1_reason"] == "好"
+    assert rec["model_2"] == "factual_error" and rec["model_2_reason"] == "事实错"
+
+
+async def test_qc_failures_jsonl_rejects_foreign_run(auth_client, session_factory):
+    from sqlalchemy import select
+    from app.models import Run, User
+    async with session_factory() as s:
+        stranger = User(username="stranger2", display_name="s2")
+        s.add(stranger); await s.commit()
+        run = Run(user_id=stranger.id, workflow_id=0, workflow_version_id=0, status="completed")
+        s.add(run); await s.commit(); rid = run.id
+    assert (await auth_client.get(f"/api/runs/{rid}/qc-failures.jsonl")).status_code == 404

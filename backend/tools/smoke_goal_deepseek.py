@@ -38,7 +38,7 @@ def _graph(ds_id: int, mc_id: int) -> dict:
                  "对荒谬或无意义的问题，只有当答案明确指出其无法回答并给出合理说明时才算通过；"
                  "答案敷衍、答非所问、或强行编造数字一律不通过。")
     judge_user = ('问题：{{instruction}}\n答案：{{answer}}\n'
-                  '只返回 JSON：{"pass": true 或 false, "reason": "一句话理由"}')
+                  '只返回 JSON：{"status": "pass" 或 "failed", "reason": "一句话理由"}')
     return {
         "nodes": [
             {"id": "in", "type": "input", "config": {"dataset_ids": [ds_id]}},

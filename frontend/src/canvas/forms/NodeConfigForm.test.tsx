@@ -28,23 +28,26 @@ function mockColumns(columns: Record<string, { input: string[]; output: string[]
 }
 
 describe('NodeConfigForm QC feedback column', () => {
-  it('shows configurable feedback column on qc forms', async () => {
-    mockColumns({ qc: { input: ['q', 'answer'], output: ['q', 'answer', 'qc_feedback'] } })
+  it('shows configurable status and feedback columns on qc forms', async () => {
+    mockColumns({ qc: { input: ['q', 'answer'], output: ['q', 'answer', 'qc_status', 'qc_feedback'] } })
 
     render(<NodeConfigForm type="qc" workflowId={1} nodeId="qc" config={{}} onChange={() => {}} />)
 
-    // 折叠布局：反馈列名在「高级」分组内，先展开
+    // 折叠布局：状态列名 / 反馈列名在「高级」分组内，先展开
     fireEvent.click(await screen.findByText('高级（回扫 / 反馈 / 参数）'))
-    expect(await screen.findByText('反馈列名')).toBeInTheDocument()
+    expect(await screen.findByText('状态列名')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('qc_status')).toBeInTheDocument()
+    expect(screen.getByText('反馈列名')).toBeInTheDocument()
     expect(screen.getByDisplayValue('qc_feedback')).toBeInTheDocument()
   })
 
-  it('shows qc feedback as a produced output column', async () => {
+  it('shows qc status and feedback as produced output columns', async () => {
     mockColumns({ qc: { input: ['q', 'answer'], output: ['q', 'answer'] } })
 
     render(<NodeConfigForm type="qc" workflowId={1} nodeId="qc" config={{}} onChange={() => {}} />)
 
-    await screen.findByText('输出列 (3) ▾')
+    await screen.findByText('输出列 (4) ▾')
+    expect(screen.getByText('qc_status')).toBeInTheDocument()
     expect(screen.getByText('qc_feedback')).toBeInTheDocument()
   })
 

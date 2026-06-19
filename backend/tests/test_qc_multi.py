@@ -17,8 +17,8 @@ class _MC:
 
 async def test_k_of_n_pass(monkeypatch):
     monkeypatch.setattr(nodes.llm, "chat", _fake_chat_factory({
-        1: {"pass": True, "reason": "好"}, 2: {"pass": False, "reason": "太短"},
-        3: {"pass": True, "reason": "好"}}))
+        1: {"status": "pass", "reason": "好"}, 2: {"status": "failed", "reason": "太短"},
+        3: {"status": "pass", "reason": "好"}}))
     sem = asyncio.Semaphore(4)
     cfg = {"system_prompt": "", "user_prompt": "{{q}}"}
     ok, reason, usage, per_model = await nodes.run_qc_judge_row(
@@ -30,9 +30,10 @@ async def test_k_of_n_pass(monkeypatch):
 
 async def test_k_of_n_fail_aggregates_reasons(monkeypatch):
     monkeypatch.setattr(nodes.llm, "chat", _fake_chat_factory({
-        1: {"pass": False, "reason": "太短"}, 2: {"pass": False, "reason": "跑题"}}))
+        1: {"status": "failed", "reason": "太短"}, 2: {"status": "factual_error", "reason": "跑题"}}))
     sem = asyncio.Semaphore(4)
     ok, reason, usage, per_model = await nodes.run_qc_judge_row(
         {"system_prompt": "", "user_prompt": "{{q}}"}, {"q": "x"}, [_MC(1), _MC(2)], 2, sem)
     assert ok is False                      # 0/2 ≥ 2 → 不通过
     assert "太短" in reason and "跑题" in reason
+    assert {p["status"] for p in per_model} == {"failed", "factual_error"}

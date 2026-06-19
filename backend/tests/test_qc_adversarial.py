@@ -73,8 +73,8 @@ async def test_adversarial_dual_model_qc_one_bad_judge_must_not_nuke_run(
             if "锟" in user or "�" in user:                 # 乱码行
                 if mc.id == mc1["id"]:
                     return "这段内容含乱码，无法判断质量，故不返回 JSON。", USAGE  # 真实模型常见行为
-                return json.dumps({"pass": False, "reason": "乱码"}), USAGE
-            return json.dumps({"pass": True, "reason": "ok"}), USAGE  # 正常/超长行：两模型均过
+                return json.dumps({"status": "failed", "reason": "乱码"}), USAGE
+            return json.dumps({"status": "pass", "reason": "ok"}), USAGE  # 正常/超长行：两模型均过
         return f"答:{user}", USAGE                               # —— llm_synth：回显，保留 q 特征 ——
 
     monkeypatch.setattr(llm, "chat", fake_chat)
@@ -110,12 +110,12 @@ class _MC:
         self.id = id
 
 
-async def test_qc_string_false_verdict_must_count_as_fail(monkeypatch):
-    """judge 返回字符串 {"pass": "false"}（真实模型常见）必须判为不通过。"""
+async def test_qc_non_pass_status_must_count_as_fail(monkeypatch):
+    """judge 返回非 pass 的 status（如分类失败值）必须判为不通过。"""
     async def fake(mc, system, user, params=None, retries=3):
-        return json.dumps({"pass": "false", "reason": "明显不合格"}), USAGE
+        return json.dumps({"status": "factual_error", "reason": "明显不合格"}), USAGE
 
     monkeypatch.setattr(nodes.llm, "chat", fake)
     ok, reason, _, per_model = await nodes.run_qc_judge_row(
         {"user_prompt": "判:{{a}}"}, {"a": "垃圾内容"}, [_MC(1)], 1, asyncio.Semaphore(1))
-    assert ok is False, "字符串 'false' 被 bool() 当成 True → 垃圾蒙混过检"
+    assert ok is False and per_model[0]["status"] == "factual_error"

@@ -121,7 +121,7 @@ def _rescan_fn(persistent):
     def fn(user):
         if user.startswith("判定:"):  # 质检判定调用：含 bad 即不通过
             bad = "bad" in user
-            return json.dumps({"pass": not bad, "reason": "含bad" if bad else ""}), \
+            return json.dumps({"status": "failed" if bad else "pass", "reason": "含bad" if bad else ""}), \
                 {"prompt_tokens": 1, "completion_tokens": 1}
         # 生成调用：问1 首次（或 persistent 时永远）产坏值
         first = "质检未通过" not in user
@@ -328,7 +328,7 @@ async def test_rescan_fanout_no_inflation(session_factory, monkeypatch):
     def fn(user):
         if user.startswith("判定:"):
             bad = "bad" in user
-            return json.dumps({"pass": not bad, "reason": "bad" if bad else ""}), \
+            return json.dumps({"status": "failed" if bad else "pass", "reason": "bad" if bad else ""}), \
                 {"prompt_tokens": 1, "completion_tokens": 1}
         if "质检未通过" in user:           # 回扫重生成
             return "good", {"prompt_tokens": 1, "completion_tokens": 1}
@@ -353,7 +353,7 @@ async def test_qc_resume_preserves_pass_fail_counts(session_factory, monkeypatch
     def fn(user):
         if user.startswith("判定:"):
             ok = "问1" not in user
-            return json.dumps({"pass": ok, "reason": "" if ok else "坏"}), \
+            return json.dumps({"status": "pass" if ok else "failed", "reason": "" if ok else "坏"}), \
                 {"prompt_tokens": 1, "completion_tokens": 1}
         return f"答[{user}]", {"prompt_tokens": 1, "completion_tokens": 1}
 
