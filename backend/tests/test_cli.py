@@ -422,6 +422,38 @@ def test_cols_unknown_node_dies(server, capsys):
     assert "不存在" in capsys.readouterr().err
 
 
+def test_node_prompt_from_file(server, capsys, tmp_path):
+    login_and_wf(server)
+    gf("node", "add", "llm")
+    pf = tmp_path / "p.md"
+    pf.write_text("# 指令\n把 {{q}} 翻译成英文\n", encoding="utf-8")
+    gf("node", "prompt", "llm_synth_1", "--user", "--file", str(pf))
+    capsys.readouterr()
+    gf("node", "show", "llm_synth_1")
+    node = json.loads(capsys.readouterr().out)
+    assert node["config"]["user_prompt"] == "# 指令\n把 {{q}} 翻译成英文\n"
+
+
+def test_node_prompt_from_stdin(server, capsys, monkeypatch, tmp_path):
+    import io
+    login_and_wf(server)
+    gf("node", "add", "qc")
+    monkeypatch.setattr("sys.stdin", io.StringIO("判定规则：必须为 JSON"))
+    gf("node", "prompt", "qc_1", "--system", "-")
+    capsys.readouterr()
+    gf("node", "show", "qc_1")
+    node = json.loads(capsys.readouterr().out)
+    assert node["config"]["system_prompt"] == "判定规则：必须为 JSON"
+
+
+def test_node_prompt_requires_field_and_source(server, capsys):
+    login_and_wf(server)
+    gf("node", "add", "llm")
+    with pytest.raises(SystemExit) as e:   # 缺 --system/--user：argparse 互斥必填
+        gf("node", "prompt", "llm_synth_1", "--file", "x")
+    assert e.value.code == 2
+
+
 def test_wf_dump_load_roundtrip(server, capsys, tmp_path):
     login_and_wf(server, "导出流")
     gf("node", "add", "input"); gf("node", "add", "output")

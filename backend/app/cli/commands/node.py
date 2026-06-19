@@ -1,5 +1,10 @@
-"""节点配置与自动处理操作：node set / node show / op add|ls|rm。"""
+"""节点配置与自动处理操作：node set / node show / node prompt / op add|ls|rm。"""
 import json
+import os
+import sys
+import subprocess
+import tempfile
+from pathlib import Path
 
 from app.cli.client import (Cli, die, find_node, parse_kv, convert, build_op,
                             _auto_node, LLM_CONFIG_KEYS, LLM_PARAM_KEYS, HTTP_STR_KEYS, OP_LABELS)
@@ -57,6 +62,28 @@ def cmd_node_show(args):
     print(json.dumps(node, ensure_ascii=False, indent=2))
 
 
+def _read_prompt(args) -> str:
+    if args.file:
+        return Path(args.file).read_text(encoding="utf-8")
+    if args.edit:
+        editor = os.environ.get("EDITOR") or ("notepad" if sys.platform == "win32" else "vi")
+        with tempfile.NamedTemporaryFile("w+", suffix=".md", delete=False, encoding="utf-8") as f:
+            tmp = f.name
+        subprocess.call([editor, tmp])
+        return Path(tmp).read_text(encoding="utf-8")
+    return sys.stdin.read()   # args.from_stdin
+
+
+def cmd_node_prompt(args):
+    cli = Cli()
+    wf = cli.get_wf()
+    node = find_node(wf["graph"], args.id)
+    field = "system_prompt" if args.system else "user_prompt"
+    node["config"][field] = _read_prompt(args)
+    cli.put_graph(wf["id"], wf["graph"])
+    print(f"已写入 {args.id} 的 {field}（{len(node['config'][field])} 字符）")
+
+
 def cmd_op_add(args):
     cli = Cli()
     wf, ops = _auto_node(cli, args.node_id)
@@ -87,6 +114,17 @@ def register(sub):
     node = node_actions(sub)
     s = node.add_parser("set"); s.add_argument("id"); s.add_argument("pairs", nargs="+"); s.set_defaults(func=cmd_node_set)
     s = node.add_parser("show"); s.add_argument("id"); s.set_defaults(func=cmd_node_show)
+
+    s = node.add_parser("prompt")
+    s.add_argument("id")
+    g1 = s.add_mutually_exclusive_group(required=True)
+    g1.add_argument("--system", action="store_true")
+    g1.add_argument("--user", action="store_true")
+    g2 = s.add_mutually_exclusive_group(required=True)
+    g2.add_argument("--file")
+    g2.add_argument("--edit", action="store_true")
+    g2.add_argument("-", dest="from_stdin", action="store_true")
+    s.set_defaults(func=cmd_node_prompt)
 
     op = sub.add_parser("op", help="自动处理操作").add_subparsers(dest="action", required=True)
     s = op.add_parser("add"); s.add_argument("node_id"); s.add_argument("op"); s.add_argument("params", nargs="*"); s.set_defaults(func=cmd_op_add)
