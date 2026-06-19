@@ -1,4 +1,5 @@
-"""运行：run / runs / watch / cancel / rerun / export。"""
+"""运行：run / runs / watch / cancel / rerun / export / rows / logs。"""
+import json
 from pathlib import Path
 
 from app.cli.client import Cli, die, watch_run, STATUS_LABELS
@@ -54,6 +55,35 @@ def cmd_export(args):
     print(f"已导出 {out}（{len(r.content)} 字节）")
 
 
+def _default_output_node(cli: Cli, run_id: int) -> str:
+    d = cli.req("GET", f"/api/runs/{run_id}")
+    outs = [n for n in d["graph"]["nodes"] if n["type"] == "output"]
+    if not outs:
+        die("该运行的工作流没有输出节点，请用 --node 指定")
+    return outs[0]["id"]
+
+
+def cmd_rows(args):
+    cli = Cli()
+    node = args.node or _default_output_node(cli, args.run_id)
+    status = "failed" if args.failed else "done"
+    page = cli.req("GET", f"/api/runs/{args.run_id}/rows",
+                   params={"node_id": node, "status": status, "page": args.page, "page_size": 20})
+    print(f"运行 #{args.run_id} 节点 {node} {status} 行（共 {page['total']}，第 {args.page} 页）")
+    for row in page["rows"]:
+        print(json.dumps(row, ensure_ascii=False))
+
+
+def cmd_logs(args):
+    cli = Cli()
+    if args.model:
+        for m in cli.req("GET", f"/api/runs/{args.run_id}/model-logs"):
+            print(f"[{m['source']}] {m['node_id'] or '-'}  {m['model_name']}")
+    else:
+        for l in cli.req("GET", f"/api/runs/{args.run_id}/logs"):
+            print(f"[{l['created_at'][:19]}] {l['level'].upper()} {l['node_id'] or '-'}  {l['message']}")
+
+
 def register(sub):
     s = sub.add_parser("run", help="运行当前工作流")
     s.add_argument("-f", "--follow", action="store_true")
@@ -80,3 +110,13 @@ def register(sub):
     s.add_argument("--format", default="jsonl", choices=["jsonl", "csv", "xlsx"])
     s.add_argument("--node")
     s.set_defaults(func=cmd_export)
+
+    s = sub.add_parser("rows", help="看运行某节点的结果行")
+    s.add_argument("run_id", type=int)
+    s.add_argument("--node"); s.add_argument("--failed", action="store_true")
+    s.add_argument("--page", type=int, default=1)
+    s.set_defaults(func=cmd_rows)
+
+    s = sub.add_parser("logs", help="看运行日志（--model 看模型对话）")
+    s.add_argument("run_id", type=int); s.add_argument("--model", action="store_true")
+    s.set_defaults(func=cmd_logs)
