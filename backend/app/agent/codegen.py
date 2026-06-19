@@ -37,7 +37,11 @@ async def generate_code(model, instruction: str, columns: list[str], current_cod
         prompt += ("\n\n现有代码（请在此基础上增量修改，保留已有处理逻辑，"
                    "不要丢失之前的转换）：\n" + current_code)
     result = await agent.run(prompt)
-    data = json.loads(strip_code_fences(str(result.output or "")))
+    raw = str(result.output or "")
+    try:   # 模型偶发返回非 JSON（散文/空/澄清语）；codegen 必须产出代码，转可读 ValueError（路由→422）而非 500
+        data = json.loads(strip_code_fences(raw))
+    except json.JSONDecodeError as e:
+        raise ValueError(f"模型未返回有效的代码 JSON，请重试或调整指令：{raw[:200]}") from e
     return {"code": data.get("code", ""), "output_columns": data.get("output_columns", [])}
 
 
@@ -70,7 +74,11 @@ async def generate_node_config(model, node_type: str, instruction: str, columns:
         prompt += ("\n\n现有节点配置（请在此基础上增量修改，保留已有提示词中的处理，"
                    "不要丢失之前的需求）：\n" + json.dumps(current_config, ensure_ascii=False))
     result = await agent.run(prompt, message_history=_to_history(history))
-    data = json.loads(strip_code_fences(str(result.output or "")))
+    raw = str(result.output or "")
+    try:
+        data = json.loads(strip_code_fences(raw))
+    except json.JSONDecodeError:   # 节点助手是多轮对话：非 JSON 当作纯对话回复（config=None=本轮不产配置），不崩 500
+        return {"reply": raw.strip() or "（模型未返回有效配置，请重述需求）", "config": None}
     return {"reply": data.get("reply", ""), "config": data.get("config")}
 
 

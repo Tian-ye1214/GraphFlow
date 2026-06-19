@@ -54,11 +54,29 @@ async def test_chat_success(monkeypatch):
 async def test_params_override_and_json_mode(monkeypatch):
     fake = FakeClient(lambda n, kw: fake_response())
     monkeypatch.setattr(llm, "_client", lambda _: fake)
-    await llm.chat(mc(), "", "u", params={"temperature": 0.9, "json_mode": True, "max_tokens": 100})
+    # user 已含 "json"：json_mode 不需补提示，空 system 不发送
+    await llm.chat(mc(), "", "u json", params={"temperature": 0.9, "json_mode": True, "max_tokens": 100})
     assert fake.last_kwargs["temperature"] == 0.9
     assert fake.last_kwargs["max_tokens"] == 100
     assert fake.last_kwargs["response_format"] == {"type": "json_object"}
     assert fake.last_kwargs["messages"][0]["role"] == "user"  # 空 system 不发送
+
+
+async def test_json_mode_injects_json_keyword_when_missing(monkeypatch):
+    """json_mode 开但提示词无字面 'json'：补一句到 system，满足 OpenAI/DeepSeek 的 json_object 约束（否则 400）。"""
+    fake = FakeClient(lambda n, kw: fake_response())
+    monkeypatch.setattr(llm, "_client", lambda _: fake)
+    await llm.chat(mc(), "判断译文是否达标", "原文x 译文y", params={"json_mode": True})
+    sys_msg = fake.last_kwargs["messages"][0]
+    assert sys_msg["role"] == "system" and "JSON" in sys_msg["content"].upper()
+
+
+async def test_json_mode_no_injection_when_keyword_present(monkeypatch):
+    """提示词已含 'JSON'：不重复注入，system 内容保持原样。"""
+    fake = FakeClient(lambda n, kw: fake_response())
+    monkeypatch.setattr(llm, "_client", lambda _: fake)
+    await llm.chat(mc(), "只输出 JSON", "u", params={"json_mode": True})
+    assert fake.last_kwargs["messages"][0]["content"] == "只输出 JSON"
 
 
 async def test_retry_then_success(monkeypatch):

@@ -53,9 +53,14 @@ async def chat(mc: ModelConfig, system_prompt: str, user_prompt: str,
     call_params = dict(params or {})
     merged = {**model_defaults, **call_params}
     kwargs = _request_kwargs(mc, merged, call_params)
+    system = system_prompt
+    # OpenAI/DeepSeek 在 response_format=json_object 下要求 prompt 出现字面 "json"，否则 400。
+    # 判定/合成提示词若没写到该词（如纯中文判定语），补一句到 system，保证 json_mode 自洽不报 400。
+    if merged.get("json_mode") and "json" not in (system_prompt + user_prompt).lower():
+        system = (system_prompt + "\n输出必须是 JSON 格式。").strip()
     messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
+    if system:
+        messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": user_prompt})
 
     client = _client(mc)

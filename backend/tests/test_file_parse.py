@@ -35,6 +35,15 @@ def test_unsupported_suffix():
         parse_file("a.txt", b"hello")
 
 
+def test_corrupt_xlsx_raises_valueerror():
+    """损坏 xlsx（zip 魔数但非合法 zip）归一为 ValueError（上传边界→422），不逃逸成 BadZipFile/500。"""
+    bad = b"PK\x03\x04 not really a zip"
+    with pytest.raises(ValueError):
+        parse_file("x.xlsx", bad)
+    with pytest.raises(ValueError):
+        parse_sheets("x.xlsx", bad)
+
+
 def test_union_columns_keeps_order():
     rows = [{"a": 1, "b": 2}, {"b": 3, "c": 4}]
     assert union_columns(rows) == ["a", "b", "c"]

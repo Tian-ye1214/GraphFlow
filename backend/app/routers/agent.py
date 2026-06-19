@@ -259,6 +259,8 @@ async def codegen(body: CodegenIn, user: User = Depends(get_current_user),
                                          preview_tools=preview_tools, params=body.params)
     except ModelHTTPError as exc:
         _raise_model_http_error(exc, mc)
+    except ValueError as e:   # 模型未产出有效代码 JSON → 可读 422，而非裸 500
+        raise HTTPException(status_code=422, detail=str(e))
     return {"code": result["code"], "output_columns": result["output_columns"],
             "columns": columns, "sample_source": source}
 

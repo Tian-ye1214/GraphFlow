@@ -126,6 +126,21 @@ async def test_generate_node_config_rejects_unknown_type():
         await codegen.generate_node_config(model, "input", "x", [])
 
 
+async def test_generate_node_config_non_json_degrades_to_reply():
+    """模型返回非 JSON（散文/澄清语）：当作纯对话回复（config=None），不抛 JSONDecodeError→500。"""
+    model = FunctionModel(lambda m, i: ModelResponse(parts=[TextPart("你想把哪一列翻译成什么语言？")]))
+    r = await codegen.generate_node_config(model, "llm_synth", "帮我配翻译", ["q"])
+    assert r["config"] is None and "翻译" in r["reply"]
+
+
+async def test_generate_code_non_json_raises_valueerror():
+    """codegen 必须产出代码：模型返回非 JSON 时抛可读 ValueError（路由→422），不裸 500。"""
+    import pytest
+    model = FunctionModel(lambda m, i: ModelResponse(parts=[TextPart("抱歉我无法完成")]))
+    with pytest.raises(ValueError, match="代码 JSON"):
+        await codegen.generate_code(model, "去重", ["q"])
+
+
 def test_instructions_guide_grouped_dedup():
     from app.agent.codegen import INSTRUCTIONS
     assert "def process(rows: list[dict]) -> list[dict]" in INSTRUCTIONS  # 核心契约未被改没
