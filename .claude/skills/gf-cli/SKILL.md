@@ -1,33 +1,39 @@
 ---
 name: gf-cli
-description: Use when 需要用命令行操作 GraphFlow（gf 命令）——搭建/修改工作流、节点连线、配置模型、上传数据集、运行任务与导出结果，或遇到 gf 报「未知配置键」「未选择工作流」、不确定 node set 键名 / op 语法时
+description: Use when 需要用 GraphFlow 命令行（gf）但不确定该用哪个子命令、想要总览/核心流程、或遇到 gf 通用报错（「未登录」「未选择工作流」「无法连接服务器」、退出码 1/2/130、上传报 BOM、resolve 重名报错）；具体操作（建图/节点配置/模型/数据集/运行）各有专属技能，见路由表
 ---
 
-# gf —— GraphFlow 命令行
+# gf —— GraphFlow 命令行（总入口）
 
 ## Overview
 
-`gf` 是 GraphFlow 的瘦 HTTP 客户端，与前端同权限同校验；每次变更经 SSE 实时反映到已打开的浏览器页面。在 `backend/` 目录下 `uv run gf …` 使用，或 `cd backend; uv tool install -e .` 装成全局命令。
+`gf` 是 GraphFlow 的**瘦 HTTP 客户端**，与前端同权限同校验；每次变更经 SSE 实时反映到已打开的浏览器页面（列表页自动重拉；画布页无未保存改动则静默刷新，有改动则顶部提示「工作流已被 CLI 修改」不覆盖手动编辑）。在 `backend/` 目录下 `uv run gf …` 使用，或 `cd backend; uv tool install -e .` 装成全局命令任意目录直接 `gf`。
 
-**核心流程**：`login` → `use <工作流>` → 节点/连线/配置 → `run -f`。没 `use` 就执行节点命令会报「未选择工作流」。
+**核心流程**：`gf login <用户名>` → `gf use <工作流>` → 建图（节点/连线/配置）→ `gf run -f`。没 `use` 就执行节点/运行命令会报「未选择工作流」。
 
-## 快速上手
+## 认证与状态
 
 ```powershell
-uv run gf login alice                  # 默认 http://127.0.0.1:8000，--server 可改
-uv run gf wf add 流程; uv run gf use 流程
-uv run gf node add input               # 自动编号 input_1
-uv run gf node set input_1 dataset=种子集
-uv run gf node add llm                 # 注意：编号是 llm_synth_1（全名前缀）
-uv run gf node set llm_synth_1 model=通义 "prompt=回答:{{q}}" out=a conc=4
-uv run gf node add output
-uv run gf link input_1 llm_synth_1; uv run gf link llm_synth_1 output_1
-uv run gf show                         # 文本视图核对全图
-uv run gf run -f                       # 运行并跟随进度
-uv run gf export 1 --format jsonl
+uv run gf login alice                 # 默认 http://127.0.0.1:8000，--server 改地址；dev 模式用户不存在自动建
+uv run gf st                          # 显示 服务器 / 用户 / 当前工作流
+uv run gf logout                      # 登出并清本地 cookie + 当前工作流
 ```
 
-## 服务器没起？
+状态文件 `~/.graphflow/cli.json`：`{server, cookie, workflow_id}`；`login` 写前两项，`use` 写第三项。换用户 `login` 会清 cookie 但保留当前工作流，必要时重新 `gf use`。
+
+## 路由表（按你要做的事选技能）
+
+| 你要做的事 | 用哪个技能 | 代表命令 |
+|---|---|---|
+| 建/改工作流结构、连线、看图、列血缘、整图导入导出 | **gf-workflow** | `wf` `use` `show` `cols` `node add/rm` `link/unlink` `wf dump/load` |
+| 配置节点（`node set` 键名表）、写提示词、自动处理 `op`、质检回扫 | **gf-node-prompt** | `node set` `node show` `node prompt` `op` |
+| 配置/测试模型 | **gf-model** | `model ls/add/set/rm/test` |
+| 上传/下载/预览/删数据集 | **gf-dataset** | `data ls/up/download/head/rm` |
+| 跑工作流、看进度、看结果行/日志/质检、导出、删运行 | **gf-run** | `run` `runs` `watch` `cancel` `rerun` `export` `rows` `logs` `qc` `rmrun` |
+
+报「未知配置键」「不确定 node set 键名 / op 语法」→ gf-node-prompt。
+
+## 服务器没起？怎么起
 
 ```powershell
 cd backend
@@ -36,63 +42,18 @@ uv run uvicorn app.main:app --port 8000      # 生产式（同时托管前端页
 ```
 
 - 自定义数据目录：启动前 `$env:GRAPHFLOW_DATA_DIR = "D:\gfdata"`——必须**与启动命令在同一会话/同一次调用里设**；`Start-Process`/`Start-Job` 不继承其他调用的 `$env:`，后台起服务时把赋值和启动写在同一条命令里。
-- 后台启动最省事用 bash 语法一行：`GRAPHFLOW_DATA_DIR="D:\gfdata" uv run uvicorn app.main:app --port 8000 &`（在 backend/ 下），起没起用 `curl http://127.0.0.1:8000/docs` 验证。
+- 后台启动用 bash 语法一行最省事：`GRAPHFLOW_DATA_DIR="D:\gfdata" uv run uvicorn app.main:app --port 8000 &`（在 backend/ 下），起没起用 `curl http://127.0.0.1:8000/docs` 验证。
 - gf 报「无法连接服务器」= 服务器没起，或 `gf login --server` 地址不对（看 `gf st`）。
 
-## node set 键名表（猜不到的，照抄这里）
+## 跨域坑（所有子命令通用）
 
-| 要设什么 | 键 | 实际字段 |
-|---|---|---|
-| 数据集（input 节点） | `dataset=名1,名2` | dataset_ids |
-| 模型（llm 节点） | `model=名或ID` | model_config_id |
-| 系统/用户提示词 | `system=` / `prompt=` | system_prompt / user_prompt |
-| 输出列 / 输出模式 | `out=` / `mode=column或json` | output_column / output_mode |
-| 扇出 / 并发 / 重试 | `fanout=` `conc=` `retries=` | fanout_n / concurrency / retries |
-| 采样参数 | `temp=` `top_p=` `max_tokens=` `timeout=` `json_mode=` | params.* |
-| 输出节点存为数据集 | `save_as=数据集名`（空串=关闭） | save_as_dataset + dataset_name |
-| 质检节点 qc | `model=模型` `system=判定规则` `prompt=判定:{{列}}` `max_rounds=N` `conc=并发` | model_config_id / system_prompt / user_prompt / max_rounds / concurrency |
-
-⚠️ `concurrency=2`、`output_column=a`、`dataset_id=1` 都是**错的**（报「未知配置键」）——键是短别名：`conc=2`、`out=a`、`dataset=1`。
-
-## op 语法（位置参数，不是 key=value）
-
-```
-gf op add <节点> dedup [列1,列2]      # 缺省全列去重
-gf op add <节点> filter <列> <min_len|max_len|contains|not_contains|regex> <值>
-gf op add <节点> rename <原列> <新列>
-gf op add <节点> drop <列1,列2>
-gf op add <节点> concat <列1,列2> <目标列> [分隔符]
-gf op add <节点> cast <列> <str|int|float>
-gf op add <节点> sample <n>
-gf op add <节点> shuffle
-gf op ls <节点>  /  gf op rm <节点> <序号>   # 序号 1 起始，见 op ls
-```
-
-⚠️ `op add auto_process_1 dedup col=q` 是错的——写 `dedup q`。
-
-## 质检回扫（支持，别回复"做不到"）
-
-「质检不通过 → 回到 LLM 重处理」的有界循环用 qc 节点 + rescan 回扫边实现：
-
-```
-gf node add qc
-gf node set qc_1 model=通义 system=判断以下内容是否达标，只输出JSON "prompt=内容:{{a}}" max_rounds=2
-gf link llm_synth_1 qc_1                 # 正向边
-gf link qc_1 llm_synth_1 --kind rescan   # 回扫边（必须从 qc 出发）
-```
-
-qc 节点用 **LLM 逐行语义判定**，判定提示词需引导模型**只输出** `{"pass": true|false, "reason": "不通过原因"}`。不通过的行带着 `reason` 经 rescan 回扫边回到上游 LLM 重新生成，最多 `max_rounds` 轮，仍不过则丢弃。`gf show` 中回扫边显示为 `⟲回扫`。详见 reference.md。
-
-## 常见坑
-
-- **资源指代**：纯数字按 ID，否则按名字精确匹配；重名会报错并列出候选 ID。
-- **PowerShell 写 jsonl 别带 BOM**：`Out-File`/`WriteAllText` 默认带 BOM，上传报 `Unexpected UTF-8 BOM`。用 `[IO.File]::WriteAllText($p, $s, [Text.UTF8Encoding]::new($false))`。
-- **节点自动编号用类型全名**：`llm` → `llm_synth_1`，`auto` → `auto_process_1`。
-- **退出码**：业务错误 1（打印后端中文 detail），参数用法错误 2，Ctrl+C 130。
-- **换用户 login 不清当前工作流**：必要时重新 `gf use`。
-- **watch 的 Ctrl+C 只退出查看**，不取消运行；取消用 `gf cancel <运行ID>`。
+- **资源指代（resolve 规则）**：纯数字按 ID，否则按名字**精确匹配**；找不到报「找不到名为…的…」，重名报错并列出候选 ID（改用 ID）。适用于 `wf`/`use`/`data`/`model`/`node set dataset=/model=` 等所有引用资源处。
+- **PowerShell 写 jsonl 别带 BOM**：`Out-File`/`WriteAllText` 默认带 BOM，上传报「Unexpected UTF-8 BOM」。用 `[IO.File]::WriteAllText($p, $s, [Text.UTF8Encoding]::new($false))`。
+- **退出码**：业务错误 1（打印后端中文 detail 到 stderr），argparse 参数/用法错误 2，Ctrl+C 130。
+- **不走系统代理**：gf 内部 `trust_env=False`，开了 Clash 等系统代理也不影响访问本地 127.0.0.1（否则会被代理拦成 502）。
+- **前端实时联动**：CLI 每次变更经 SSE 推送给同用户已打开的浏览器页；运行详情页自身 2 秒轮询，与 CLI 无关。
 
 ## 更多
 
-- 全命令清单（model/data/runs/cancel/rerun/export 细节、状态文件、前端联动）：见本目录 `reference.md`
-- 端到端示例脚本：`scripts/build-pipeline.ps1`
+- 端到端示例脚本（建库→建图→连线→跑→导出 完整一条龙）：本目录 `scripts/build-pipeline.ps1`
+- 帮助：`gf --help`、`gf <子命令> --help`（注意 `node set` 的键名表帮助里没有，见 gf-node-prompt）
