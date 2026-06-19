@@ -9,7 +9,7 @@ from app.auth import get_current_user
 from app.db import get_session
 from app.engine.nodes import TEMPLATE_RE   # 复用引擎占位符正则，保证抽取与渲染一致
 from app.events import publish
-from app.models import Prompt, PromptVersion, User
+from app.models import Prompt, PromptVersion, User, Workflow
 
 router = APIRouter(prefix="/api/prompts", tags=["prompts"])
 
@@ -36,6 +36,20 @@ async def _latest(session: AsyncSession, pid: int) -> PromptVersion:
             .order_by(PromptVersion.version.desc()).limit(1))).scalar_one()
 
 
+async def _used_by(session: AsyncSession, user: User, pid: int) -> list[dict]:
+    wfs = (await session.execute(select(Workflow).where(Workflow.user_id == user.id))).scalars().all()
+    out = []
+    for wf in wfs:
+        graph = json.loads(wf.graph_json)
+        for node in graph.get("nodes", []):
+            cfg = node.get("config", {})
+            for slot in ("system_prompt", "user_prompt"):
+                if cfg.get(f"{slot}_ref") == pid:
+                    out.append({"workflow_id": wf.id, "workflow_name": wf.name,
+                                "node_id": node["id"], "slot": slot})
+    return out
+
+
 async def _detail(session: AsyncSession, user: User, pid: int) -> dict:
     p = await _get_owned(pid, user, session)
     vers = (await session.execute(select(PromptVersion).where(PromptVersion.prompt_id == pid)
@@ -45,6 +59,7 @@ async def _detail(session: AsyncSession, user: User, pid: int) -> dict:
         "id": p.id, "name": p.name, "description": p.description,
         "current": {"version": cur.version, "body": cur.body, "variables": json.loads(cur.variables_json)},
         "versions": [{"version": v.version, "created_at": v.created_at.isoformat()} for v in vers],
+        "used_by": await _used_by(session, user, pid),
     }
 
 

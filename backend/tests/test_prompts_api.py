@@ -74,3 +74,18 @@ async def test_duplicate_creates_new_prompt(auth_client):
     assert d["current"]["version"] == 1 and d["current"]["body"] == "正文 {{x}}"
     named = (await auth_client.post(f"/api/prompts/{cid}/duplicate", json={"name": "自定义"})).json()
     assert named["name"] == "自定义"
+
+
+async def test_used_by_lists_referencing_nodes(auth_client):
+    pid = (await auth_client.post("/api/prompts", json={"name": "P", "body": "x"})).json()["id"]
+    wf = (await auth_client.post("/api/workflows", json={"name": "流"})).json()
+    graph = {"nodes": [{"id": "n1", "type": "llm_synth", "position": {"x": 0, "y": 0},
+                        "config": {"system_prompt_ref": pid}}], "edges": []}
+    await auth_client.put(f"/api/workflows/{wf['id']}", json={"graph": graph})
+    d = (await auth_client.get(f"/api/prompts/{pid}")).json()
+    assert d["used_by"] == [{"workflow_id": wf["id"], "workflow_name": "流", "node_id": "n1", "slot": "system_prompt"}]
+
+
+async def test_used_by_empty_when_unreferenced(auth_client):
+    pid = (await auth_client.post("/api/prompts", json={"name": "P", "body": "x"})).json()["id"]
+    assert (await auth_client.get(f"/api/prompts/{pid}")).json()["used_by"] == []
