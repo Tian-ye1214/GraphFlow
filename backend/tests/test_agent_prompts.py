@@ -37,7 +37,7 @@ def test_new_static_prompts_loadable():
     sysp = load_prompt("codegen_system.md")
     assert "def process(rows: list[dict]) -> list[dict]" in sysp and "output_columns" in sysp
     assert "完整" in sysp or "全部" in sysp                       # 替换语义契约
-    assert "pass:false" in load_prompt("qc_empty_anchor.md")      # qc 锚定句
+    assert "status:failed" in load_prompt("qc_empty_anchor.md")   # qc 锚定句
     assert "压缩器" in load_prompt("compactor_system.md")
     for name in ("node_assist_llm_synth.md", "node_assist_qc.md"):
         assert load_prompt(name).strip()
