@@ -601,3 +601,26 @@ def test_qc_prints_metrics_and_failures(server, capsys, tmp_path):
     gf("qc", str(rid), "--download", "-o", str(dl))
     rec = _json.loads(dl.read_text(encoding="utf-8").strip().splitlines()[0])
     assert rec["_qc_model_1"] == "failed"
+
+
+def test_rmrun_single_and_all(server, capsys, tmp_path, monkeypatch):
+    _build_and_run(server, tmp_path, monkeypatch)   # 产生运行 #1
+    capsys.readouterr()
+    gf("rmrun", "1")
+    assert "已删除运行 #1" in capsys.readouterr().out
+    gf("runs")
+    assert "链" not in capsys.readouterr().out
+    # 复用已有工作流再跑一次产生新运行，--all 清空
+    gf("use", "链"); gf("run", "-f")
+    capsys.readouterr()
+    gf("rmrun", "--all")
+    assert "已清空" in capsys.readouterr().out
+    gf("runs")
+    assert capsys.readouterr().out.strip() == ""
+
+
+def test_rmrun_requires_id_or_all(server, capsys):
+    gf("login", "tester", "--server", server)
+    with pytest.raises(SystemExit) as e:
+        gf("rmrun")
+    assert e.value.code == 2   # 既无 run_id 也无 --all

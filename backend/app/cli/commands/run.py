@@ -102,6 +102,20 @@ def cmd_qc(args):
         print(f"  {json.dumps(f['sample'], ensure_ascii=False)}  -> {reasons}")
 
 
+def cmd_rmrun(args):
+    import sys
+    if not args.all and args.run_id is None:
+        print("用法: gf rmrun <run_id> | --all", file=sys.stderr)
+        sys.exit(2)
+    cli = Cli()
+    if args.all:
+        r = cli.req("DELETE", "/api/runs")
+        print(f"已清空 {r['deleted']} 次运行")
+    else:
+        cli.req("DELETE", f"/api/runs/{args.run_id}")
+        print(f"已删除运行 #{args.run_id}")
+
+
 def register(sub):
     s = sub.add_parser("run", help="运行当前工作流")
     s.add_argument("-f", "--follow", action="store_true")
@@ -143,3 +157,8 @@ def register(sub):
     s.add_argument("run_id", type=int)
     s.add_argument("--download", action="store_true"); s.add_argument("-o", "--output")
     s.set_defaults(func=cmd_qc)
+
+    s = sub.add_parser("rmrun", help="删运行（给 ID 删单次，--all 清空全部）")
+    s.add_argument("run_id", type=int, nargs="?")
+    s.add_argument("--all", action="store_true")
+    s.set_defaults(func=cmd_rmrun)
