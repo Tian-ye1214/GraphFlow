@@ -332,6 +332,17 @@ def test_merge_conflict_distinguishes_int_bool_float():
     assert runner._merge_branches("m", [[{"k": 5}], [{"k": 5}]]) == [{"k": 5}]  # 同类型相等不报(回归)
 
 
+async def test_fanout_zero_fails_run_pointing_node(session_factory, monkeypatch):
+    """fanout_n<=0 是节点配置错误 → 整 run failed 并点名节点（不再逐行失败而 run 仍 completed）。"""
+    patch_chat(monkeypatch)
+    graph = json.loads(json.dumps(GRAPH))
+    graph["nodes"][1]["config"]["fanout_n"] = 0
+    run_id = await make_run(session_factory, graph=graph)
+    await run_it(session_factory, run_id)
+    run = await get_run(session_factory, run_id)
+    assert run.status == "failed" and "fanout_n" in (run.error or "") and "gen" in (run.error or "")
+
+
 async def test_llm_json_nan_neutralized_not_whole_run_fail(session_factory, monkeypatch):
     """llm json 模式模型返回 NaN：就地归一为 null（逐行隔离），不让 _write_unit 在成功分支抛错拖垮整 run、丢同节点其它行。"""
     graph = json.loads(json.dumps(GRAPH))

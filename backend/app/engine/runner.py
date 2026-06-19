@@ -278,6 +278,9 @@ async def _barrier_output(session_factory, user_id, node: Node, inputs, run_id: 
 async def _run_llm_node(session_factory, run_id, user_id, node: Node, inputs,
                         user_sem, cancel_event):
     cfg = node.config
+    fanout = cfg.get("fanout_n", 1)   # 配置错误：先于逐行循环校验，整 run failed 点名节点，而非逐行失败留 run=completed
+    if not isinstance(fanout, int) or fanout < 1:
+        raise ValueError(f"节点 {node.id}: fanout_n 必须为 ≥1 的整数，当前为 {fanout!r}")
     async with session_factory() as s:
         mc = await s.get(ModelConfig, cfg.get("model_config_id"))
         if mc is None or mc.user_id != user_id:
