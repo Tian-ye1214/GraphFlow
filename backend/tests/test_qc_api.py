@@ -63,8 +63,8 @@ async def test_qc_failures_jsonl_export(auth_client, session_factory):
     assert len(lines) == 1
     rec = _json.loads(lines[0])
     assert rec["q"] == "x" and rec["a"] == "答"
-    assert rec["model_1"] == "pass" and rec["model_1_reason"] == "好"
-    assert rec["model_2"] == "factual_error" and rec["model_2_reason"] == "事实错"
+    assert rec["_qc_model_1"] == "pass" and rec["_qc_model_1_reason"] == "好"
+    assert rec["_qc_model_2"] == "factual_error" and rec["_qc_model_2_reason"] == "事实错"
 
 
 async def test_qc_failures_jsonl_rejects_foreign_run(auth_client, session_factory):
