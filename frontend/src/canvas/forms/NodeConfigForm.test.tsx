@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import NodeConfigForm, { THINKING_EFFORT_OPTIONS, buildCodegenPayload } from './NodeConfigForm'
+import NodeConfigForm, { THINKING_EFFORT_OPTIONS, buildCodegenPayload, missingLibVars } from './NodeConfigForm'
 
 class ResizeObserverStub {
   observe() {}
@@ -20,7 +20,7 @@ function mockColumns(columns: Record<string, { input: string[]; output: string[]
     if (path.includes('/api/workflows/1/columns')) {
       return new Response(JSON.stringify(columns), { status: 200 })
     }
-    if (path.includes('/api/models')) {
+    if (path.includes('/api/models') || path.includes('/api/prompts')) {
       return new Response(JSON.stringify([]), { status: 200 })
     }
     return new Response(JSON.stringify({ detail: 'unexpected' }), { status: 404 })
@@ -70,6 +70,14 @@ describe('NodeConfigForm QC feedback column', () => {
     await waitFor(() => expect(screen.queryByText(/引用了上游未产出的列/)).not.toBeInTheDocument())
     const prompt = screen.getByDisplayValue('根据{{qc_feedback}}改写答案')
     expect(within(prompt.closest('div') as HTMLElement).queryByText(/引用了上游未产出的列/)).not.toBeInTheDocument()
+  })
+})
+
+describe('missingLibVars', () => {
+  it('returns prompt vars not present in input columns', () => {
+    expect(missingLibVars(['q', 'a'], ['q'])).toEqual(['a'])
+    expect(missingLibVars(['q'], ['q', 'a'])).toEqual([])
+    expect(missingLibVars([], ['q'])).toEqual([])
   })
 })
 
