@@ -454,6 +454,50 @@ def test_node_prompt_requires_field_and_source(server, capsys):
     assert e.value.code == 2
 
 
+def test_node_set_new_keys(server, capsys):
+    login_and_wf(server)
+    gf("model", "add", "m", "--url", "http://x/v1", "--model", "q", "--key", "k")
+    gf("node", "add", "llm")
+    gf("node", "set", "llm_synth_1", "drop=secret,tmp", "outs=q_en,cat_en",
+       "think=on", "effort=high")
+    capsys.readouterr()
+    gf("node", "show", "llm_synth_1")
+    c = json.loads(capsys.readouterr().out)["config"]
+    assert c["drop_columns"] == ["secret", "tmp"]
+    assert c["output_columns"] == ["q_en", "cat_en"]
+    assert c["params"]["thinking_enabled"] is True
+    assert c["params"]["reasoning_effort"] == "high"
+
+
+def test_node_set_qc_status_feedback_cols(server, capsys):
+    login_and_wf(server)
+    gf("node", "add", "qc")
+    gf("node", "set", "qc_1", "status_col=verdict", "feedback_col=fb")
+    capsys.readouterr()
+    gf("node", "show", "qc_1")
+    c = json.loads(capsys.readouterr().out)["config"]
+    assert c["status_column"] == "verdict" and c["feedback_column"] == "fb"
+
+
+def test_node_set_http_headers(server, capsys):
+    login_and_wf(server)
+    gf("node", "add", "http")
+    gf("node", "set", "http_fetch_1", "headers=Authorization:Bearer x,X-Tag:demo")
+    capsys.readouterr()
+    gf("node", "show", "http_fetch_1")
+    c = json.loads(capsys.readouterr().out)["config"]
+    assert c["headers"] == {"Authorization": "Bearer x", "X-Tag": "demo"}
+
+
+def test_node_set_think_off(server, capsys):
+    login_and_wf(server)
+    gf("node", "add", "llm")
+    gf("node", "set", "llm_synth_1", "think=off")
+    capsys.readouterr()
+    gf("node", "show", "llm_synth_1")
+    assert json.loads(capsys.readouterr().out)["config"]["params"]["thinking_enabled"] is False
+
+
 def test_wf_dump_load_roundtrip(server, capsys, tmp_path):
     login_and_wf(server, "导出流")
     gf("node", "add", "input"); gf("node", "add", "output")

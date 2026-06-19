@@ -50,6 +50,20 @@ def cmd_node_set(args):
             cfg[LLM_CONFIG_KEYS[k]] = convert(LLM_CONFIG_KEYS[k], v)
         elif k in LLM_PARAM_KEYS:
             cfg.setdefault("params", {})[LLM_PARAM_KEYS[k]] = convert(LLM_PARAM_KEYS[k], v)
+        elif k == "drop":
+            cfg["drop_columns"] = [c for c in v.split(",") if c]
+        elif k == "outs":
+            cfg["output_columns"] = [c for c in v.split(",") if c]
+        elif k == "status_col":
+            cfg["status_column"] = v
+        elif k == "feedback_col":
+            cfg["feedback_column"] = v
+        elif k == "think":
+            cfg.setdefault("params", {})["thinking_enabled"] = v.lower() in ("on", "true", "1", "yes")
+        elif k == "effort":
+            cfg.setdefault("params", {})["reasoning_effort"] = v
+        elif k == "headers":
+            cfg["headers"] = dict(p.split(":", 1) for p in v.split(",") if ":" in p)
         else:
             die(f"未知配置键 {k}")
     cli.put_graph(wf["id"], wf["graph"])
