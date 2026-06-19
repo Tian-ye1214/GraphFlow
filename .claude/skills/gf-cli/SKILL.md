@@ -30,6 +30,7 @@ uv run gf logout                      # 登出并清本地 cookie + 当前工作
 | 配置/测试模型 | **gf-model** | `model ls/add/set/rm/test` |
 | 上传/下载/预览/删数据集 | **gf-dataset** | `data ls/up/download/head/rm` |
 | 跑工作流、看进度、看结果行/日志/质检、导出、删运行 | **gf-run** | `run` `runs` `watch` `cancel` `rerun` `export` `rows` `logs` `qc` `rmrun` |
+| 管理可复用提示词库（库 CRUD、版本、回滚、复制、被引用、引用到节点） | **gf-prompt** | `prompt ls/show/add/edit/rm/versions/rollback/dup` `node prompt --library` |
 
 报「未知配置键」「不确定 node set 键名 / op 语法」→ gf-node-prompt。
 

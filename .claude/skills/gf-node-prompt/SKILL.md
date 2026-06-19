@@ -54,6 +54,7 @@ Get-Content p.md -Raw | gf node prompt qc_1 --user -   # 从 stdin 读（末尾 
 
 - 必须二选一指定写哪个字段：`--system`（system_prompt）或 `--user`（user_prompt）。
 - 必须二选一指定来源：`--file FILE` / `--edit` / `-`（stdin）。
+- 也可不写文本、改从**提示词库**取：`--library <提示词id或名>` 配 `--ref`（引用，运行时取最新版）或 `--copy`（复制当前正文进来，默认）。引用写 `system_prompt_ref`/`user_prompt_ref`，运行时解析；缺失则整 run 报错。库的维护见 **gf-prompt**。
 
 ## `gf op`（自动处理节点的操作列表，位置参数不是 key=value）
 
