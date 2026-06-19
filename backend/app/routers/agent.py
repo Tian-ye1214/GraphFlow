@@ -70,7 +70,11 @@ def _raise_model_http_error(exc: ModelHTTPError, mc: ModelConfig) -> None:
             status_code=422,
             detail=detail,
         ) from exc
-    raise exc
+    # 任意 provider 的模型网关 HTTP 错误统一转 502（上游网关错误），绝不重抛 ModelHTTPError 逃逸成 500
+    raise HTTPException(
+        status_code=502,
+        detail=f"模型网关返回错误 status={exc.status_code}; body={exc.body}",
+    ) from exc
 
 
 async def _get_owned(sid: int, user: User, session: AsyncSession) -> AgentSession:

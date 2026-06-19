@@ -20,6 +20,15 @@ from app.services.file_parse import parse_file, parse_sheets, union_columns
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
 
+# 非法文件名字符：Windows 保留符 + 控制字符(\x00-\x1f，可经多 sheet Excel 的 sheet 名 \r\n 注入)。
+# 不清掉控制字符会让 write_text/Content-Disposition 抛 OSError[Errno22] 逃逸成 500。
+_ILLEGAL_FN = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def _safe_filename(name: str) -> str:
+    cleaned = _ILLEGAL_FN.sub("_", name).strip(" .")
+    return cleaned or "untitled"
+
 
 def _out(ds: Dataset) -> dict:
     return {
@@ -38,13 +47,26 @@ async def _get_owned(ds_id: int, user: User, session: AsyncSession) -> Dataset:
 
 async def create_dataset(session: AsyncSession, user_id: int, name: str, rows: list[dict],
                          source: str = "upload", original_filename: str = "",
-                         file_path: str = "") -> Dataset:
-    """供上传与（后续）运行结果保存共用。"""
-    ds = Dataset(user_id=user_id, name=name, source=source, original_filename=original_filename,
-                 file_path=file_path,
-                 row_count=len(rows), columns_json=json.dumps(union_columns(rows), ensure_ascii=False))
-    session.add(ds)
-    await session.flush()
+                         file_path: str = "", run_id: int | None = None,
+                         node_id: str | None = None) -> Dataset:
+    """供上传与运行结果保存共用。传 run_id+node_id（save_as_dataset）时按 (run_id, node_id) 幂等：
+    同一 run 同节点重算覆盖更新；不同 output 节点即使同名也各自独立（不互相覆盖丢数据）。"""
+    ds = None
+    if run_id is not None and node_id is not None:
+        ds = (await session.execute(select(Dataset).where(
+            Dataset.run_id == run_id, Dataset.node_id == node_id,
+            Dataset.user_id == user_id))).scalars().first()
+    if ds is not None:                       # 覆盖更新：清旧行、重置名/schema/计数
+        await session.execute(sa_delete(DatasetRow).where(DatasetRow.dataset_id == ds.id))
+        ds.name = name
+        ds.row_count = len(rows)
+        ds.columns_json = json.dumps(union_columns(rows), ensure_ascii=False)
+    else:
+        ds = Dataset(user_id=user_id, name=name, source=source, original_filename=original_filename,
+                     file_path=file_path, run_id=run_id, node_id=node_id,
+                     row_count=len(rows), columns_json=json.dumps(union_columns(rows), ensure_ascii=False))
+        session.add(ds)
+        await session.flush()
     if rows:
         await session.execute(insert(DatasetRow), [
             {"dataset_id": ds.id, "idx": i, "data_json": json.dumps(r, ensure_ascii=False)}
@@ -67,7 +89,7 @@ async def upload(files: list[UploadFile], user: User = Depends(get_current_user)
         except (ValueError, UnicodeDecodeError) as e:
             raise HTTPException(status_code=422, detail=f"{f.filename} 解析失败: {e}")
         # 仅取文件名末段并清洗非法字符，杜绝路径穿越；uuid 前缀保证唯一
-        safe_name = re.sub(r'[\\/:*?"<>|]', "_", Path(f.filename).name)
+        safe_name = _safe_filename(Path(f.filename).name)
         upload_dir = settings.data_dir / "uploads" / str(user.id)
         upload_dir.mkdir(parents=True, exist_ok=True)
         file_path = upload_dir / f"{uuid4().hex[:8]}_{safe_name}"
@@ -108,7 +130,7 @@ async def export_dataset(ds_id: int, format: Literal["jsonl", "csv", "xlsx"] = "
     recs = (await session.execute(select(DatasetRow).where(
         DatasetRow.dataset_id == ds.id).order_by(DatasetRow.idx))).scalars().all()
     rows = [json.loads(r.data_json) for r in recs]
-    safe = re.sub(r'[\\/:*?"<>|]', "_", ds.name)   # 与 upload 同款清洗，杜绝路径穿越
+    safe = _safe_filename(ds.name)   # 与 upload 同款清洗，杜绝路径穿越/控制字符 → OSError 500
     filename = f"{safe}.{format}"
     path = await asyncio.to_thread(
         export_rows, rows, format, settings.data_dir / "exports" / filename)

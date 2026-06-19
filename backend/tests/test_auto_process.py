@@ -37,6 +37,13 @@ def test_rename_drop_concat():
     assert out == [{"question": "你好", "merged": "你好-1"}]
 
 
+def test_rename_collision_raises():
+    """rename 把多列映射到同名 → 报错点名冲突列，不静默后写覆盖丢列（[{a:1,b:2}] 变 {x:2} 丢 a）。"""
+    with pytest.raises(ValueError, match="冲突|x"):
+        apply_operations([{"a": "1", "b": "2", "c": "3"}],
+                         [{"op": "rename", "mapping": {"a": "x", "b": "x"}}])
+
+
 def test_cast():
     out = apply_operations([{"x": "3"}], [{"op": "cast", "column": "x", "to": "int"}])
     assert out == [{"x": 3}]

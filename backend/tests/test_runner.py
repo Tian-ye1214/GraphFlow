@@ -323,6 +323,61 @@ async def test_merge_column_conflict_fails(session_factory, monkeypatch):
     assert run.status == "failed" and "取值不同" in run.error
 
 
+def test_merge_conflict_distinguishes_int_bool_float():
+    """合并冲突检测须比类型：0/False、1/True、0/0.0 数值相等但语义不同，应报冲突而非静默用一支覆盖。"""
+    import pytest
+    for a, b in ((0, False), (1, True), (0, 0.0)):
+        with pytest.raises(ValueError, match="取值不同"):
+            runner._merge_branches("m", [[{"k": a}], [{"k": b}]])
+    assert runner._merge_branches("m", [[{"k": 5}], [{"k": 5}]]) == [{"k": 5}]  # 同类型相等不报(回归)
+
+
+async def test_llm_json_nan_neutralized_not_whole_run_fail(session_factory, monkeypatch):
+    """llm json 模式模型返回 NaN：就地归一为 null（逐行隔离），不让 _write_unit 在成功分支抛错拖垮整 run、丢同节点其它行。"""
+    graph = json.loads(json.dumps(GRAPH))
+    graph["nodes"][1]["config"]["output_mode"] = "json"
+    patch_chat(monkeypatch, lambda u: ('{"a": NaN}' if "问0" in u else '{"a": "ok"}',
+                                       {"prompt_tokens": 1, "completion_tokens": 1}))
+    run_id = await make_run(session_factory, graph=graph, rows=3)
+    await run_it(session_factory, run_id)
+    assert (await get_run(session_factory, run_id)).status == "completed"   # 不再因一行 NaN 整 run failed
+    rows = await runner._node_outputs(session_factory, run_id, "out")
+    assert len(rows) == 3 and any(r.get("a") is None for r in rows)         # NaN→null，行未丢失
+
+
+async def test_rerun_output_upserts_dataset_no_duplicate(session_factory, monkeypatch):
+    """重算 output 节点(save_as_dataset)按 run_id+name upsert，不产生重复同名数据集。"""
+    from sqlalchemy import delete as sa_delete
+    patch_chat(monkeypatch)
+    graph = json.loads(json.dumps(GRAPH))
+    graph["nodes"][2]["config"] = {"save_as_dataset": True, "dataset_name": "结果集"}
+    run_id = await make_run(session_factory, graph=graph)
+    await run_it(session_factory, run_id)
+    async with session_factory() as s:   # 模拟 rerun-failed：重置并重算 output 节点
+        await s.execute(sa_delete(RunRow).where(RunRow.run_id == run_id, RunRow.node_id == "out"))
+        await s.execute(sa_delete(RunNodeState).where(RunNodeState.run_id == run_id, RunNodeState.node_id == "out"))
+        run = await s.get(Run, run_id); run.status = "queued"; await s.commit()
+    await run_it(session_factory, run_id)
+    async with session_factory() as s:
+        dss = (await s.execute(select(Dataset).where(Dataset.name == "结果集"))).scalars().all()
+    assert len(dss) == 1 and dss[0].row_count == 3   # 仅一份，且为完整 3 行
+
+
+async def test_output_drop_columns_applied_to_saved_dataset(session_factory, monkeypatch):
+    """output 节点 drop_columns 须同样作用于 save_as_dataset 落库数据集（被删列不泄漏进训练集）。"""
+    patch_chat(monkeypatch)
+    graph = json.loads(json.dumps(GRAPH))
+    graph["nodes"][2]["config"] = {"save_as_dataset": True, "dataset_name": "去列集", "drop_columns": ["q"]}
+    run_id = await make_run(session_factory, graph=graph)
+    await run_it(session_factory, run_id)
+    async with session_factory() as s:
+        ds = (await s.execute(select(Dataset).where(Dataset.name == "去列集"))).scalar_one()
+        rows = (await s.execute(select(DatasetRow).where(DatasetRow.dataset_id == ds.id))).scalars().all()
+    saved = [json.loads(r.data_json) for r in rows]
+    assert saved and all("q" not in r and "a" in r for r in saved)   # 被删列 q 不进落库集，产出列 a 保留
+    assert json.loads(ds.columns_json) == ["a"]
+
+
 async def test_rescan_fanout_no_inflation(session_factory, monkeypatch):
     """回扫目标带 fanout_n>1：回扫应一行换一行，不得让通过数超过输入、failed 计负、产物翻倍。"""
     def fn(user):

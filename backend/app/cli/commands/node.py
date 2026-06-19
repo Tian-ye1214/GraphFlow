@@ -45,7 +45,7 @@ def cmd_node_set(args):
         elif k in HTTP_STR_KEYS:
             cfg[k] = v
         elif k == "extract":
-            cfg["extract"] = dict(p.split(":", 1) for p in v.split(",") if ":" in p)
+            cfg["extract"] = _parse_colon_map(v, "extract", "列:JSON路径")
         elif k in LLM_CONFIG_KEYS:
             cfg[LLM_CONFIG_KEYS[k]] = convert(LLM_CONFIG_KEYS[k], v)
         elif k in LLM_PARAM_KEYS:
@@ -63,7 +63,7 @@ def cmd_node_set(args):
         elif k == "effort":
             cfg.setdefault("params", {})["reasoning_effort"] = v
         elif k == "headers":
-            cfg["headers"] = dict(p.split(":", 1) for p in v.split(",") if ":" in p)
+            cfg["headers"] = _parse_colon_map(v, "headers", "名:值")
         else:
             die(f"未知配置键 {k}")
     cli.put_graph(wf["id"], wf["graph"])
@@ -76,14 +76,34 @@ def cmd_node_show(args):
     print(json.dumps(node, ensure_ascii=False, indent=2))
 
 
+def _parse_colon_map(v: str, key: str, fmt: str) -> dict:
+    """解析 `a:b,c:d` 形式（首个冒号切分，值可含冒号）。非空但缺冒号的段 → die，
+    不把用户输入静默吞成空 dict（对齐 parse_kv/build_op 的 die+用法提示惯例）。"""
+    out = {}
+    for seg in v.split(","):
+        if not seg.strip():
+            continue   # 容忍尾随/多余逗号
+        if ":" not in seg:
+            die(f"{key} 格式应为 {fmt}[,{fmt}]，缺少冒号: {seg!r}")
+        k, val = seg.split(":", 1)
+        out[k] = val
+    return out
+
+
 def _read_prompt(args) -> str:
     if args.file:
-        return Path(args.file).read_text(encoding="utf-8")
+        p = Path(args.file)
+        if not p.is_file():   # 对齐 data up：文件不存在优雅 die，不裸 FileNotFoundError
+            die(f"文件不存在: {args.file}")
+        return p.read_text(encoding="utf-8")
     if args.edit:
         editor = os.environ.get("EDITOR") or ("notepad" if sys.platform == "win32" else "vi")
         with tempfile.NamedTemporaryFile("w+", suffix=".md", delete=False, encoding="utf-8") as f:
             tmp = f.name
-        subprocess.call([editor, tmp])
+        try:
+            subprocess.call([editor, tmp])
+        except OSError:   # EDITOR 指向不存在程序：优雅 die，不裸 FileNotFoundError
+            die(f"无法启动编辑器: {editor}")
         return Path(tmp).read_text(encoding="utf-8")
     return sys.stdin.read()   # args.from_stdin
 

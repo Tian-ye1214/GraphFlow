@@ -62,6 +62,23 @@ async def test_fanout(monkeypatch):
     assert usage == {"prompt_tokens": 3, "completion_tokens": 6}
 
 
+async def test_fanout_zero_or_negative_rejected(monkeypatch):
+    """fanout_n<=0：否则 range(0) 不发请求、该行静默产出 0 行却被记 done，输入行凭空丢失而 run 仍 completed。"""
+    patch_chat(monkeypatch, lambda s, u: ("x", {"prompt_tokens": 1, "completion_tokens": 1}))
+    for bad in (0, -1):
+        with pytest.raises(ValueError):
+            await nodes.run_llm_synth_row({"user_prompt": "u", "fanout_n": bad}, {"q": "原"},
+                                          mc(), asyncio.Semaphore(8))
+
+
+async def test_empty_output_column_falls_back_to_output(monkeypatch):
+    """output_column 设为空串 → 兜底 'output'（与 columns.py 血缘一致），不落进无名 '' 列。"""
+    patch_chat(monkeypatch, lambda s, u: ("答案", {"prompt_tokens": 1, "completion_tokens": 1}))
+    out, _ = await nodes.run_llm_synth_row({"user_prompt": "u", "output_column": ""}, {"q": "原"},
+                                           mc(), asyncio.Semaphore(8))
+    assert out == [{"q": "原", "output": "答案"}]
+
+
 async def test_semaphore_limits_concurrency(monkeypatch):
     state = {"now": 0, "peak": 0}
 

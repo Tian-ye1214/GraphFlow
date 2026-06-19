@@ -17,14 +17,26 @@ def _records(df) -> list[dict]:
     return json.loads(df.to_json(orient="records", date_format="iso", force_ascii=False))
 
 
+def _loads(s: str):
+    """解析不可信 JSON 文本：
+    - parse_constant 把非标准 NaN/Infinity/-Infinity 归一为 None(null)，否则原样落库后
+      Starlette(allow_nan=False) 在 /rows、/export 渲染时抛 ValueError 逃逸成 500（永久陷阱）；
+    - 深层嵌套触发的 RecursionError（非 ValueError）归一为 ValueError，让上传边界转 422 而非 500。
+    （json.JSONDecodeError 本就是 ValueError 子类，照常向上传递→422。）"""
+    try:
+        return json.loads(s, parse_constant=lambda _v: None)
+    except RecursionError as e:
+        raise ValueError(f"JSON 嵌套过深: {e}") from e
+
+
 def parse_file(filename: str, content: bytes) -> list[dict]:
     """把上传文件解析为行式记录（Excel 取首个 sheet）。不支持的格式 / 非对象记录抛 ValueError。
     上传走 parse_sheets（多 sheet），此函数供非 Excel 路径与直接调用。"""
     suffix = Path(filename).suffix.lower()
     if suffix == ".jsonl":
-        rows = [json.loads(line) for line in _decode(content).splitlines() if line.strip()]
+        rows = [_loads(line) for line in _decode(content).splitlines() if line.strip()]
     elif suffix == ".json":
-        data = json.loads(_decode(content))
+        data = _loads(_decode(content))
         rows = data if isinstance(data, list) else [data]
     elif suffix == ".csv":
         # dtype=str 禁类型推断（"007"→7、长 ID→float 丢精度、"true"→bool）；

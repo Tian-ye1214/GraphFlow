@@ -28,6 +28,15 @@ def test_json_path_get_negative_and_root():
     assert nodes.json_path_get({"a": 1}, "a") == 1
 
 
+async def test_run_http_fetch_row_nan_response_neutralized(monkeypatch):
+    """接口响应含非法 NaN token：归一为 None→空串，不让非法浮点落库致读行端点 500。"""
+    async def fake_fetch(method, url, headers=None, body=None, timeout=30, retries=2):
+        return 200, '{"v": NaN}'
+    monkeypatch.setattr("app.services.http.fetch", fake_fetch)
+    out, _ = await nodes.run_http_fetch_row({"url": "http://x", "extract": {"got": "v"}}, {"q": "a"})
+    assert out == [{"q": "a", "got": ""}]
+
+
 async def test_run_http_fetch_row_renders_and_extracts(monkeypatch):
     seen = {}
 

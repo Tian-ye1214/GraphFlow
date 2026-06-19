@@ -44,6 +44,21 @@ async def test_timeout_kills(monkeypatch):
         await run_process_code(code, ROWS)
 
 
+async def test_early_exit_without_output_raises_clean():
+    """用户代码 sys.exit/os._exit 提前退出(rc=0 但未写 out.json)→ 清晰中文 ValueError，不裸 FileNotFoundError 泄漏临时路径。"""
+    for code in ("import sys\ndef process(rows):\n    return rows\nsys.exit(0)\n",
+                 "import os\ndef process(rows):\n    return rows\nos._exit(0)\n"):
+        with pytest.raises(ValueError, match="未产出结果"):
+            await run_process_code(code, ROWS)
+
+
+async def test_nan_inf_output_not_silently_stored():
+    """用户代码返回 NaN/Infinity（非法 JSON token）→ 写出阶段即失败，不静默落库致读行端点 500。"""
+    code = "def process(rows):\n    return [{'a': float('nan'), 'b': float('inf')}]\n"
+    with pytest.raises(ValueError):
+        await run_process_code(code, ROWS)
+
+
 async def test_pandas_grouped_dedup_runs_in_subprocess():
     rows = [
         {"session": "s1", "q": "a"}, {"session": "s1", "q": "a"},

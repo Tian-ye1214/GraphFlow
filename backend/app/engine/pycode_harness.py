@@ -25,7 +25,9 @@ def main() -> int:
         traceback.print_exc()
         return 1
     with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(out, f, ensure_ascii=False)
+        # allow_nan=False：用户代码返回 NaN/Infinity（非法 JSON token）时此处即失败(rc!=0)，
+        # 而非写出非标准 token 落库、等读行端点 Starlette(allow_nan=False) 渲染时 500。
+        json.dump(out, f, ensure_ascii=False, allow_nan=False)
     return 0
 
 

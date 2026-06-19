@@ -181,7 +181,8 @@ def _merge_branches(node_id: str, branches: list[list[dict]]) -> list[dict]:
         row: dict = {}
         for b in branches:
             for k, v in b[i].items():
-                if k in row and row[k] != v:
+                # 同时比类型：否则 0/False、1/True、0/0.0 数值相等但语义不同会被静默合并（后写覆盖先写）
+                if k in row and (type(row[k]) is not type(v) or row[k] != v):
                     raise ValueError(f"节点 {node_id}: 第 {i} 行列 '{k}' 在多个上游取值不同，"
                                      f"无法合并（请为各分支产出列改用不同列名）")
                 row[k] = v
@@ -202,7 +203,9 @@ async def _write_unit(session_factory, run_id, node_id, row_idx, status, out_row
         if drop:
             drop_set = set(drop)
             out_rows = [{k: v for k, v in r.items() if k not in drop_set} for r in out_rows]
-        rec.data_json = json.dumps(out_rows, ensure_ascii=False)
+        # allow_nan=False：任何节点产出含 NaN/Infinity（如模型 json 模式返回、用户代码）时此处即抛 ValueError
+        # 被 run.failed 路径捕获，而非把非标准 token 落库、等读行端点渲染时 500。
+        rec.data_json = json.dumps(out_rows, ensure_ascii=False, allow_nan=False)
         rec.error = error
         rec.attempt = (rec.attempt or 0) + 1
         rec.qc_round = qc_round
@@ -236,7 +239,7 @@ async def _run_barrier_node(session_factory, run_id, user_id, node: Node, inputs
         return  # 断点续跑：单元已完成；补写状态以修复「单元已写、状态未写」的崩溃窗口
     await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running", total=1, done=0, failed=0)
     try:
-        out = await _barrier_output(session_factory, user_id, node, inputs)
+        out = await _barrier_output(session_factory, user_id, node, inputs, run_id=run_id)
     except Exception as e:
         await _write_unit(session_factory, run_id, node.id, 0, "failed", [], str(e))
         await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="failed", total=1, done=0, failed=1)
@@ -246,7 +249,7 @@ async def _run_barrier_node(session_factory, run_id, user_id, node: Node, inputs
     await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="done", total=1, done=1, failed=0)
 
 
-async def _barrier_output(session_factory, user_id, node: Node, inputs) -> list[dict]:
+async def _barrier_output(session_factory, user_id, node: Node, inputs, run_id: int | None = None) -> list[dict]:
     cfg = node.config
     if node.type == "input":
         rows: list[dict] = []
@@ -260,11 +263,15 @@ async def _barrier_output(session_factory, user_id, node: Node, inputs) -> list[
         return await nodes.apply_operations_with_agent(
             inputs, cfg.get("operations", []), seed=cfg.get("seed"))
     if node.type == "output":
+        # 先按 drop_columns 剔列，使 save_as_dataset 落库数据集与节点 RunRow 输出/声明血缘一致——
+        # 被标记删除的列不应泄漏进最终训练数据集。（_write_unit 之后会再 drop 一次，幂等无害。）
+        drop = set(cfg.get("drop_columns") or [])
+        out = [{k: v for k, v in r.items() if k not in drop} for r in inputs] if drop else inputs
         if cfg.get("save_as_dataset"):
             async with session_factory() as s:
                 await create_dataset(s, user_id, cfg.get("dataset_name", "运行结果"),
-                                     inputs, source="run")
-        return inputs
+                                     out, source="run", run_id=run_id, node_id=node.id)
+        return out
     raise ValueError(f"未知节点类型: {node.type}")
 
 

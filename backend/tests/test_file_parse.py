@@ -116,3 +116,23 @@ def test_xlsx_datetime_becomes_iso_string():
     assert isinstance(rows[0]["ts"], str) and rows[0]["ts"].startswith("2024-01-15")
     for row in rows:
         json.dumps(row, ensure_ascii=False)
+
+
+def test_json_nan_infinity_normalized_to_null():
+    """JSON/JSONL 的非标准 NaN/Infinity/-Infinity 归一为 None(null)：否则落库后 Starlette(allow_nan=False) 渲染时 500。"""
+    rows = parse_file("a.json", b'[{"x": NaN, "y": Infinity, "z": -Infinity, "ok": "v"}]')
+    assert rows == [{"x": None, "y": None, "z": None, "ok": "v"}]
+    rows = parse_file("a.jsonl", b'{"x": NaN}\n{"y": Infinity}\n')
+    assert rows == [{"x": None}, {"y": None}]
+    for row in rows:  # 归一后必须能被标准(allow_nan=False)序列化，等价 Starlette 渲染
+        json.dumps(row, allow_nan=False)
+
+
+def test_json_deep_nesting_raises_valueerror():
+    """深层嵌套 JSON 触发 RecursionError(非 ValueError) → 归一为 ValueError(上传边界转 422)，不逃逸 500。"""
+    deep = ('[{"x":' + '[' * 6000 + '1' + ']' * 6000 + '}]').encode()
+    with pytest.raises(ValueError):
+        parse_file("deep.json", deep)
+    deepl = ('{"x":' + '[' * 6000 + '1' + ']' * 6000 + '}').encode()
+    with pytest.raises(ValueError):
+        parse_file("deep.jsonl", deepl)

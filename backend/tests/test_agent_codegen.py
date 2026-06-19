@@ -78,6 +78,23 @@ async def test_columns_propagate_through_llm(client, session_factory):
     assert source == "computed" and cols == ["q", "q_en"]
 
 
+async def test_gather_upstream_columns_dirty_graph_degrades(client, session_factory):
+    """脏草稿图(rename mapping 非 dict)：gather_upstream_columns 优雅降级 [],'none'，
+    使 codegen/node-assist 端点不因 columns.py 抛 AttributeError 而 500（对齐 workflow_columns）。"""
+    async with session_factory() as s:
+        ds = Dataset(user_id=1, name="d", columns_json=json.dumps(["a", "b"]))
+        s.add(ds); await s.flush()
+        graph = {"nodes": [
+            {"id": "input_1", "type": "input", "config": {"dataset_ids": [ds.id]}},
+            {"id": "auto_process_1", "type": "auto_process",
+             "config": {"operations": [{"op": "rename", "mapping": ["a", "b"]}]}}],
+            "edges": [{"source": "input_1", "target": "auto_process_1"}]}
+        wf = Workflow(user_id=1, name="w", graph_json=json.dumps(graph))
+        s.add(wf); await s.commit()
+        cols, source = await codegen.gather_upstream_columns(s, wf.id, "auto_process_1", user_id=1)
+    assert source == "none" and cols == []
+
+
 async def test_columns_none_when_node_missing(client, session_factory):
     async with session_factory() as s:
         wf = Workflow(user_id=1, name="w")
@@ -139,6 +156,73 @@ async def test_generate_code_non_json_raises_valueerror():
     model = FunctionModel(lambda m, i: ModelResponse(parts=[TextPart("抱歉我无法完成")]))
     with pytest.raises(ValueError, match="代码 JSON"):
         await codegen.generate_code(model, "去重", ["q"])
+
+
+async def test_generate_code_non_dict_json_raises_valueerror():
+    """模型返回合法 JSON 但非对象（[1,2,3]/"hi"/42）：抛 ValueError（路由→422），不 AttributeError→500。"""
+    import pytest
+    for payload in ("[1, 2, 3]", '"hi"', "42"):
+        model = FunctionModel(lambda m, i, p=payload: ModelResponse(parts=[TextPart(p)]))
+        with pytest.raises(ValueError):
+            await codegen.generate_code(model, "去重", ["q"])
+
+
+async def test_generate_node_config_non_dict_json_degrades_to_reply():
+    """节点助手：合法 JSON 但非对象 → 当纯对话回复（config=None），不 AttributeError→500。"""
+    for payload in ("[1, 2, 3]", "42"):
+        model = FunctionModel(lambda m, i, p=payload: ModelResponse(parts=[TextPart(p)]))
+        r = await codegen.generate_node_config(model, "llm_synth", "x", ["q"])
+        assert r["config"] is None
+
+
+async def test_generate_code_empty_completion_raises_valueerror():
+    """模型空补全（重试耗尽 UnexpectedModelBehavior，非 ValueError/ModelHTTPError）→ 可读 ValueError（路由→422），不 500。"""
+    import pytest
+    from pydantic_ai.exceptions import UnexpectedModelBehavior
+
+    def fn(m, i):
+        raise UnexpectedModelBehavior("Exceeded maximum output retries (1)")
+    with pytest.raises(ValueError):
+        await codegen.generate_code(FunctionModel(fn), "去重", ["q"])
+
+
+async def test_generate_node_config_empty_completion_degrades():
+    """节点助手：空补全 UnexpectedModelBehavior → 降级为本轮不产配置（config=None），不 500。"""
+    from pydantic_ai.exceptions import UnexpectedModelBehavior
+
+    def fn(m, i):
+        raise UnexpectedModelBehavior("Exceeded maximum output retries (1)")
+    r = await codegen.generate_node_config(FunctionModel(fn), "llm_synth", "x", ["q"])
+    assert r["config"] is None
+
+
+def test_raise_model_http_error_non_azure_to_502():
+    """openai/其它 provider 的模型网关 HTTP 错误 → HTTPException(502)，不重抛 ModelHTTPError→500。"""
+    import pytest
+    from fastapi import HTTPException
+    from pydantic_ai.exceptions import ModelHTTPError
+    from app.models import ModelConfig
+    from app.routers.agent import _raise_model_http_error
+    mc = ModelConfig(user_id=1, name="m", provider="openai", model_name="qwen", base_url="http://x")
+    for status in (400, 429, 503):
+        exc = ModelHTTPError(status_code=status, model_name="qwen", body={"error": "upstream"})
+        with pytest.raises(HTTPException) as ei:
+            _raise_model_http_error(exc, mc)
+        assert ei.value.status_code == 502
+
+
+def test_raise_model_http_error_azure_400_still_422():
+    """回归：azure provider 的 400 仍转 422（配置指引），不被通用 502 路径吃掉。"""
+    import pytest
+    from fastapi import HTTPException
+    from pydantic_ai.exceptions import ModelHTTPError
+    from app.models import ModelConfig
+    from app.routers.agent import _raise_model_http_error
+    mc = ModelConfig(user_id=1, name="m", provider="azure", model_name="dep", base_url="http://x")
+    exc = ModelHTTPError(status_code=400, model_name="dep", body={"error": "bad"})
+    with pytest.raises(HTTPException) as ei:
+        _raise_model_http_error(exc, mc)
+    assert ei.value.status_code == 422
 
 
 def test_instructions_guide_grouped_dedup():

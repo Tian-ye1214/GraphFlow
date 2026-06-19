@@ -133,7 +133,7 @@ async def run_model_logs(run_id: int, node_id: str | None = None, source: str | 
     if source is not None:
         stmt = stmt.where(ModelCallLog.source == source)
     rows = (await session.execute(
-        stmt.order_by(ModelCallLog.id.desc()).limit(min(limit, 500)))).scalars().all()
+        stmt.order_by(ModelCallLog.id.desc()).limit(min(max(limit, 0), 500)))).scalars().all()
     return [_out(r) for r in rows]
 
 

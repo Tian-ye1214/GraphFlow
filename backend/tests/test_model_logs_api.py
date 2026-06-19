@@ -32,6 +32,16 @@ async def test_list_model_logs_isolated_and_filtered(auth_client, session_factor
     assert r2.json()[0]["request"] == [{"role": "user", "content": "q"}]
 
 
+async def test_list_model_logs_negative_limit_capped(auth_client, session_factory):
+    """limit=-1 不应绕过上限返回全部行（SQLite LIMIT -1 = 无限）：负数钳为非负。"""
+    me = (await auth_client.get("/api/me")).json()["id"]
+    for _ in range(3):
+        await _seed(session_factory, user_id=me, source="synth")
+    r = await auth_client.get("/api/model-logs?limit=-1")
+    assert r.status_code == 200 and len(r.json()) == 0   # 负数钳为 0，不再返回全部
+    assert len((await auth_client.get("/api/model-logs?limit=2")).json()) == 2   # 回归：正常 limit 生效
+
+
 async def test_run_model_logs_scoped(auth_client, session_factory):
     me = (await auth_client.get("/api/me")).json()["id"]
     rid = await _run(session_factory, me)
