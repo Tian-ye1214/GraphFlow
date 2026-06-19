@@ -10,8 +10,10 @@ def test_discovers_gf_cli_skill():
 def test_load_instructions_and_resources():
     sm = SkillsManager(SKILLS_DIR)
     assert "gf" in sm.load_skill_instructions("gf-cli")
-    assert "reference.md" in sm.list_skill_resources("gf-cli")
-    assert sm.load_skill_resource("gf-cli", "reference.md")
+    resources = sm.list_skill_resources("gf-cli")
+    res = next((r for r in resources if "build-pipeline.ps1" in r), None)
+    assert res is not None
+    assert sm.load_skill_resource("gf-cli", res)
 
 
 def test_resource_escape_blocked():

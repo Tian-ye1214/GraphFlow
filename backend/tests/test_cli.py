@@ -57,6 +57,19 @@ def test_st_without_login_dies(server, capsys):
     assert "gf login" in capsys.readouterr().err
 
 
+def test_logout_clears_state(server, capsys):
+    gf("login", "tester", "--server", server)
+    gf("wf", "add", "流X"); gf("use", "流X")
+    capsys.readouterr()
+    gf("logout")
+    assert "已登出" in capsys.readouterr().out
+    state = json.loads(cli.STATE_FILE.read_text(encoding="utf-8"))
+    assert not state.get("cookie") and not state.get("workflow_id")
+    assert state.get("server") == server   # server 保留，方便重登
+    with pytest.raises(SystemExit):        # 登出后需重新登录
+        gf("st")
+
+
 def login_and_wf(server: str, name: str = "流"):
     gf("login", "tester", "--server", server)
     gf("wf", "add", name)
@@ -285,6 +298,19 @@ def test_data_up_missing_file_dies(server, capsys):
     assert "文件不存在" in capsys.readouterr().err
 
 
+def test_data_download(server, capsys, tmp_path):
+    gf("login", "tester", "--server", server)
+    seed = tmp_path / "下载集.jsonl"
+    seed.write_text('{"q": "甲"}\n{"q": "乙"}\n', encoding="utf-8")
+    gf("data", "up", str(seed))
+    out = tmp_path / "out.jsonl"
+    capsys.readouterr()
+    gf("data", "download", "下载集", "-o", str(out))
+    assert "已下载" in capsys.readouterr().out
+    lines = [json.loads(l) for l in out.read_text(encoding="utf-8").strip().splitlines()]
+    assert len(lines) == 2 and lines[0]["q"] == "甲"
+
+
 def test_cli_full_chain(server, capsys, tmp_path, monkeypatch):
     from app.services import llm
 
@@ -374,3 +400,227 @@ def test_node_set_judge_models_and_pass_k(server, capsys):
     node = json.loads(capsys.readouterr().out)
     assert node["config"]["judge_model_ids"] == [1, 2]
     assert node["config"]["pass_k"] == 2
+
+
+def test_wf_rename(server, capsys):
+    login_and_wf(server, "旧名")
+    gf("wf", "rename", "旧名", "新名")
+    capsys.readouterr()
+    gf("wf", "ls")
+    out = capsys.readouterr().out
+    assert "新名" in out and "旧名" not in out
+
+
+def test_cols_shows_lineage(server, capsys, tmp_path):
+    gf("login", "tester", "--server", server)
+    seed = tmp_path / "种子.jsonl"
+    seed.write_text('{"q": "问0"}\n', encoding="utf-8")
+    gf("data", "up", str(seed))
+    gf("wf", "add", "血缘流"); gf("use", "血缘流")
+    gf("node", "add", "input"); gf("node", "set", "input_1", "dataset=种子")
+    gf("node", "add", "llm"); gf("node", "set", "llm_synth_1", "out=a")
+    gf("link", "input_1", "llm_synth_1")
+    capsys.readouterr()
+    gf("cols")
+    out = capsys.readouterr().out
+    assert "llm_synth_1" in out and "q" in out and "a" in out
+
+
+def test_cols_unknown_node_dies(server, capsys):
+    login_and_wf(server)
+    gf("node", "add", "llm")
+    with pytest.raises(SystemExit) as e:
+        gf("cols", "不存在节点")
+    assert e.value.code == 1
+    assert "不存在" in capsys.readouterr().err
+
+
+def test_node_prompt_from_file(server, capsys, tmp_path):
+    login_and_wf(server)
+    gf("node", "add", "llm")
+    pf = tmp_path / "p.md"
+    pf.write_text("# 指令\n把 {{q}} 翻译成英文\n", encoding="utf-8")
+    gf("node", "prompt", "llm_synth_1", "--user", "--file", str(pf))
+    capsys.readouterr()
+    gf("node", "show", "llm_synth_1")
+    node = json.loads(capsys.readouterr().out)
+    assert node["config"]["user_prompt"] == "# 指令\n把 {{q}} 翻译成英文\n"
+
+
+def test_node_prompt_from_stdin(server, capsys, monkeypatch, tmp_path):
+    import io
+    login_and_wf(server)
+    gf("node", "add", "qc")
+    monkeypatch.setattr("sys.stdin", io.StringIO("判定规则：必须为 JSON"))
+    gf("node", "prompt", "qc_1", "--system", "-")
+    capsys.readouterr()
+    gf("node", "show", "qc_1")
+    node = json.loads(capsys.readouterr().out)
+    assert node["config"]["system_prompt"] == "判定规则：必须为 JSON"
+
+
+def test_node_prompt_requires_field_and_source(server, capsys):
+    login_and_wf(server)
+    gf("node", "add", "llm")
+    with pytest.raises(SystemExit) as e:   # 缺 --system/--user：argparse 互斥必填
+        gf("node", "prompt", "llm_synth_1", "--file", "x")
+    assert e.value.code == 2
+
+
+def test_node_set_new_keys(server, capsys):
+    login_and_wf(server)
+    gf("model", "add", "m", "--url", "http://x/v1", "--model", "q", "--key", "k")
+    gf("node", "add", "llm")
+    gf("node", "set", "llm_synth_1", "drop=secret,tmp", "outs=q_en,cat_en",
+       "think=on", "effort=high")
+    capsys.readouterr()
+    gf("node", "show", "llm_synth_1")
+    c = json.loads(capsys.readouterr().out)["config"]
+    assert c["drop_columns"] == ["secret", "tmp"]
+    assert c["output_columns"] == ["q_en", "cat_en"]
+    assert c["params"]["thinking_enabled"] is True
+    assert c["params"]["reasoning_effort"] == "high"
+
+
+def test_node_set_qc_status_feedback_cols(server, capsys):
+    login_and_wf(server)
+    gf("node", "add", "qc")
+    gf("node", "set", "qc_1", "status_col=verdict", "feedback_col=fb")
+    capsys.readouterr()
+    gf("node", "show", "qc_1")
+    c = json.loads(capsys.readouterr().out)["config"]
+    assert c["status_column"] == "verdict" and c["feedback_column"] == "fb"
+
+
+def test_node_set_http_headers(server, capsys):
+    login_and_wf(server)
+    gf("node", "add", "http")
+    gf("node", "set", "http_fetch_1", "headers=Authorization:Bearer x,X-Tag:demo")
+    capsys.readouterr()
+    gf("node", "show", "http_fetch_1")
+    c = json.loads(capsys.readouterr().out)["config"]
+    assert c["headers"] == {"Authorization": "Bearer x", "X-Tag": "demo"}
+
+
+def test_node_set_think_off(server, capsys):
+    login_and_wf(server)
+    gf("node", "add", "llm")
+    gf("node", "set", "llm_synth_1", "think=off")
+    capsys.readouterr()
+    gf("node", "show", "llm_synth_1")
+    assert json.loads(capsys.readouterr().out)["config"]["params"]["thinking_enabled"] is False
+
+
+def test_wf_dump_load_roundtrip(server, capsys, tmp_path):
+    login_and_wf(server, "导出流")
+    gf("node", "add", "input"); gf("node", "add", "output")
+    gf("link", "input_1", "output_1")
+    dump = tmp_path / "graph.json"
+    gf("wf", "dump", "-o", str(dump))
+    graph = json.loads(dump.read_text(encoding="utf-8"))
+    assert {n["id"] for n in graph["nodes"]} == {"input_1", "output_1"}
+    # 改名后 load 回去
+    gf("wf", "add", "空流"); gf("use", "空流")
+    gf("wf", "load", str(dump))
+    capsys.readouterr()
+    gf("show")
+    assert "input_1 -> output_1" in capsys.readouterr().out
+
+
+def _build_and_run(server, tmp_path, monkeypatch):
+    from app.services import llm
+
+    async def fake_chat(mc, system, user, params=None, retries=3):
+        return f"答[{user}]", {"prompt_tokens": 1, "completion_tokens": 2}
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    seed = tmp_path / "种子.jsonl"
+    seed.write_text('{"q": "问0"}\n{"q": "问1"}\n', encoding="utf-8")
+    gf("login", "tester", "--server", server)
+    gf("model", "add", "通义", "--url", "http://x/v1", "--model", "qwen", "--key", "k")
+    gf("data", "up", str(seed))
+    gf("wf", "add", "链"); gf("use", "链")
+    gf("node", "add", "input"); gf("node", "set", "input_1", "dataset=种子")
+    gf("node", "add", "llm"); gf("node", "set", "llm_synth_1", "prompt=Q:{{q}}", "model=通义", "out=a")
+    gf("node", "add", "output")
+    gf("link", "input_1", "llm_synth_1"); gf("link", "llm_synth_1", "output_1")
+    gf("run", "-f")
+
+
+def test_rows_default_output_node(server, capsys, tmp_path, monkeypatch):
+    _build_and_run(server, tmp_path, monkeypatch)
+    capsys.readouterr()
+    gf("rows", "1")
+    out = capsys.readouterr().out
+    assert "答[Q:问0]" in out and "答[Q:问1]" in out
+
+
+def test_rows_specific_node(server, capsys, tmp_path, monkeypatch):
+    _build_and_run(server, tmp_path, monkeypatch)
+    capsys.readouterr()
+    gf("rows", "1", "--node", "input_1")
+    assert "问0" in capsys.readouterr().out
+
+
+def test_logs_shows_timeline(server, capsys, tmp_path, monkeypatch):
+    _build_and_run(server, tmp_path, monkeypatch)
+    capsys.readouterr()
+    gf("logs", "1")
+    out = capsys.readouterr().out
+    assert out.strip()   # 至少有日志行（含节点名/级别）
+
+
+def test_qc_prints_metrics_and_failures(server, capsys, tmp_path):
+    import json as _json
+    from app.config import settings as _s
+    from app.db import get_session_factory
+    from app.models import Run, User, QcMetric, QcFailure
+    from sqlalchemy import select
+    import asyncio
+
+    gf("login", "tester", "--server", server)
+
+    async def seed():
+        sf = get_session_factory()
+        async with sf() as s:
+            uid = (await s.execute(select(User).where(User.username == "tester"))).scalar_one().id
+            run = Run(user_id=uid, workflow_id=0, workflow_version_id=0, status="completed")
+            s.add(run); await s.commit(); rid = run.id
+            s.add(QcMetric(run_id=rid, node_id="qc1", total=10, first_round_pass=6))
+            s.add(QcFailure(run_id=rid, node_id="qc1", sample_json='{"q":"x"}',
+                            reasons_json=_json.dumps([{"model_config_id": 1, "status": "failed", "reason": "短"}])))
+            await s.commit()
+            return rid
+
+    rid = asyncio.new_event_loop().run_until_complete(seed())
+    capsys.readouterr()
+    gf("qc", str(rid))
+    out = capsys.readouterr().out
+    assert "60" in out and "短" in out   # 首轮通过率 60% + 失败原因
+    dl = tmp_path / "fail.jsonl"
+    gf("qc", str(rid), "--download", "-o", str(dl))
+    rec = _json.loads(dl.read_text(encoding="utf-8").strip().splitlines()[0])
+    assert rec["_qc_model_1"] == "failed"
+
+
+def test_rmrun_single_and_all(server, capsys, tmp_path, monkeypatch):
+    _build_and_run(server, tmp_path, monkeypatch)   # 产生运行 #1
+    capsys.readouterr()
+    gf("rmrun", "1")
+    assert "已删除运行 #1" in capsys.readouterr().out
+    gf("runs")
+    assert "链" not in capsys.readouterr().out
+    # 复用已有工作流再跑一次产生新运行，--all 清空
+    gf("use", "链"); gf("run", "-f")
+    capsys.readouterr()
+    gf("rmrun", "--all")
+    assert "已清空" in capsys.readouterr().out
+    gf("runs")
+    assert capsys.readouterr().out.strip() == ""
+
+
+def test_rmrun_requires_id_or_all(server, capsys):
+    gf("login", "tester", "--server", server)
+    with pytest.raises(SystemExit) as e:
+        gf("rmrun")
+    assert e.value.code == 2   # 既无 run_id 也无 --all

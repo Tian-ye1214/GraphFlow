@@ -1,9 +1,12 @@
+import asyncio
 import json
 import re
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy import delete as sa_delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +15,7 @@ from app.config import settings
 from app.db import get_session
 from app.events import publish
 from app.models import Dataset, DatasetRow, User
+from app.services.export import export_rows
 from app.services.file_parse import parse_file, parse_sheets, union_columns
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
@@ -94,6 +98,21 @@ async def dataset_rows(ds_id: int, page: int = 1, page_size: int = 20,
             .order_by(DatasetRow.idx).offset((page - 1) * page_size).limit(page_size))
     rows = (await session.execute(stmt)).scalars().all()
     return {"total": ds.row_count, "rows": [json.loads(r.data_json) for r in rows]}
+
+
+@router.get("/{ds_id}/export")
+async def export_dataset(ds_id: int, format: Literal["jsonl", "csv", "xlsx"] = "jsonl",
+                         user: User = Depends(get_current_user),
+                         session: AsyncSession = Depends(get_session)):
+    ds = await _get_owned(ds_id, user, session)
+    recs = (await session.execute(select(DatasetRow).where(
+        DatasetRow.dataset_id == ds.id).order_by(DatasetRow.idx))).scalars().all()
+    rows = [json.loads(r.data_json) for r in recs]
+    safe = re.sub(r'[\\/:*?"<>|]', "_", ds.name)   # 与 upload 同款清洗，杜绝路径穿越
+    filename = f"{safe}.{format}"
+    path = await asyncio.to_thread(
+        export_rows, rows, format, settings.data_dir / "exports" / filename)
+    return FileResponse(path, filename=filename)
 
 
 @router.delete("/{ds_id}")
