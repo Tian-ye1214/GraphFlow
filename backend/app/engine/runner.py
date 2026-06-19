@@ -2,7 +2,7 @@ import asyncio
 import json
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update as sa_update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.engine import nodes
@@ -59,6 +59,10 @@ async def _resolve_prompt_refs(session_factory, graph, user_id: int) -> None:
         for slot in ("system_prompt", "user_prompt"):
             pid = node.config.get(f"{slot}_ref")
             if pid:
+                # ref 须为正整数：脏草稿 config 里 list/dict(不可哈希)、超大 int(SQLite 溢出)、
+                # 'abc'/负数/bool 等一律点名 ValueError（整 run failed 点名节点），不暴露内部异常
+                if isinstance(pid, bool) or not isinstance(pid, int) or not (1 <= pid <= 2 ** 63 - 1):
+                    raise ValueError(f"节点 {node.id} 引用的提示词 #{pid} 无效")
                 bodies[pid] = ""
                 ref_node.setdefault(pid, node.id)
     if not bodies:
@@ -135,6 +139,10 @@ async def _finish(session_factory, run_id, status):
     async with session_factory() as s:
         run = await s.get(Run, run_id)
         user_id = run.user_id
+        # run 到达终态时，被取消/未跑完节点的 RunNodeState 不应停留在 'running'（否则 GET /runs/{id}
+        # 在已结束 run 上返回 status='running' 的节点，前端渲染永久「运行中」）；置为 run 终态
+        await s.execute(sa_update(RunNodeState).where(
+            RunNodeState.run_id == run_id, RunNodeState.status == "running").values(status=status))
         sums = (await s.execute(
             select(func.coalesce(func.sum(RunRow.prompt_tokens), 0),
                    func.coalesce(func.sum(RunRow.completion_tokens), 0))
@@ -325,6 +333,17 @@ async def _run_llm_node(session_factory, run_id, user_id, node: Node, inputs,
 
 async def _run_http_node(session_factory, run_id, user_id, node: Node, inputs, cancel_event):
     cfg = node.config
+    # 脏草稿 config 形状预校验(对照 _run_llm_node 的 fanout_n)：非字符串 url/body、非 dict headers/extract
+    # 会在逐行渲染时抛裸 TypeError/AttributeError——这是节点配置错误(非行数据)，应整 run failed 点名节点，
+    # 而非逐行裸 Python 错误且 run 误报 completed。
+    if not isinstance(cfg.get("url", ""), str):
+        raise ValueError(f"http_fetch 节点 {node.id}: url 必须为字符串，当前为 {type(cfg.get('url')).__name__}")
+    if cfg.get("body") and not isinstance(cfg.get("body"), str):
+        raise ValueError(f"http_fetch 节点 {node.id}: body 必须为字符串，当前为 {type(cfg.get('body')).__name__}")
+    if cfg.get("headers") is not None and not isinstance(cfg.get("headers"), dict):
+        raise ValueError(f"http_fetch 节点 {node.id}: headers 必须为对象，当前为 {type(cfg.get('headers')).__name__}")
+    if cfg.get("extract") is not None and not isinstance(cfg.get("extract"), dict):
+        raise ValueError(f"http_fetch 节点 {node.id}: extract 必须为对象，当前为 {type(cfg.get('extract')).__name__}")
     async with session_factory() as s:
         existing = (await s.execute(select(RunRow.row_idx, RunRow.status).where(
             RunRow.run_id == run_id, RunRow.node_id == node.id))).all()
@@ -385,6 +404,29 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
         return
     if not jmcs or any(m is None or m.user_id != user_id for m in jmcs):
         raise ValueError(f"质检节点 {node.id}: 判定模型配置不存在")
+    # pass_k 钳到 [1, 模型数]：<=0 会让 n_pass>=pass_k 恒真→所有样本无条件过检(质检门禁被绕过，
+    # 且污染目标模式 first_round_rate 恒 1.0)；>N 永不可达。非法/非 int 退化为默认 1。
+    try:
+        pass_k = int(pass_k)
+    except (TypeError, ValueError):
+        pass_k = 1
+    pass_k = max(1, min(pass_k, len(jmcs)))
+    # 状态/反馈列名撞输入已有数据列 → 写回时会静默覆盖用户原始列(对照 rename 撞列已 raise)：整 run failed 点名。
+    # 但上游 QC 节点产出的同名 qc 列允许被本节点覆盖刷新（链式 QC→QC 是合法拓扑、qc 列会透传下来），
+    # 只对真正的用户/其它数据列撞名报错。
+    anc, stack = set(), list(upstream_ids(graph, node.id))
+    while stack:
+        nid = stack.pop()
+        if nid not in anc:
+            anc.add(nid)
+            stack.extend(upstream_ids(graph, nid))
+    upstream_qc_cols = {c for n in graph.nodes if n.id in anc and n.type == "qc"
+                        for c in ((n.config.get("status_column") or "qc_status"),
+                                  (n.config.get("feedback_column") or "qc_feedback"))}
+    existing_cols = {k for r in inputs for k in nodes.strip_qc_internal(r)} - upstream_qc_cols
+    for col in (status_col, feedback_col):
+        if col in existing_cols:
+            raise ValueError(f"质检节点 {node.id}: 输出列 {col} 与输入已有列同名，将覆盖原始数据，请改用其他列名")
     await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running",
                           total=len(inputs), done=0, failed=0)
     usage = {"prompt_tokens": 0, "completion_tokens": 0}

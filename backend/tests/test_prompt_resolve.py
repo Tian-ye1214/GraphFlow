@@ -39,3 +39,12 @@ async def test_resolve_missing_names_node(auth_client, session_factory):
     graph = _graph({"user_prompt_ref": 99999})   # 节点 id 为 n1
     with pytest.raises(ValueError, match="n1"):
         await _resolve_prompt_refs(session_factory, graph, await _uid(session_factory))
+
+
+@pytest.mark.parametrize("bad", [[1, 2], {"a": 1}, 10 ** 30, -5, "abc", True])
+async def test_resolve_invalid_ref_type_named(auth_client, session_factory, bad):
+    """脏草稿 config 的非法 ref(list/dict 不可哈希、超大 int SQLite 溢出、负数/字符串/bool)
+    应统一点名 ValueError 整 run failed，不暴露 unhashable/OverflowError 等内部异常。"""
+    graph = _graph({"system_prompt_ref": bad})
+    with pytest.raises(ValueError, match="n1"):
+        await _resolve_prompt_refs(session_factory, graph, await _uid(session_factory))

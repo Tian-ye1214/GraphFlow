@@ -60,10 +60,13 @@ NODE_ASSIST_INSTRUCTIONS = {
 def _to_history(history: list[dict] | None) -> list:
     msgs = []
     for h in history or []:
+        # 前端不可信 history：text 非字符串(int/float/bool)会令 pydantic_ai 在估算 token/映射消息时
+        # `for part in content` 抛 TypeError，node-assist 端点未捕获→500；统一强转为字符串
+        text = str(h.get("text") or "")
         if h.get("role") == "user":
-            msgs.append(ModelRequest(parts=[UserPromptPart(content=h.get("text", ""))]))
+            msgs.append(ModelRequest(parts=[UserPromptPart(content=text)]))
         else:
-            msgs.append(ModelResponse(parts=[TextPart(content=h.get("text", ""))]))
+            msgs.append(ModelResponse(parts=[TextPart(content=text)]))
     return msgs
 
 

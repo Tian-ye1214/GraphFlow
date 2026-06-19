@@ -7,6 +7,12 @@ import pytest
 from app.services.file_parse import parse_file, parse_sheets, union_columns
 
 
+def test_csv_null_byte_not_truncated():
+    """CSV 单元格含 \\x00 不得被 pandas C 解析器静默截断丢数据：NUL 中和后保留可见内容。"""
+    assert parse_file("n.csv", b"a\nbefore\x00after\n") == [{"a": "beforeafter"}]
+    assert parse_file("n.csv", b"c1,c2\nfoo\x00bar,second\n") == [{"c1": "foobar", "c2": "second"}]
+
+
 def test_jsonl():
     content = '{"q": "你好", "a": "world"}\n\n{"q": "第二行"}\n'.encode("utf-8")
     rows = parse_file("a.jsonl", content)
