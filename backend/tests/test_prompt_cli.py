@@ -44,3 +44,33 @@ def test_prompt_rollback_and_dup_and_rm(server, capsys, tmp_path):
     capsys.readouterr()
     gf("prompt", "ls")
     assert "P2" not in capsys.readouterr().out
+
+
+def _wf_with_node(server):
+    gf("login", "tester", "--server", server)
+    gf("wf", "add", "流"); gf("use", "流"); gf("node", "add", "llm", "n1")
+
+
+def test_node_prompt_library_ref(server, capsys, tmp_path):
+    _wf_with_node(server)
+    f = tmp_path / "p.md"; f.write_text("模板 {{q}}", encoding="utf-8")
+    gf("prompt", "add", "P", "--file", str(f))
+    capsys.readouterr()
+    gf("node", "prompt", "n1", "--system", "--library", "P", "--ref")
+    assert "引用" in capsys.readouterr().out
+    capsys.readouterr()
+    gf("node", "show", "n1")
+    assert "system_prompt_ref" in capsys.readouterr().out
+
+
+def test_node_prompt_library_copy(server, capsys, tmp_path):
+    _wf_with_node(server)
+    f = tmp_path / "p.md"; f.write_text("正文内容 {{q}}", encoding="utf-8")
+    gf("prompt", "add", "P", "--file", str(f))
+    capsys.readouterr()
+    gf("node", "prompt", "n1", "--user", "--library", "P", "--copy")
+    assert "复制" in capsys.readouterr().out
+    capsys.readouterr()
+    gf("node", "show", "n1")
+    shown = capsys.readouterr().out
+    assert "正文内容" in shown and "user_prompt_ref" not in shown
