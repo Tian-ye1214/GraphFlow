@@ -33,5 +33,5 @@ async def list_model_logs(source: str | None = None, run_id: int | None = None,
     if node_id is not None:
         stmt = stmt.where(ModelCallLog.node_id == node_id)
     rows = (await session.execute(
-        stmt.order_by(ModelCallLog.id.desc()).offset(offset).limit(min(limit, 500)))).scalars().all()
+        stmt.order_by(ModelCallLog.id.desc()).offset(offset).limit(min(max(limit, 0), 500)))).scalars().all()
     return [_out(r) for r in rows]
