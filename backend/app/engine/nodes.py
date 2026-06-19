@@ -49,7 +49,14 @@ def _filter(rows, op, rng):
 
 def _rename(rows, op, rng):
     mapping = op["mapping"]
-    return [{mapping.get(k, k): v for k, v in r.items()} for r in rows]
+    out = []
+    for r in rows:
+        new_keys = [mapping.get(k, k) for k in r]
+        if len(set(new_keys)) != len(new_keys):   # 多列映射到同名：报错点名，不静默后写覆盖丢列
+            dup = sorted({k for k in new_keys if new_keys.count(k) > 1})
+            raise ValueError(f"rename 列名冲突：多列映射到同名 {dup}（请改用不同目标列名）")
+        out.append(dict(zip(new_keys, r.values())))
+    return out
 
 
 def _drop(rows, op, rng):
@@ -168,6 +175,8 @@ async def run_llm_synth_row(config: dict, row: dict, mc: ModelConfig,
     params = config.get("params", {})
     retries = config.get("retries", 3)
     fanout = config.get("fanout_n", 1)
+    if not isinstance(fanout, int) or fanout < 1:   # <1 会 range(0) 静默产出 0 行却记 done，输入行凭空丢失
+        raise ValueError(f"fanout_n 必须为 ≥1 的整数，当前为 {fanout!r}")
 
     async def one() -> tuple[str, dict]:
         async with user_sem:
@@ -192,7 +201,8 @@ async def run_llm_synth_row(config: dict, row: dict, mc: ModelConfig,
                 raise ValueError("LLM 返回的不是 JSON 对象")
             out_rows.append({**base, **parsed})
         else:
-            out_rows.append({**base, config.get("output_column", "output"): text})
+            # falsy 兜底 'output'（与 columns.py 血缘一致）：空串 output_column 不应落进无名 '' 列
+            out_rows.append({**base, (config.get("output_column") or "output"): text})
     return out_rows, usage_total
 
 

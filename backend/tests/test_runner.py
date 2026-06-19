@@ -323,6 +323,30 @@ async def test_merge_column_conflict_fails(session_factory, monkeypatch):
     assert run.status == "failed" and "取值不同" in run.error
 
 
+def test_merge_conflict_distinguishes_int_bool_float():
+    """合并冲突检测须比类型：0/False、1/True、0/0.0 数值相等但语义不同，应报冲突而非静默用一支覆盖。"""
+    import pytest
+    for a, b in ((0, False), (1, True), (0, 0.0)):
+        with pytest.raises(ValueError, match="取值不同"):
+            runner._merge_branches("m", [[{"k": a}], [{"k": b}]])
+    assert runner._merge_branches("m", [[{"k": 5}], [{"k": 5}]]) == [{"k": 5}]  # 同类型相等不报(回归)
+
+
+async def test_output_drop_columns_applied_to_saved_dataset(session_factory, monkeypatch):
+    """output 节点 drop_columns 须同样作用于 save_as_dataset 落库数据集（被删列不泄漏进训练集）。"""
+    patch_chat(monkeypatch)
+    graph = json.loads(json.dumps(GRAPH))
+    graph["nodes"][2]["config"] = {"save_as_dataset": True, "dataset_name": "去列集", "drop_columns": ["q"]}
+    run_id = await make_run(session_factory, graph=graph)
+    await run_it(session_factory, run_id)
+    async with session_factory() as s:
+        ds = (await s.execute(select(Dataset).where(Dataset.name == "去列集"))).scalar_one()
+        rows = (await s.execute(select(DatasetRow).where(DatasetRow.dataset_id == ds.id))).scalars().all()
+    saved = [json.loads(r.data_json) for r in rows]
+    assert saved and all("q" not in r and "a" in r for r in saved)   # 被删列 q 不进落库集，产出列 a 保留
+    assert json.loads(ds.columns_json) == ["a"]
+
+
 async def test_rescan_fanout_no_inflation(session_factory, monkeypatch):
     """回扫目标带 fanout_n>1：回扫应一行换一行，不得让通过数超过输入、failed 计负、产物翻倍。"""
     def fn(user):

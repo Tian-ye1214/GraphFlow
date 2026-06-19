@@ -28,4 +28,6 @@ async def run_process_code(code: str, rows: list[dict]) -> list[dict]:
             raise ValueError(f"智能处理代码执行超时（{CODE_TIMEOUT} 秒）")
         if rc != 0:
             raise ValueError(f"智能处理代码执行失败:\n{err[-2000:]}")
+        if not out_p.exists():   # rc=0 但未产出（用户代码 sys.exit/os._exit 提前退出）：清晰报错，不裸 FileNotFoundError 泄漏临时路径
+            raise ValueError("智能处理代码未产出结果（疑似提前退出，如调用了 sys.exit/os._exit，或未正常返回）")
         return json.loads(out_p.read_text(encoding="utf-8"))

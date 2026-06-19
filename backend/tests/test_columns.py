@@ -94,6 +94,17 @@ def test_auto_process_rename_drop_concat():
     assert cols["ap"]["output"] == ["question", "merged"]
 
 
+def test_auto_process_rename_collision_dedupes_in_lineage():
+    """rename 多列映射到同名：血缘不产出重复列名（['x','x','c'] → ['x','c']），与运行时撞列报错对齐。"""
+    g = _g(
+        [{"id": "in", "type": "input", "config": {"dataset_ids": [1]}},
+         {"id": "ap", "type": "auto_process",
+          "config": {"operations": [{"op": "rename", "mapping": {"a": "x", "b": "x"}}]}}],
+        [{"source": "in", "target": "ap", "kind": "normal"}])
+    cols = propagate_columns(g, {1: ["a", "b", "c"]})
+    assert cols["ap"]["output"] == ["x", "c"]
+
+
 def test_qc_passthrough_and_rescan_ignored():
     g = _g(
         [{"id": "in", "type": "input", "config": {"dataset_ids": [1]}},

@@ -28,7 +28,8 @@ def _apply_op(cols: list[str], op: dict) -> list[str]:
     kind = op.get("op")
     if kind == "rename":
         mapping = op.get("mapping") or {}
-        return [mapping.get(c, c) for c in cols]
+        # dedup：多列映射到同名时血缘不产出重复列名（运行时会撞列报错；此处保持列视图一致）
+        return _ordered_union([[mapping.get(c, c) for c in cols]])
     if kind == "drop":
         drop = set(op.get("columns") or [])
         return [c for c in cols if c not in drop]
