@@ -84,3 +84,29 @@ async def test_traversal_filename_sanitized(auth_client, session_factory):
     p = Path(ds.file_path)
     assert p.exists()
     assert p.parent.name == str(ds.user_id) and p.parent.parent.name == "uploads"
+
+
+async def test_export_dataset_jsonl(auth_client):
+    import json as _json
+    ds = (await upload(auth_client, ("导出集.jsonl", JSONL))).json()[0]
+    r = await auth_client.get(f"/api/datasets/{ds['id']}/export", params={"format": "jsonl"})
+    assert r.status_code == 200
+    lines = [l for l in r.text.splitlines() if l]
+    assert len(lines) == 3 and _json.loads(lines[0])["q"] == "你好"
+
+
+async def test_export_dataset_csv(auth_client):
+    ds = (await upload(auth_client, ("c.jsonl", JSONL))).json()[0]
+    r = await auth_client.get(f"/api/datasets/{ds['id']}/export", params={"format": "csv"})
+    assert r.status_code == 200 and "q" in r.text and "你好" in r.text
+
+
+async def test_export_dataset_rejects_foreign(auth_client, session_factory):
+    from sqlalchemy import select
+    from app.models import User
+    async with session_factory() as s:
+        stranger = User(username="ds_stranger", display_name="x")
+        s.add(stranger); await s.commit()
+        ds = Dataset(user_id=stranger.id, name="他人集", row_count=0, columns_json="[]")
+        s.add(ds); await s.commit(); did = ds.id
+    assert (await auth_client.get(f"/api/datasets/{did}/export")).status_code == 404

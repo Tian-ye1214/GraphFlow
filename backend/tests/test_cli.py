@@ -298,6 +298,19 @@ def test_data_up_missing_file_dies(server, capsys):
     assert "文件不存在" in capsys.readouterr().err
 
 
+def test_data_download(server, capsys, tmp_path):
+    gf("login", "tester", "--server", server)
+    seed = tmp_path / "下载集.jsonl"
+    seed.write_text('{"q": "甲"}\n{"q": "乙"}\n', encoding="utf-8")
+    gf("data", "up", str(seed))
+    out = tmp_path / "out.jsonl"
+    capsys.readouterr()
+    gf("data", "download", "下载集", "-o", str(out))
+    assert "已下载" in capsys.readouterr().out
+    lines = [json.loads(l) for l in out.read_text(encoding="utf-8").strip().splitlines()]
+    assert len(lines) == 2 and lines[0]["q"] == "甲"
+
+
 def test_cli_full_chain(server, capsys, tmp_path, monkeypatch):
     from app.services import llm
 
