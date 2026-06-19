@@ -44,3 +44,33 @@ async def test_tenant_isolation(client):
     assert (await client.get(f"/api/prompts/{cid}")).status_code == 404
     assert (await client.put(f"/api/prompts/{cid}", json={"name": "x", "description": "", "body": "y"})).status_code == 404
     assert (await client.delete(f"/api/prompts/{cid}")).status_code == 404
+
+
+async def test_versions_lists_all(auth_client):
+    cid = (await auth_client.post("/api/prompts", json={"name": "P", "body": "v1"})).json()["id"]
+    await auth_client.put(f"/api/prompts/{cid}", json={"name": "P", "description": "", "body": "v2"})
+    vs = (await auth_client.get(f"/api/prompts/{cid}/versions")).json()
+    assert [v["version"] for v in vs] == [1, 2]
+    assert vs[0]["body"] == "v1" and vs[1]["body"] == "v2"
+
+
+async def test_rollback_creates_new_version_with_old_body(auth_client):
+    cid = (await auth_client.post("/api/prompts", json={"name": "P", "body": "v1 {{a}}"})).json()["id"]
+    await auth_client.put(f"/api/prompts/{cid}", json={"name": "P", "description": "", "body": "v2"})
+    d = (await auth_client.post(f"/api/prompts/{cid}/rollback", json={"version": 1})).json()
+    assert d["current"]["version"] == 3 and d["current"]["body"] == "v1 {{a}}"
+    assert d["current"]["variables"] == ["a"]
+
+
+async def test_rollback_unknown_version_404(auth_client):
+    cid = (await auth_client.post("/api/prompts", json={"name": "P", "body": "v1"})).json()["id"]
+    assert (await auth_client.post(f"/api/prompts/{cid}/rollback", json={"version": 9})).status_code == 404
+
+
+async def test_duplicate_creates_new_prompt(auth_client):
+    cid = (await auth_client.post("/api/prompts", json={"name": "原", "body": "正文 {{x}}"})).json()["id"]
+    d = (await auth_client.post(f"/api/prompts/{cid}/duplicate", json={})).json()
+    assert d["id"] != cid and d["name"] == "原 副本"
+    assert d["current"]["version"] == 1 and d["current"]["body"] == "正文 {{x}}"
+    named = (await auth_client.post(f"/api/prompts/{cid}/duplicate", json={"name": "自定义"})).json()
+    assert named["name"] == "自定义"

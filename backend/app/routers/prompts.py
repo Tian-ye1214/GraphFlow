@@ -101,3 +101,51 @@ async def delete_prompt(pid: int, user: User = Depends(get_current_user),
     await session.commit()
     publish(user.id, "prompt", pid)
     return {"ok": True}
+
+
+class RollbackIn(BaseModel):
+    version: int
+
+
+class DuplicateIn(BaseModel):
+    name: str | None = None
+
+
+@router.get("/{pid}/versions")
+async def list_versions(pid: int, user: User = Depends(get_current_user),
+                        session: AsyncSession = Depends(get_session)):
+    await _get_owned(pid, user, session)
+    vers = (await session.execute(select(PromptVersion).where(PromptVersion.prompt_id == pid)
+            .order_by(PromptVersion.version))).scalars().all()
+    return [{"version": v.version, "body": v.body, "variables": json.loads(v.variables_json),
+             "created_at": v.created_at.isoformat()} for v in vers]
+
+
+@router.post("/{pid}/rollback")
+async def rollback_prompt(pid: int, body: RollbackIn, user: User = Depends(get_current_user),
+                          session: AsyncSession = Depends(get_session)):
+    await _get_owned(pid, user, session)
+    target = (await session.execute(select(PromptVersion).where(
+        PromptVersion.prompt_id == pid, PromptVersion.version == body.version))).scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status_code=404, detail="版本不存在")
+    cur = await _latest(session, pid)
+    session.add(PromptVersion(prompt_id=pid, version=cur.version + 1,
+                              body=target.body, variables_json=target.variables_json))
+    await session.commit()
+    publish(user.id, "prompt", pid)
+    return await _detail(session, user, pid)
+
+
+@router.post("/{pid}/duplicate")
+async def duplicate_prompt(pid: int, body: DuplicateIn, user: User = Depends(get_current_user),
+                           session: AsyncSession = Depends(get_session)):
+    src = await _get_owned(pid, user, session)
+    cur = await _latest(session, pid)
+    new = Prompt(user_id=user.id, name=body.name or f"{src.name} 副本", description=src.description)
+    session.add(new)
+    await session.flush()
+    session.add(PromptVersion(prompt_id=new.id, version=1, body=cur.body, variables_json=cur.variables_json))
+    await session.commit()
+    publish(user.id, "prompt", new.id)
+    return await _detail(session, user, new.id)
