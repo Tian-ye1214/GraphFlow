@@ -93,9 +93,23 @@ def cmd_node_prompt(args):
     wf = cli.get_wf()
     node = find_node(wf["graph"], args.id)
     field = "system_prompt" if args.system else "user_prompt"
-    node["config"][field] = _read_prompt(args)
+    cfg = node["config"]
+    if args.library:
+        pid = cli.resolve("prompts", args.library)
+        if args.ref:
+            cfg[f"{field}_ref"] = pid
+            msg = f"已将 {args.id} 的 {field} 设为引用提示词 #{pid}（运行时取最新版）"
+        else:   # 默认 copy：拉当前正文内联，并清除引用
+            body = cli.req("GET", f"/api/prompts/{pid}")["current"]["body"]
+            cfg[field] = body
+            cfg.pop(f"{field}_ref", None)
+            msg = f"已复制提示词 #{pid} 到 {args.id} 的 {field}（{len(body)} 字符）"
+    else:
+        cfg[field] = _read_prompt(args)
+        cfg.pop(f"{field}_ref", None)   # 写内联即解除引用
+        msg = f"已写入 {args.id} 的 {field}（{len(cfg[field])} 字符）"
     cli.put_graph(wf["id"], wf["graph"])
-    print(f"已写入 {args.id} 的 {field}（{len(node['config'][field])} 字符）")
+    print(msg)
 
 
 def cmd_op_add(args):
@@ -138,6 +152,10 @@ def register(sub):
     g2.add_argument("--file")
     g2.add_argument("--edit", action="store_true")
     g2.add_argument("-", dest="from_stdin", action="store_true")
+    g2.add_argument("--library", help="库提示词 id 或名")
+    g3 = s.add_mutually_exclusive_group()
+    g3.add_argument("--ref", action="store_true", help="引用（运行时取最新版）")
+    g3.add_argument("--copy", action="store_true", help="复制当前正文进来（默认）")
     s.set_defaults(func=cmd_node_prompt)
 
     op = sub.add_parser("op", help="自动处理操作").add_subparsers(dest="action", required=True)

@@ -194,3 +194,22 @@ class ModelCallLog(Base):
     prompt_tokens: Mapped[int] = mapped_column(default=0)
     completion_tokens: Mapped[int] = mapped_column(default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class Prompt(Base):
+    __tablename__ = "prompts"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[str]
+    description: Mapped[str] = mapped_column(default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class PromptVersion(Base):
+    __tablename__ = "prompt_versions"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    prompt_id: Mapped[int] = mapped_column(ForeignKey("prompts.id"), index=True)
+    version: Mapped[int]
+    body: Mapped[str] = mapped_column(Text, default="")
+    variables_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

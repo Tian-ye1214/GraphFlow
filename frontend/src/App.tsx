@@ -3,6 +3,7 @@ import { Alert, Button, Layout, Menu, Spin } from 'antd'
 import { BrowserRouter, Link, Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom'
 import LoginPage from './pages/LoginPage'
 import ModelsPage from './pages/ModelsPage'
+import PromptsPage from './pages/PromptsPage'
 import DatasetsPage from './pages/DatasetsPage'
 import WorkflowsPage from './pages/WorkflowsPage'
 import CanvasPage from './pages/CanvasPage'
@@ -29,6 +30,7 @@ function Shell() {
             { key: '/workflows', label: <Link to="/workflows">工作流</Link> },
             { key: '/datasets', label: <Link to="/datasets">数据集</Link> },
             { key: '/models', label: <Link to="/models">模型配置</Link> },
+            { key: '/prompts', label: <Link to="/prompts">提示词库</Link> },
             { key: '/runs', label: <Link to="/runs">运行记录</Link> },
             { key: '/model-logs', label: <Link to="/model-logs">模型日志</Link> },
             ...(user.is_admin ? [{ key: '/admin', label: <Link to="/admin">租户管理</Link> }] : []),
@@ -68,6 +70,7 @@ export default function App() {
           <Route path="/workflows/:id/canvas" element={<CanvasPage />} />
           <Route path="/datasets" element={<DatasetsPage />} />
           <Route path="/models" element={<ModelsPage />} />
+          <Route path="/prompts" element={<PromptsPage />} />
           <Route path="/runs" element={<RunsPage />} />
           <Route path="/runs/:id" element={<RunDetailPage />} />
           <Route path="/model-logs" element={<ModelLogsPage />} />

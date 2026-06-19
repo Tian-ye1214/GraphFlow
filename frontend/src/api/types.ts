@@ -84,3 +84,15 @@ export interface RunLogEntry { created_at: string; node_id: string; level: strin
 
 export interface QcMetricEntry { node_id: string; total: number; first_round_pass: number; first_round_rate: number }
 export interface QcFailureEntry { node_id: string; sample: Record<string, any>; reasons: { model_config_id: number; status: string; reason: string }[]; created_at: string }
+
+export interface PromptSummary {
+  id: number; name: string; description: string; latest_version: number; variables: string[]
+}
+export interface PromptVersionMeta { version: number; created_at: string }
+export interface PromptUsage { workflow_id: number; workflow_name: string; node_id: string; slot: string }
+export interface PromptDetail {
+  id: number; name: string; description: string
+  current: { version: number; body: string; variables: string[] }
+  versions: PromptVersionMeta[]
+  used_by: PromptUsage[]
+}

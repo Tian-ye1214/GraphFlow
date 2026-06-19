@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.engine import nodes
 from app.engine.graph import Graph, Node, parse_graph, topo_order, upstream_ids, validate_graph
 from app.events import publish
-from app.models import (DatasetRow, ModelConfig, QcFailure, QcMetric, Run, RunLog,
-                        RunNodeState, RunRow, WorkflowVersion)
+from app.models import (DatasetRow, ModelConfig, Prompt, PromptVersion, QcFailure, QcMetric, Run,
+                        RunLog, RunNodeState, RunRow, WorkflowVersion)
 from app.routers.datasets import create_dataset
 from app.services.model_log import log_context
 
@@ -50,6 +50,32 @@ async def _node_counts(session_factory, run_id, node_id) -> tuple[int, int]:
     return (ns.done, ns.failed) if ns else (0, 0)
 
 
+async def _resolve_prompt_refs(session_factory, graph, user_id: int) -> None:
+    """run 启动解析：节点 system_prompt_ref/user_prompt_ref → 该提示词最新版 body 填入对应字段。
+    任一引用缺失（不存在或非本人）抛 ValueError → execute_run 落 run.failed，不起跑节点。"""
+    bodies: dict[int, str] = {}
+    for node in graph.nodes:
+        for slot in ("system_prompt", "user_prompt"):
+            pid = node.config.get(f"{slot}_ref")
+            if pid:
+                bodies[pid] = ""
+    if not bodies:
+        return
+    async with session_factory() as s:
+        for pid in bodies:
+            p = await s.get(Prompt, pid)
+            if p is None or p.user_id != user_id:
+                raise ValueError(f"引用的提示词 #{pid} 不存在")
+            pv = (await s.execute(select(PromptVersion).where(PromptVersion.prompt_id == pid)
+                  .order_by(PromptVersion.version.desc()).limit(1))).scalar_one()
+            bodies[pid] = pv.body
+    for node in graph.nodes:
+        for slot in ("system_prompt", "user_prompt"):
+            pid = node.config.get(f"{slot}_ref")
+            if pid:
+                node.config[slot] = bodies[pid]
+
+
 async def execute_run(run_id: int, session_factory: async_sessionmaker,
                       user_sem: asyncio.Semaphore, cancel_event: asyncio.Event) -> None:
     """运行入口：任何未捕获异常都落为 run.failed，不向上抛。"""
@@ -75,6 +101,7 @@ async def _execute(run_id, session_factory, user_sem, cancel_event):
         user_id = run.user_id
     graph = parse_graph(ver.graph_json)
     validate_graph(graph)
+    await _resolve_prompt_refs(session_factory, graph, user_id)
     await _log(session_factory, run_id, "", "运行开始")
 
     for node in topo_order(graph):

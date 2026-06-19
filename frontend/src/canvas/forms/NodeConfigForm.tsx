@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Button, Collapse, Input, InputNumber, Popover, Radio, Select, Space, Spin, Switch, Table, Tag } from 'antd'
 import { api } from '../../api/client'
-import type { CodegenOut, ColumnsMap, Dataset, ModelConfig, RowsPage } from '../../api/types'
+import type { CodegenOut, ColumnsMap, Dataset, ModelConfig, PromptDetail, PromptSummary, RowsPage } from '../../api/types'
 import { sendAssist, setDraft, useNodeAssist } from '../../agent/nodeAssistantStore'
 
 export interface FormProps {
@@ -93,6 +93,56 @@ function MissingColsWarning({ text, inputCols }: { text: string; inputCols: stri
   return (
     <div style={{ color: '#d4380d', fontSize: 12, marginTop: 4 }}>
       ⚠ 引用了上游未产出的列：{miss.map((c) => `{{${c}}}`).join('、')}
+    </div>
+  )
+}
+
+export function missingLibVars(promptVars: string[], inputCols: string[]): string[] {
+  return promptVars.filter((v) => !inputCols.includes(v))
+}
+
+function LibraryPromptControl({ slot, config, patch, inputCols }: {
+  slot: 'system_prompt' | 'user_prompt'
+  config: Record<string, any>
+  patch: (p: object) => void
+  inputCols: string[]
+}) {
+  const [prompts, setPrompts] = useState<PromptSummary[]>([])
+  const [pick, setPick] = useState<number | undefined>(undefined)
+  useEffect(() => { void api.get<PromptSummary[]>('/api/prompts').then(setPrompts) }, [])
+  const refId = config[`${slot}_ref`] as number | undefined
+  const refName = prompts.find((p) => p.id === refId)?.name
+  const picked = prompts.find((p) => p.id === pick)
+  const miss = picked ? missingLibVars(picked.variables, inputCols) : []
+  const copy = async () => {
+    if (!pick) return
+    const d = await api.get<PromptDetail>(`/api/prompts/${pick}`)
+    patch({ [slot]: d.current.body, [`${slot}_ref`]: undefined })
+  }
+  const ref = () => { if (pick) patch({ [`${slot}_ref`]: pick }) }
+  const unref = () => patch({ [`${slot}_ref`]: undefined })
+  return (
+    <div style={{ marginBottom: 6 }}>
+      {refId ? (
+        <div style={{ fontSize: 12, color: '#1677ff' }}>
+          引用库提示词：{refName ?? `#${refId}`}（运行时取最新版）
+          <a style={{ marginLeft: 8 }} onClick={unref}>解除引用</a>
+        </div>
+      ) : (
+        <Space size={4} wrap>
+          <span style={{ fontSize: 12, color: '#999' }}>从库：</span>
+          <Select size="small" style={{ width: 160 }} placeholder="选择提示词" value={pick}
+                  onChange={setPick}
+                  options={prompts.map((p) => ({ value: p.id, label: p.name }))} />
+          <a onClick={() => void copy()}>复制进来</a>
+          <a onClick={ref}>引用</a>
+          {miss.length > 0 && (
+            <span style={{ color: '#d4380d', fontSize: 12 }}>
+              缺列：{miss.map((c) => `{{${c}}}`).join('、')}
+            </span>
+          )}
+        </Space>
+      )}
     </div>
   )
 }
@@ -296,10 +346,12 @@ function LlmSynthForm({ config, onChange, workflowId, nodeId, inputCols }: FormP
         { key: 'prompt', label: '提示词', children: (
           <>
             <Field label="System Prompt">
+              <LibraryPromptControl slot="system_prompt" config={config} patch={patch} inputCols={inputCols} />
               <Input.TextArea rows={3} value={config.system_prompt ?? ''}
                               onChange={(e) => patch({ system_prompt: e.target.value })} />
             </Field>
             <Field label="User Prompt（用 {{列名}} 引用上游数据列）">
+              <LibraryPromptControl slot="user_prompt" config={config} patch={patch} inputCols={inputCols} />
               <Input.TextArea rows={6} value={config.user_prompt ?? ''}
                               onChange={(e) => patch({ user_prompt: e.target.value })} />
               <MissingColsWarning text={config.user_prompt ?? ''} inputCols={inputCols} />
@@ -560,10 +612,12 @@ function QcForm({ config, onChange, workflowId, nodeId, inputCols }: FormProps &
         { key: 'prompt', label: '提示词', children: (
           <>
             <Field label='System Prompt（判定规则；要求模型只输出 {"status":"pass"|"failed"|...,"reason":"..."}，只有 "pass" 算通过）'>
+              <LibraryPromptControl slot="system_prompt" config={config} patch={patch} inputCols={inputCols} />
               <Input.TextArea rows={3} value={config.system_prompt ?? ''}
                               onChange={(e) => patch({ system_prompt: e.target.value })} />
             </Field>
             <Field label="User Prompt（用 {{列名}} 引用上游数据列）">
+              <LibraryPromptControl slot="user_prompt" config={config} patch={patch} inputCols={inputCols} />
               <Input.TextArea rows={5} value={config.user_prompt ?? ''}
                               onChange={(e) => patch({ user_prompt: e.target.value })} />
               <MissingColsWarning text={config.user_prompt ?? ''} inputCols={inputCols} />
