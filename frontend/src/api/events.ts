@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 
 export interface GfEvent {
-  entity: 'workflow' | 'model' | 'dataset' | 'run' | 'agent'
+  entity: 'workflow' | 'model' | 'dataset' | 'run' | 'agent' | 'prompt'
   id: number
   kind?: string
   data?: unknown
