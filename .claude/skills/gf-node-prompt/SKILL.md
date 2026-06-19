@@ -93,4 +93,4 @@ gf link qc_1 llm_synth_1 --kind rescan    # 回扫边（必须从 qc 出发）
   **只有 `status` 为 `"pass"` 算通过**（大小写不敏感），其余一律不通过。⚠️ **不要写旧的 `{"pass": true|false}` 契约**——现在判定字段是 `status` 枚举，不是布尔 `pass`。
 - 不通过的行带着聚合 `reason` 经 rescan 回扫边回上游 LLM 重生成，最多 `max_rounds` 轮，仍不过则丢弃。
 - qc 节点给输出行显式写两列：`status_col`（默认 `qc_status`，通过=`pass`）、`feedback_col`（默认 `qc_feedback`，通过=空串）；可用 `status_col=`/`feedback_col=` 改列名，下游可见。
-- `gf show` 中回扫边显示为 `⟲回扫`。失败样本与每模型判定的查看/导出见 **gf-run** 的 `gf qc`（jsonl 平铺键带 `_qc_` 前缀，如 `_qc_model_0`）。
+- `gf show` 中回扫边显示为 `⟲回扫`。失败样本与每模型判定的查看/导出见 **gf-run** 的 `gf qc`（jsonl 平铺键带 `_qc_` 前缀，如 `_qc_model_1`）。
