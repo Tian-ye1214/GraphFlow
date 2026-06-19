@@ -165,7 +165,7 @@ async def run_qc_failures(run_id: int, node_id: str | None = None, limit: int = 
 async def run_qc_failures_jsonl(run_id: int, node_id: str | None = None,
                                 user: User = Depends(get_current_user),
                                 session: AsyncSession = Depends(get_session)):
-    """最终失败样本全量导出为 jsonl：每行 = 样本字段 + 各判定模型平铺 model_i/model_i_reason。"""
+    """最终失败样本全量导出为 jsonl：每行 = 样本字段 + 各判定模型平铺 _qc_model_i/_qc_model_i_reason。"""
     await _get_owned_run(run_id, user, session)
     stmt = select(QcFailure).where(QcFailure.run_id == run_id)
     if node_id is not None:
@@ -175,8 +175,8 @@ async def run_qc_failures_jsonl(run_id: int, node_id: str | None = None,
     for f in rows:
         rec = json.loads(f.sample_json)
         for i, pm in enumerate(json.loads(f.reasons_json), start=1):
-            rec[f"model_{i}"] = pm.get("status", "")
-            rec[f"model_{i}_reason"] = pm.get("reason", "")
+            rec[f"_qc_model_{i}"] = pm.get("status", "")
+            rec[f"_qc_model_{i}_reason"] = pm.get("reason", "")
         lines.append(json.dumps(rec, ensure_ascii=False))
     return Response(content="\n".join(lines), media_type="application/x-ndjson",
                     headers={"Content-Disposition": f'attachment; filename="run{run_id}_qc_failures.jsonl"'})
