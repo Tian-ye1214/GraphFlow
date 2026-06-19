@@ -57,6 +57,19 @@ def test_st_without_login_dies(server, capsys):
     assert "gf login" in capsys.readouterr().err
 
 
+def test_logout_clears_state(server, capsys):
+    gf("login", "tester", "--server", server)
+    gf("wf", "add", "流X"); gf("use", "流X")
+    capsys.readouterr()
+    gf("logout")
+    assert "已登出" in capsys.readouterr().out
+    state = json.loads(cli.STATE_FILE.read_text(encoding="utf-8"))
+    assert not state.get("cookie") and not state.get("workflow_id")
+    assert state.get("server") == server   # server 保留，方便重登
+    with pytest.raises(SystemExit):        # 登出后需重新登录
+        gf("st")
+
+
 def login_and_wf(server: str, name: str = "流"):
     gf("login", "tester", "--server", server)
     gf("wf", "add", name)

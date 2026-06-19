@@ -28,6 +28,19 @@ def cmd_st(args):
     print(line)
 
 
+def cmd_logout(args):
+    cli = Cli()
+    try:
+        cli.req("POST", "/api/auth/logout")
+    except SystemExit:
+        pass  # 服务器端登出失败也要清本地状态
+    state = load_state()
+    state.pop("cookie", None)
+    state.pop("workflow_id", None)
+    save_state(state)
+    print("已登出")
+
+
 def register(sub):
     s = sub.add_parser("login", help="登录")
     s.add_argument("username")
@@ -36,3 +49,6 @@ def register(sub):
 
     s = sub.add_parser("st", help="当前状态")
     s.set_defaults(func=cmd_st)
+
+    s = sub.add_parser("logout", help="登出并清本地状态")
+    s.set_defaults(func=cmd_logout)
