@@ -154,12 +154,9 @@ export default function RunDetailPage() {
       </Card>
       {!isActive && qcFailures.length > 0 && (
         <Card size="small" title={`质检失败样本（${qcFailures.length}）`} style={{ marginBottom: 16 }}
-              extra={<Button size="small" onClick={() => {
-                const blob = new Blob([JSON.stringify(qcFailures, null, 2)], { type: 'application/json' })
-                const url = URL.createObjectURL(blob)
-                const a = document.createElement('a'); a.href = url; a.download = `run${id}_qc_failures.json`; a.click()
-                URL.revokeObjectURL(url)
-              }}>下载</Button>}>
+              extra={<Button size="small" onClick={() => window.open(`/api/runs/${id}/qc-failures.jsonl`)}>
+                下载 jsonl
+              </Button>}>
           <Table rowKey={(_, i) => String(i)} dataSource={qcFailures} size="small"
                  pagination={{ pageSize: 10 }}
                  columns={[
@@ -167,7 +164,7 @@ export default function RunDetailPage() {
                      render: (v: object) => JSON.stringify(v) },
                    { title: '各模型理由', dataIndex: 'reasons',
                      render: (rs: QcFailureEntry['reasons']) =>
-                       rs.map((r) => `${r.pass ? '✓' : '✗'} ${r.reason}`).join('；') },
+                       rs.map((r) => `${r.status === 'pass' ? '✓' : '✗'} ${r.status}：${r.reason}`).join('；') },
                  ]} />
         </Card>
       )}

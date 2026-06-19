@@ -117,7 +117,7 @@ function liveOutput(type: string, config: Record<string, any>, inputCols: string
     return sub(cols)
   }
   if (type === 'http_fetch') return sub(uniq([...inputCols, ...Object.keys(config.extract ?? {})]))
-  if (type === 'qc') return sub(uniq([...inputCols, config.feedback_column || 'qc_feedback']))
+  if (type === 'qc') return sub(uniq([...inputCols, config.status_column || 'qc_status', config.feedback_column || 'qc_feedback']))
   return sub(inputCols)   // qc / output 透传 - drop
 }
 
@@ -559,7 +559,7 @@ function QcForm({ config, onChange, workflowId, nodeId, inputCols }: FormProps &
         ) },
         { key: 'prompt', label: '提示词', children: (
           <>
-            <Field label='System Prompt（判定规则；要求模型只输出 {"pass":true|false,"reason":"..."}）'>
+            <Field label='System Prompt（判定规则；要求模型只输出 {"status":"pass"|"failed"|...,"reason":"..."}，只有 "pass" 算通过）'>
               <Input.TextArea rows={3} value={config.system_prompt ?? ''}
                               onChange={(e) => patch({ system_prompt: e.target.value })} />
             </Field>
@@ -575,6 +575,10 @@ function QcForm({ config, onChange, workflowId, nodeId, inputCols }: FormProps &
             <Field label="最多回扫轮数">
               <InputNumber min={0} value={config.max_rounds ?? 3}
                            onChange={(v) => patch({ max_rounds: v ?? 3 })} />
+            </Field>
+            <Field label="状态列名">
+              <Input value={config.status_column ?? 'qc_status'}
+                     onChange={(e) => patch({ status_column: e.target.value || 'qc_status' })} />
             </Field>
             <Field label="反馈列名">
               <Input value={config.feedback_column ?? 'qc_feedback'}
