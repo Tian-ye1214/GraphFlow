@@ -96,13 +96,18 @@ async def generate_node_config(model, node_type: str, instruction: str, columns:
 
 
 async def gather_upstream_columns(s, workflow_id: int, node_id: str, user_id: int):
-    """静态推算 node_id 的输入列（沿 llm/处理节点传播）。返回 (columns, source)。"""
+    """静态推算 node_id 的输入列（沿 llm/处理节点传播）。返回 (columns, source)。
+    脏草稿图（环/悬空边/脏 config 形状）无法算列时优雅降级 [],'none'，
+    使 codegen/node-assist 端点不因 columns 计算抛异常而 500（对齐 workflow_columns）。"""
     wf = await s.get(Workflow, workflow_id)
     if wf is None or wf.user_id != user_id:
         return [], "none"
-    graph = parse_graph(wf.graph_json)
-    if node_id not in {n.id for n in graph.nodes}:
+    try:
+        graph = parse_graph(wf.graph_json)
+        if node_id not in {n.id for n in graph.nodes}:
+            return [], "none"
+        dataset_cols = await resolve_dataset_cols(s, graph, user_id)
+        cols = propagate_columns(graph, dataset_cols)[node_id]["input"]
+    except (ValueError, AttributeError, TypeError, KeyError):  # ValueError 含 GraphError
         return [], "none"
-    dataset_cols = await resolve_dataset_cols(s, graph, user_id)
-    cols = propagate_columns(graph, dataset_cols)[node_id]["input"]
     return cols, ("computed" if cols else "none")

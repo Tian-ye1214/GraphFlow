@@ -78,6 +78,23 @@ async def test_columns_propagate_through_llm(client, session_factory):
     assert source == "computed" and cols == ["q", "q_en"]
 
 
+async def test_gather_upstream_columns_dirty_graph_degrades(client, session_factory):
+    """脏草稿图(rename mapping 非 dict)：gather_upstream_columns 优雅降级 [],'none'，
+    使 codegen/node-assist 端点不因 columns.py 抛 AttributeError 而 500（对齐 workflow_columns）。"""
+    async with session_factory() as s:
+        ds = Dataset(user_id=1, name="d", columns_json=json.dumps(["a", "b"]))
+        s.add(ds); await s.flush()
+        graph = {"nodes": [
+            {"id": "input_1", "type": "input", "config": {"dataset_ids": [ds.id]}},
+            {"id": "auto_process_1", "type": "auto_process",
+             "config": {"operations": [{"op": "rename", "mapping": ["a", "b"]}]}}],
+            "edges": [{"source": "input_1", "target": "auto_process_1"}]}
+        wf = Workflow(user_id=1, name="w", graph_json=json.dumps(graph))
+        s.add(wf); await s.commit()
+        cols, source = await codegen.gather_upstream_columns(s, wf.id, "auto_process_1", user_id=1)
+    assert source == "none" and cols == []
+
+
 async def test_columns_none_when_node_missing(client, session_factory):
     async with session_factory() as s:
         wf = Workflow(user_id=1, name="w")

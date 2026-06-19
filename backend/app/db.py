@@ -56,6 +56,8 @@ async def _migrate_sqlite_schema(conn) -> None:
     cols = {row[1] for row in rows}
     if rows and "run_id" not in cols:
         await conn.exec_driver_sql("ALTER TABLE datasets ADD COLUMN run_id INTEGER")
+    if rows and "node_id" not in cols:
+        await conn.exec_driver_sql("ALTER TABLE datasets ADD COLUMN node_id VARCHAR")
 
 
 def get_session_factory() -> async_sessionmaker:

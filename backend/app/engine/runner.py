@@ -270,7 +270,7 @@ async def _barrier_output(session_factory, user_id, node: Node, inputs, run_id: 
         if cfg.get("save_as_dataset"):
             async with session_factory() as s:
                 await create_dataset(s, user_id, cfg.get("dataset_name", "运行结果"),
-                                     out, source="run", run_id=run_id)
+                                     out, source="run", run_id=run_id, node_id=node.id)
         return out
     raise ValueError(f"未知节点类型: {node.type}")
 

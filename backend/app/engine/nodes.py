@@ -196,7 +196,9 @@ async def run_llm_synth_row(config: dict, row: dict, mc: ModelConfig,
         usage_total["prompt_tokens"] += usage["prompt_tokens"]
         usage_total["completion_tokens"] += usage["completion_tokens"]
         if config.get("output_mode") == "json":
-            parsed = _json.loads(text)
+            # parse_constant：模型返回非标准 NaN/Infinity 时就地归一为 None，保持逐行隔离——
+            # 否则非法浮点进 out_rows，_write_unit(成功分支、行 try 之外) 序列化抛错会拖垮整 run。
+            parsed = _json.loads(text, parse_constant=lambda _v: None)
             if not isinstance(parsed, dict):
                 raise ValueError("LLM 返回的不是 JSON 对象")
             out_rows.append({**base, **parsed})
@@ -216,8 +218,8 @@ async def run_http_fetch_row(config: dict, row: dict) -> tuple[list[dict], dict]
     body = render_template(config["body"], base) if config.get("body") else None
     status, text = await http.fetch(method, url, headers=headers, body=body,
                                     timeout=config.get("timeout", 30), retries=config.get("retries", 2))
-    try:
-        data = _json.loads(text)
+    try:   # parse_constant：响应含非标准 NaN/Infinity 归一为 None，杜绝非法浮点落库致读行端点 500
+        data = _json.loads(text, parse_constant=lambda _v: None)
     except (ValueError, TypeError):
         raise ValueError(f"接口响应非 JSON，无法提取（HTTP {status} {url}）")
     extracted = {}

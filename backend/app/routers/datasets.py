@@ -47,20 +47,23 @@ async def _get_owned(ds_id: int, user: User, session: AsyncSession) -> Dataset:
 
 async def create_dataset(session: AsyncSession, user_id: int, name: str, rows: list[dict],
                          source: str = "upload", original_filename: str = "",
-                         file_path: str = "", run_id: int | None = None) -> Dataset:
-    """供上传与运行结果保存共用。传 run_id（save_as_dataset）时按 (run_id, name) 幂等：
-    同一 run 重算同名 output 覆盖更新，而非产生重复数据集（rerun-failed 会重算下游 output）。"""
+                         file_path: str = "", run_id: int | None = None,
+                         node_id: str | None = None) -> Dataset:
+    """供上传与运行结果保存共用。传 run_id+node_id（save_as_dataset）时按 (run_id, node_id) 幂等：
+    同一 run 同节点重算覆盖更新；不同 output 节点即使同名也各自独立（不互相覆盖丢数据）。"""
     ds = None
-    if run_id is not None:
+    if run_id is not None and node_id is not None:
         ds = (await session.execute(select(Dataset).where(
-            Dataset.run_id == run_id, Dataset.name == name, Dataset.user_id == user_id))).scalars().first()
-    if ds is not None:                       # 覆盖更新：清旧行、重置 schema/计数
+            Dataset.run_id == run_id, Dataset.node_id == node_id,
+            Dataset.user_id == user_id))).scalars().first()
+    if ds is not None:                       # 覆盖更新：清旧行、重置名/schema/计数
         await session.execute(sa_delete(DatasetRow).where(DatasetRow.dataset_id == ds.id))
+        ds.name = name
         ds.row_count = len(rows)
         ds.columns_json = json.dumps(union_columns(rows), ensure_ascii=False)
     else:
         ds = Dataset(user_id=user_id, name=name, source=source, original_filename=original_filename,
-                     file_path=file_path, run_id=run_id,
+                     file_path=file_path, run_id=run_id, node_id=node_id,
                      row_count=len(rows), columns_json=json.dumps(union_columns(rows), ensure_ascii=False))
         session.add(ds)
         await session.flush()

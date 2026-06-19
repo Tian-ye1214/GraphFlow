@@ -332,6 +332,19 @@ def test_merge_conflict_distinguishes_int_bool_float():
     assert runner._merge_branches("m", [[{"k": 5}], [{"k": 5}]]) == [{"k": 5}]  # 同类型相等不报(回归)
 
 
+async def test_llm_json_nan_neutralized_not_whole_run_fail(session_factory, monkeypatch):
+    """llm json 模式模型返回 NaN：就地归一为 null（逐行隔离），不让 _write_unit 在成功分支抛错拖垮整 run、丢同节点其它行。"""
+    graph = json.loads(json.dumps(GRAPH))
+    graph["nodes"][1]["config"]["output_mode"] = "json"
+    patch_chat(monkeypatch, lambda u: ('{"a": NaN}' if "问0" in u else '{"a": "ok"}',
+                                       {"prompt_tokens": 1, "completion_tokens": 1}))
+    run_id = await make_run(session_factory, graph=graph, rows=3)
+    await run_it(session_factory, run_id)
+    assert (await get_run(session_factory, run_id)).status == "completed"   # 不再因一行 NaN 整 run failed
+    rows = await runner._node_outputs(session_factory, run_id, "out")
+    assert len(rows) == 3 and any(r.get("a") is None for r in rows)         # NaN→null，行未丢失
+
+
 async def test_rerun_output_upserts_dataset_no_duplicate(session_factory, monkeypatch):
     """重算 output 节点(save_as_dataset)按 run_id+name upsert，不产生重复同名数据集。"""
     from sqlalchemy import delete as sa_delete

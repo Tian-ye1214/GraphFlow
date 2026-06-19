@@ -112,27 +112,30 @@ async def test_export_dataset_rejects_foreign(auth_client, session_factory):
     assert (await auth_client.get(f"/api/datasets/{did}/export")).status_code == 404
 
 
-async def test_create_dataset_upsert_by_run_id(session_factory):
-    """save_as_dataset 落库按 (run_id, name) 幂等：同 run 重算 output 覆盖更新而非产生重复数据集。"""
+async def test_create_dataset_upsert_by_run_node(session_factory):
+    """save_as_dataset 落库按 (run_id, node_id, name) 幂等：同 run 同节点重算覆盖更新；
+    不同节点同名各自独立(不互相覆盖丢数据)；上传(run_id=None)永不 upsert。"""
     from sqlalchemy import select
     from app.models import User
     from app.routers.datasets import create_dataset
     async with session_factory() as s:
         u = User(username="dsup", display_name="x"); s.add(u); await s.flush(); uid = u.id
-        ds1 = await create_dataset(s, uid, "结果集", [{"a": 1}, {"a": 2}], source="run", run_id=42)
+        ds1 = await create_dataset(s, uid, "结果集", [{"a": 1}, {"a": 2}], source="run", run_id=42, node_id="out")
         first_id = ds1.id
-    async with session_factory() as s:   # 同 run 同名重算 → 覆盖更新，不新建
-        ds2 = await create_dataset(s, uid, "结果集", [{"a": 1}, {"a": 2}, {"a": 3}], source="run", run_id=42)
+    async with session_factory() as s:   # 同 run 同节点重算 → 覆盖更新，不新建
+        ds2 = await create_dataset(s, uid, "结果集", [{"a": 1}, {"a": 2}, {"a": 3}], source="run", run_id=42, node_id="out")
         assert ds2.id == first_id and ds2.row_count == 3
     async with session_factory() as s:
-        same = (await s.execute(select(Dataset).where(Dataset.name == "结果集", Dataset.run_id == 42))).scalars().all()
+        same = (await s.execute(select(Dataset).where(Dataset.run_id == 42, Dataset.name == "结果集"))).scalars().all()
         assert len(same) == 1
-        await create_dataset(s, uid, "结果集", [{"a": 9}], source="run", run_id=99)   # 不同 run 各自独立
-        await create_dataset(s, uid, "结果集", [{"a": 1}], run_id=None)               # 上传(run_id=None)永不 upsert
+        # 同 run 不同 output 节点用了相同默认名 → 各自独立，绝不互相覆盖丢数据
+        await create_dataset(s, uid, "结果集", [{"a": 9}], source="run", run_id=42, node_id="out2")
+        await create_dataset(s, uid, "结果集", [{"a": 8}], source="run", run_id=99, node_id="out")   # 不同 run 独立
+        await create_dataset(s, uid, "结果集", [{"a": 1}], run_id=None)   # 上传永不 upsert
         await create_dataset(s, uid, "结果集", [{"a": 1}], run_id=None)
     async with session_factory() as s:
         total = (await s.execute(select(Dataset).where(Dataset.name == "结果集"))).scalars().all()
-        assert len(total) == 4   # run42(1) + run99(1) + 两次上传(2)
+        assert len(total) == 5   # run42/out(1)+run42/out2(1)+run99/out(1)+两次上传(2)
 
 
 async def test_upload_nan_json_rows_renderable(auth_client):
