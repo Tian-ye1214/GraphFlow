@@ -68,13 +68,18 @@ async def get_workflow(wf_id: int, user: User = Depends(get_current_user),
 async def workflow_columns(wf_id: int, user: User = Depends(get_current_user),
                            session: AsyncSession = Depends(get_session)):
     wf = await get_owned_workflow(wf_id, user, session)
-    graph = parse_graph(wf.graph_json)
-    try:  # 草稿态图（有环/悬空边）属正常编辑中间态，应给 422 而非 500（对齐 create_run）
+    # 草稿态图（有环/悬空边/脏 config 形状）属正常编辑中间态：WorkflowUpdate.graph 只校验顶层 dict，
+    # 节点内部可存任意脏值（config 非 dict / dataset_ids 非 list / rename mapping 非 dict / op 非 dict），
+    # 计算列血缘时会抛 AttributeError/TypeError/KeyError——统一降级 422 而非 500（对齐 GraphError 既有契约）。
+    try:
+        graph = parse_graph(wf.graph_json)
         validate_graph(graph)
+        dataset_cols = await resolve_dataset_cols(session, graph, user.id)
+        return propagate_columns(graph, dataset_cols)
     except GraphError as e:
         raise HTTPException(status_code=422, detail=str(e))
-    dataset_cols = await resolve_dataset_cols(session, graph, user.id)
-    return propagate_columns(graph, dataset_cols)
+    except (AttributeError, TypeError, KeyError) as e:
+        raise HTTPException(status_code=422, detail=f"草稿态图结构非法，无法计算列血缘: {e}")
 
 
 @router.put("/{wf_id}")

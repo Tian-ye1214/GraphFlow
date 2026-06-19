@@ -89,3 +89,17 @@ async def test_used_by_lists_referencing_nodes(auth_client):
 async def test_used_by_empty_when_unreferenced(auth_client):
     pid = (await auth_client.post("/api/prompts", json={"name": "P", "body": "x"})).json()["id"]
     assert (await auth_client.get(f"/api/prompts/{pid}")).json()["used_by"] == []
+
+
+async def test_get_prompt_with_dirty_workflow_graph_no_500(auth_client):
+    """用户工作流图含畸形节点(缺 id / config 非 dict / 节点非 dict)时，只读 prompt 端点 _used_by 应跳过畸形项不 500。"""
+    pid = (await auth_client.post("/api/prompts", json={"name": "P", "body": "x"})).json()["id"]
+    wf = (await auth_client.post("/api/workflows", json={"name": "流"})).json()
+    graph = {"nodes": [
+        {"type": "llm_synth", "config": {"system_prompt_ref": pid}},   # 缺 id → 原 node["id"] KeyError
+        {"id": "n2", "type": "llm_synth", "config": "oops"},            # config 非 dict → cfg.get AttributeError
+        "not_a_node",                                                    # 节点非 dict → node.get AttributeError
+    ], "edges": []}
+    await auth_client.put(f"/api/workflows/{wf['id']}", json={"graph": graph})
+    r = await auth_client.get(f"/api/prompts/{pid}")
+    assert r.status_code == 200

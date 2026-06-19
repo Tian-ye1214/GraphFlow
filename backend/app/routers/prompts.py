@@ -41,12 +41,18 @@ async def _used_by(session: AsyncSession, user: User, pid: int) -> list[dict]:
     out = []
     for wf in wfs:
         graph = json.loads(wf.graph_json)
-        for node in graph.get("nodes", []):
-            cfg = node.get("config", {})
+        nodes = graph.get("nodes", []) if isinstance(graph, dict) else []
+        for node in nodes:
+            # 草稿图可存畸形节点（节点非 dict / 缺 id / config 非 dict）——跳过，勿让只读 prompt 端点 500
+            if not isinstance(node, dict):
+                continue
+            cfg = node.get("config")
+            if not isinstance(cfg, dict):
+                continue
             for slot in ("system_prompt", "user_prompt"):
                 if cfg.get(f"{slot}_ref") == pid:
                     out.append({"workflow_id": wf.id, "workflow_name": wf.name,
-                                "node_id": node["id"], "slot": slot})
+                                "node_id": node.get("id"), "slot": slot})
     return out
 
 
