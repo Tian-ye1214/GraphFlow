@@ -5,6 +5,7 @@ from typing import Literal
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.engine.columns import ordered_union
 from app.engine.graph import parse_graph, upstream_ids
 from app.models import Dataset, DatasetRow, Run, RunRow, Workflow, WorkflowVersion
 
@@ -13,15 +14,6 @@ PreviewSource = Literal["auto", "dataset", "latest_run"]
 DEFAULT_LIMIT = 5
 MAX_LIMIT = 20
 DEFAULT_CELL_CHAR_LIMIT = 500
-
-
-def _ordered_union(lists: list[list[str]]) -> list[str]:
-    out: list[str] = []
-    for lst in lists:
-        for col in lst:
-            if col not in out:
-                out.append(col)
-    return out
 
 
 def _coerce_limit(limit: int) -> int:
@@ -57,7 +49,7 @@ def _safe_rows(rows: list[dict], char_limit: int) -> tuple[list[dict], bool]:
 
 
 def _columns_from_rows(rows: list[dict]) -> list[str]:
-    return _ordered_union([list(r.keys()) for r in rows])
+    return ordered_union([list(r.keys()) for r in rows])
 
 
 class WorkflowDataPreview:
@@ -123,7 +115,7 @@ class WorkflowDataPreview:
             )).scalars().all()
             rows.extend(json.loads(r.data_json) for r in recs)
         safe_rows, truncated = _safe_rows(rows[:limit], self._cell_char_limit)
-        columns = _ordered_union(columns_by_dataset) or _columns_from_rows(safe_rows)
+        columns = ordered_union(columns_by_dataset) or _columns_from_rows(safe_rows)
         return {"source": "dataset", "run_id": None, "columns": columns,
                 "rows": safe_rows, "truncated": truncated}
 

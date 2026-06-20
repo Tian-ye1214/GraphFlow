@@ -5,7 +5,8 @@ from app.engine.graph import Graph, topo_order, upstream_ids
 from app.models import Dataset
 
 
-def _ordered_union(lists: list[list[str]]) -> list[str]:
+def ordered_union(lists: list[list[str]]) -> list[str]:
+    """多个列名列表按「首次出现顺序」去重并集。列血缘/数据预览/数据集 schema 的共用基元。"""
     out: list[str] = []
     for lst in lists:
         for c in lst:
@@ -29,7 +30,7 @@ def _apply_op(cols: list[str], op: dict) -> list[str]:
     if kind == "rename":
         mapping = op.get("mapping") or {}
         # dedup：多列映射到同名时血缘不产出重复列名（运行时会撞列报错；此处保持列视图一致）
-        return _ordered_union([[mapping.get(c, c) for c in cols]])
+        return ordered_union([[mapping.get(c, c) for c in cols]])
     if kind == "drop":
         drop = set(op.get("columns") or [])
         return [c for c in cols if c not in drop]
@@ -38,7 +39,7 @@ def _apply_op(cols: list[str], op: dict) -> list[str]:
         return cols + [target] if target and target not in cols else cols
     if kind == "agent":
         declared = op.get("output_columns") or []
-        return _ordered_union([declared]) if declared else cols
+        return ordered_union([declared]) if declared else cols
     return cols  # dedup/filter/cast/sample/shuffle 不改列集合
 
 
@@ -56,17 +57,17 @@ def _typed_output(node, input_cols: list[str], dataset_cols: dict[int, list[str]
         return _ordered_intersection(present)
     if t == "llm_synth":
         if node.config.get("output_mode") == "json":
-            return _ordered_union([input_cols, node.config.get("output_columns") or []])
-        return _ordered_union([input_cols, [node.config.get("output_column") or "output"]])
+            return ordered_union([input_cols, node.config.get("output_columns") or []])
+        return ordered_union([input_cols, [node.config.get("output_column") or "output"]])
     if t == "auto_process":
         cols = list(input_cols)
         for op in node.config.get("operations") or []:
             cols = _apply_op(cols, op)
         return cols
     if t == "http_fetch":
-        return _ordered_union([input_cols, list((node.config.get("extract") or {}).keys())])
+        return ordered_union([input_cols, list((node.config.get("extract") or {}).keys())])
     if t == "qc":
-        return _ordered_union([input_cols, [node.config.get("status_column") or "qc_status",
+        return ordered_union([input_cols, [node.config.get("status_column") or "qc_status",
                                             node.config.get("feedback_column") or "qc_feedback"]])
     return input_cols  # qc / output 透传
 
@@ -76,7 +77,7 @@ def propagate_columns(graph: Graph, dataset_cols: dict[int, list[str]]) -> dict[
     inputs: dict[str, list[str]] = {}
     outputs: dict[str, list[str]] = {}
     for node in topo_order(graph):
-        in_cols = _ordered_union([outputs.get(uid, []) for uid in upstream_ids(graph, node.id)])
+        in_cols = ordered_union([outputs.get(uid, []) for uid in upstream_ids(graph, node.id)])
         inputs[node.id] = in_cols
         outputs[node.id] = _node_output(node, in_cols, dataset_cols)
     return {n.id: {"input": inputs[n.id], "output": outputs[n.id]} for n in graph.nodes}
