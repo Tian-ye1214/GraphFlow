@@ -26,23 +26,23 @@ def test_create_model_decrypts_key(monkeypatch):
     assert captured == {"base_url": "http://llm.local/v1", "api_key": "sk-test"}
     assert model.model_name == "qwen-max"
     assert model.settings["temperature"] == 0.3
-    assert model.settings["max_tokens"] == 65536  # force_xhigh 写死 65536，覆盖模型配置的 100
+    assert model.settings["max_tokens"] == 65536  # force_max_thinking 写死 65536，覆盖模型配置的 100
     assert "json_mode" not in model.settings  # 非 ModelSettings 键被忽略
 
 
 def test_create_model_no_key():
     model = factory.create_model(_mc(api_key_enc="", default_params_json="{}"))
     assert model.model_name == "qwen-max"
-    # 强制 xhigh：agent 路径 extra_body 含 thinking + reasoning_effort=xhigh
+    # 写死 max：agent 路径 extra_body 含 thinking + reasoning_effort=max
     assert model.settings["extra_body"] == {
-        "thinking": {"type": "enabled"}, "reasoning_effort": "xhigh"}
+        "thinking": {"type": "enabled"}, "reasoning_effort": "max"}
 
 
-def test_create_model_thinking_forced_xhigh_even_if_disabled():
-    # 硬编码：即便请求方传 thinking_enabled:false / 低力度，仍强制 xhigh-on
+def test_create_model_thinking_forced_max_even_if_disabled():
+    # 硬编码：即便请求方传 thinking_enabled:false / 低力度，仍强制 思考开 + 力度 max
     model = factory.create_model(_mc(), params={"thinking_enabled": False, "reasoning_effort": "low"})
     assert model.settings["extra_body"] == {
-        "thinking": {"type": "enabled"}, "reasoning_effort": "xhigh"}
+        "thinking": {"type": "enabled"}, "reasoning_effort": "max"}
 
 
 async def test_create_agent_runs_tools():

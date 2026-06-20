@@ -7,7 +7,7 @@ from app.agent.logging_model import LoggingModel
 from app.agent.tools import wrap_tools
 from app.llm_clients import azure_api_mode, make_agent_provider, provider_name
 from app.models import ModelConfig
-from app.thinking import agent_chat_settings, agent_responses_settings, force_xhigh, thinking_enabled
+from app.thinking import agent_chat_settings, agent_responses_settings, force_max_thinking, thinking_enabled
 
 SETTINGS_KEYS = ("temperature", "top_p", "max_tokens", "timeout")
 
@@ -24,7 +24,7 @@ class AzureLegacyChatModel(OpenAIChatModel):
 
 def create_model(mc: ModelConfig, params: dict | None = None) -> OpenAIChatModel | OpenAIResponsesModel:
     default_params = json.loads(mc.default_params_json)
-    call_params = force_xhigh(params)        # 批20：RedLotus+助手一律 xhigh，忽略传入思考参数
+    call_params = force_max_thinking(params)  # RedLotus 相关 Agent 写死：思考开 / 力度 max / 65536，忽略传入
     merged = {**default_params, **call_params}
     kw = {k: merged[k] for k in SETTINGS_KEYS if merged.get(k) is not None}
     provider = provider_name(mc)
