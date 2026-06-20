@@ -139,7 +139,8 @@ async def export_workflow(wf_id: int, user: User = Depends(get_current_user),
         resp = FileResponse(tmp, media_type="application/zip",
                             headers={"Content-Disposition": disp},
                             background=BackgroundTask(os.unlink, tmp))
-    except (GraphError, PackageError) as e:        # 草稿态/畸形图无法解析 → 422，对齐 columns 契约
+    except (GraphError, PackageError, AttributeError, TypeError, KeyError) as e:
+        # 草稿态/畸形图（nodes 非 list、节点缺 id/type 等）无法解析 → 422，对齐 workflow_columns 契约
         os.unlink(tmp)
         raise HTTPException(status_code=422, detail=f"草稿态图无法导出: {e}")
     except RecursionError:                          # 超深嵌套图/配置 → 422 兜底，不 500
@@ -156,9 +157,12 @@ async def import_workflow(file: UploadFile, user: User = Depends(get_current_use
                           session: AsyncSession = Depends(get_session)):
     fd, tmp = tempfile.mkstemp(suffix=".gfpkg", dir=settings.data_dir)
     try:
-        with os.fdopen(fd, "wb") as out:
-            while chunk := await file.read(1024 * 1024):
-                out.write(chunk)
+        try:
+            with os.fdopen(fd, "wb") as out:
+                while chunk := await file.read(1024 * 1024):
+                    out.write(chunk)
+        except OSError:                             # 落盘失败（磁盘满/超长等）→ 422，对齐 datasets 上传契约
+            raise HTTPException(status_code=422, detail="包文件保存失败")
         try:
             wf_out, report = await import_package(session, tmp, user.id)
         except (PackageError, GraphError) as e:

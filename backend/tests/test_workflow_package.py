@@ -445,6 +445,13 @@ async def test_export_draft_graph_endpoint_422(auth_client):
     assert (await auth_client.get(f"/api/workflows/{wf['id']}/export")).status_code == 422
 
 
+async def test_export_draft_graph_shape_endpoint_422(auth_client):
+    """草稿图结构畸形（nodes 非 list）→ parse_graph 抛 TypeError，导出端须 422 不 500（对齐 columns）。"""
+    wf = (await auth_client.post("/api/workflows", json={"name": "脏图"})).json()
+    await auth_client.put(f"/api/workflows/{wf['id']}", json={"graph": {"nodes": "x", "edges": []}})
+    assert (await auth_client.get(f"/api/workflows/{wf['id']}/export")).status_code == 422
+
+
 # ---------------- Task 8: 第二轮复审修复 ----------------
 
 def test_redact_secrets_list_nested_and_nonstring():
