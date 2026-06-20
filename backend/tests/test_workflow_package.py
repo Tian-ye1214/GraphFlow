@@ -98,3 +98,61 @@ async def test_export_package_self_contained_no_key_redacted(session_factory, tm
         h_in_db = next(n for n in json.loads(wf2.graph_json)["nodes"] if n["id"] == "h")
         assert h_in_db["config"]["headers"]["Authorization"] == "Bearer sk-x"
 
+
+# ---------------- Task 3: 导入硬化 + manifest 校验 ----------------
+
+def _pkg_bytes(manifest, extra_files=None):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False))
+        for name, data in (extra_files or {}).items():
+            zf.writestr(name, data)
+    return buf.getvalue()
+
+
+def _good_manifest():
+    return {"kind": wp.PACKAGE_KIND, "schema_version": 1,
+            "workflow": {"name": "w", "graph": {"nodes": [], "edges": []}},
+            "models": [], "prompts": [], "datasets": [], "redactions": []}
+
+
+def test_open_safe_zip_rejects_traversal(tmp_path):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("../evil.txt", "x")
+    path = tmp_path / "z.gfpkg"; path.write_bytes(buf.getvalue())
+    with pytest.raises(wp.PackageError):
+        wp._open_safe_zip(str(path))
+
+
+def test_open_safe_zip_rejects_non_zip(tmp_path):
+    path = tmp_path / "z.gfpkg"; path.write_bytes(b"not a zip")
+    with pytest.raises(wp.PackageError):
+        wp._open_safe_zip(str(path))
+
+
+def test_parse_manifest_rejects_bad(tmp_path):
+    def mp(b):
+        path = tmp_path / "z.gfpkg"; path.write_bytes(b)
+        with wp._open_safe_zip(str(path)) as zf:
+            return wp._parse_manifest(zf)
+    with pytest.raises(wp.PackageError):   # 非本系统包
+        mp(_pkg_bytes({**_good_manifest(), "kind": "other"}))
+    with pytest.raises(wp.PackageError):   # 版本过新
+        mp(_pkg_bytes({**_good_manifest(), "schema_version": 999}))
+    with pytest.raises(wp.PackageError):   # 结构非法
+        mp(_pkg_bytes({**_good_manifest(), "workflow": "nope"}))
+    with pytest.raises(wp.PackageError):   # 资源目录非数组
+        mp(_pkg_bytes({**_good_manifest(), "models": {}}))
+    assert mp(_pkg_bytes(_good_manifest()))["kind"] == wp.PACKAGE_KIND   # 合法放行
+
+
+def test_parse_manifest_rejects_corrupt_json(tmp_path):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("manifest.json", "{ not json")
+    path = tmp_path / "z.gfpkg"; path.write_bytes(buf.getvalue())
+    with wp._open_safe_zip(str(path)) as zf:
+        with pytest.raises(wp.PackageError):
+            wp._parse_manifest(zf)
+

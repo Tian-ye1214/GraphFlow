@@ -120,3 +120,64 @@ async def export_package(session, workflow, dest_path):
                     DatasetRow.dataset_id == did).order_by(DatasetRow.idx))
                 async for (data_json,) in result:
                     fh.write((data_json + "\n").encode("utf-8"))
+
+
+def _unsafe_name(name):
+    n = str(name).replace("\\", "/")
+    return n.startswith("/") or ":" in n or ".." in n.split("/")
+
+
+def _open_safe_zip(zip_path):
+    """打开不可信 zip：非法路径 / 条目超数 / 解压总量超限 → PackageError。调用方用 with 关闭。"""
+    try:
+        zf = zipfile.ZipFile(zip_path)
+    except zipfile.BadZipFile as e:
+        raise PackageError(f"不是合法的 zip 文件: {e}")
+    infos = zf.infolist()
+    if len(infos) > MAX_ENTRIES:
+        zf.close()
+        raise PackageError("包内条目过多")
+    total = 0
+    for info in infos:
+        if _unsafe_name(info.filename):
+            zf.close()
+            raise PackageError(f"非法条目路径: {info.filename}")
+        total += info.file_size
+    if total > MAX_TOTAL_UNCOMPRESSED:
+        zf.close()
+        raise PackageError("包解压后体积超限")
+    return zf
+
+
+def _read_entry(zf, name, cap):
+    """按 cap+1 限读单条目（防 lying-header 炸弹）；缺/超抛 PackageError。"""
+    try:
+        with zf.open(name) as fh:
+            data = fh.read(cap + 1)
+    except KeyError:
+        raise PackageError(f"包内缺少 {name}")
+    if len(data) > cap:
+        raise PackageError(f"{name} 过大")
+    return data
+
+
+def _parse_manifest(zf):
+    try:
+        m = json.loads(_read_entry(zf, "manifest.json", MAX_MANIFEST_BYTES))
+    except ValueError as e:
+        raise PackageError(f"manifest.json 不是合法 JSON: {e}")
+    if not isinstance(m, dict) or m.get("kind") != PACKAGE_KIND:
+        raise PackageError("不是 GraphFlow 链路包")
+    ver = m.get("schema_version")
+    if ver != SCHEMA_VERSION:
+        if isinstance(ver, int) and not isinstance(ver, bool) and ver > SCHEMA_VERSION:
+            raise PackageError(f"包版本过新（v{ver}），请升级 GraphFlow")
+        raise PackageError(f"不支持的包版本: {ver!r}")
+    wf = m.get("workflow")
+    if (not isinstance(wf, dict) or not isinstance(wf.get("graph"), dict)
+            or not isinstance(wf.get("name"), str)):
+        raise PackageError("manifest.workflow 结构非法")
+    for key in ("models", "prompts", "datasets", "redactions"):
+        if not isinstance(m.get(key, []), list):
+            raise PackageError(f"manifest.{key} 必须是数组")
+    return m
