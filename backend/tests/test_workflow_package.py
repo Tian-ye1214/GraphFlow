@@ -301,3 +301,16 @@ async def test_export_foreign_workflow_404(auth_client):
     await auth_client.post("/api/auth/login", json={"username": "intruder"})
     assert (await auth_client.get(f"/api/workflows/{wf['id']}/export")).status_code == 404
 
+
+# ---------------- Task 6: CLI ----------------
+
+def test_cli_workflow_register_has_export_import():
+    import argparse
+    from app.cli.commands import workflow as wfcmd
+    parser = argparse.ArgumentParser()
+    wfcmd.register(parser.add_subparsers(dest="cmd"))
+    assert parser.parse_args(["wf", "export", "x"]).func is wfcmd.cmd_wf_export
+    assert parser.parse_args(["wf", "import", "f.gfpkg"]).func is wfcmd.cmd_wf_import
+    with pytest.raises(SystemExit):
+        parser.parse_args(["wf", "dump"])
+

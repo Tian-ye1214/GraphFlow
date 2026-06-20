@@ -511,17 +511,17 @@ def test_node_set_think_off(server, capsys):
     assert json.loads(capsys.readouterr().out)["config"]["params"]["thinking_enabled"] is False
 
 
-def test_wf_dump_load_roundtrip(server, capsys, tmp_path):
+def test_wf_export_import_roundtrip(server, capsys, tmp_path):
     login_and_wf(server, "导出流")
     gf("node", "add", "input"); gf("node", "add", "output")
     gf("link", "input_1", "output_1")
-    dump = tmp_path / "graph.json"
-    gf("wf", "dump", "-o", str(dump))
-    graph = json.loads(dump.read_text(encoding="utf-8"))
-    assert {n["id"] for n in graph["nodes"]} == {"input_1", "output_1"}
-    # 改名后 load 回去
-    gf("wf", "add", "空流"); gf("use", "空流")
-    gf("wf", "load", str(dump))
+    pkg = tmp_path / "out.gfpkg"
+    gf("wf", "export", "导出流", "-o", str(pkg))
+    assert pkg.exists() and pkg.stat().st_size > 0
+    capsys.readouterr()
+    gf("wf", "import", str(pkg))            # 导入为新链路「导出流(导入)」
+    assert "导出流(导入)" in capsys.readouterr().out
+    gf("use", "导出流(导入)")
     capsys.readouterr()
     gf("show")
     assert "input_1 -> output_1" in capsys.readouterr().out
