@@ -132,16 +132,20 @@ async def export_workflow(wf_id: int, user: User = Depends(get_current_user),
     os.close(fd)
     try:
         await export_package(session, wf, tmp)
+        safe = _safe_filename(wf.name)
+        ascii_name = (safe.encode("ascii", "ignore").decode().strip() or "workflow") + ".gfpkg"
+        disp = (f"attachment; filename=\"{ascii_name}\"; "
+                f"filename*=UTF-8''{quote(safe + '.gfpkg')}")
+        resp = FileResponse(tmp, media_type="application/zip",
+                            headers={"Content-Disposition": disp},
+                            background=BackgroundTask(os.unlink, tmp))
+    except (GraphError, PackageError) as e:        # 草稿态/畸形图无法解析 → 422，对齐 columns 契约
+        os.unlink(tmp)
+        raise HTTPException(status_code=422, detail=f"草稿态图无法导出: {e}")
     except Exception:
         os.unlink(tmp)
         raise
-    safe = _safe_filename(wf.name)
-    ascii_name = (safe.encode("ascii", "ignore").decode().strip() or "workflow") + ".gfpkg"
-    disp = (f"attachment; filename=\"{ascii_name}\"; "
-            f"filename*=UTF-8''{quote(safe + '.gfpkg')}")
-    return FileResponse(tmp, media_type="application/zip",
-                        headers={"Content-Disposition": disp},
-                        background=BackgroundTask(os.unlink, tmp))
+    return resp
 
 
 @router.post("/import")

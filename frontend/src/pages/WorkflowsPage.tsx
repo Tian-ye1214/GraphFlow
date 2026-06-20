@@ -114,9 +114,9 @@ function ImportReportView({ result }: { result: ImportResult }) {
       {r.models_need_key.length > 0 && (
         <p style={{ color: '#d46b08' }}>⚠ 待回填密钥的模型：{join(r.models_need_key)}（跑前请到模型配置补填）</p>
       )}
-      {r.headers_need_refill.length > 0 && (
-        <p style={{ color: '#d46b08' }}>⚠ 待回填的 http 头：
-          {r.headers_need_refill.map((x) => `${x.node_id}.${x.header}`).join('、')}</p>
+      {r.secrets_need_refill.length > 0 && (
+        <p style={{ color: '#d46b08' }}>⚠ 待回填的密钥位：
+          {r.secrets_need_refill.map((x) => `${x.node_id ?? '模型'}.${x.field}`).join('、')}</p>
       )}
       {r.draft_unresolved.length > 0 && (
         <p style={{ color: '#cf1322' }}>⚠ 有引用无法解析、已降级草稿：

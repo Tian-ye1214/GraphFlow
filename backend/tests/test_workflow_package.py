@@ -24,20 +24,41 @@ def test_collect_refs_gathers_all_kinds_and_skips_dirty():
     assert prompts == {7}
 
 
-def test_redact_headers_only_sensitive_literal_values():
+def test_redact_secrets_headers_only_sensitive_literal_values():
     g = {"nodes": [
         {"id": "h", "type": "http_fetch", "config": {"headers": {
-            "Authorization": "Bearer sk-secret", "X-Api-Key": "abc",
+            "Authorization": "Bearer sk-secret", "X-Api-Key": "abc", "X-Signature": "sig123",
             "Content-Type": "application/json", "X-Token": "{{tok}}"}}},
         {"id": "x", "type": "input", "config": {}},
     ], "edges": []}
-    red = wp.redact_headers(g)
+    red = wp.redact_secrets(g)
     h = g["nodes"][0]["config"]["headers"]
     assert h["Authorization"] == wp.REDACTED
     assert h["X-Api-Key"] == wp.REDACTED
-    assert h["Content-Type"] == "application/json"   # 非敏感头保留
-    assert h["X-Token"] == "{{tok}}"                 # 模板值放行
-    assert {(r["node_id"], r["header"]) for r in red} == {("h", "Authorization"), ("h", "X-Api-Key")}
+    assert h["X-Signature"] == wp.REDACTED            # 签名类自定义鉴权头也脱敏（扩展名单）
+    assert h["Content-Type"] == "application/json"    # 非敏感头保留
+    assert h["X-Token"] == "{{tok}}"                  # 模板值放行
+    assert {(r["node_id"], r["field"]) for r in red} == {
+        ("h", "Authorization"), ("h", "X-Api-Key"), ("h", "X-Signature")}
+
+
+def test_redact_secrets_url_and_body():
+    g = {"nodes": [
+        {"id": "u", "type": "http_fetch", "config": {
+            "url": "https://user:pass@api.x.com/v1?api_key=SECRET&q={{q}}&page=1",
+            "body": '{"token": "BODYSECRET", "q": "{{q}}", "n": 3}'}},
+        {"id": "t", "type": "http_fetch", "config": {"url": "https://api.x.com/{{q}}"}},
+    ], "edges": []}
+    red = wp.redact_secrets(g)
+    cfg = g["nodes"][0]["config"]
+    assert "pass" not in cfg["url"] and wp.REDACTED in cfg["url"]   # userinfo 打码
+    assert "api_key=SECRET" not in cfg["url"] and "page=1" in cfg["url"]  # 敏感查询参数打码、普通参数保留
+    assert "{{q}}" in cfg["url"]                                    # 模板查询参数保留
+    body = json.loads(cfg["body"])
+    assert body["token"] == wp.REDACTED and body["q"] == "{{q}}" and body["n"] == 3
+    assert g["nodes"][1]["config"]["url"] == "https://api.x.com/{{q}}"   # 纯模板 url 放行
+    fields = {r["field"] for r in red}
+    assert "url.userinfo" in fields and "url.api_key" in fields and "body.token" in fields
 
 
 # ---------------- Task 2: 导出 ----------------
@@ -89,7 +110,7 @@ async def test_export_package_self_contained_no_key_redacted(session_factory, tm
     httpn = next(n for n in manifest["workflow"]["graph"]["nodes"] if n["id"] == "h")
     assert httpn["config"]["headers"]["Authorization"] == wp.REDACTED
     assert httpn["config"]["headers"]["Accept"] == "*/*"
-    assert manifest["redactions"] == [{"node_id": "h", "header": "Authorization"}]
+    assert manifest["redactions"] == [{"node_id": "h", "field": "Authorization"}]
     # 数据集行类型保真（"007" 仍是字符串）
     assert [json.loads(line) for line in ds_lines] == [{"q": "007"}, {"q": "你好"}]
     # 库内 graph 未被脱敏污染（redact 只改导出副本）
@@ -193,7 +214,7 @@ async def test_import_roundtrip_cross_tenant_reuse_and_create(session_factory, t
             DatasetRow.dataset_id == did).order_by(DatasetRow.idx))).all()
         assert [json.loads(r[0]) for r in rows] == [{"q": "007"}, {"q": "你好"}]   # 行保真
     assert report["models_reused"] and report["datasets_created"] and report["prompts_created"]
-    assert report["headers_need_refill"] == [{"node_id": "h", "header": "Authorization"}]
+    assert report["secrets_need_refill"] == [{"node_id": "h", "field": "Authorization"}]
 
 
 async def test_import_ignores_embedded_user_id(session_factory, tmp_path):
@@ -313,4 +334,113 @@ def test_cli_workflow_register_has_export_import():
     assert parser.parse_args(["wf", "import", "f.gfpkg"]).func is wfcmd.cmd_wf_import
     with pytest.raises(SystemExit):
         parser.parse_args(["wf", "dump"])
+
+
+# ---------------- Task 8: 对抗 review 修复回归 ----------------
+
+async def test_export_redacts_model_default_params_secret(session_factory, tmp_path):
+    """模型 default_params 里夹带的凭据（extra_body 内鉴权头）导出时也脱敏。"""
+    async with session_factory() as s:
+        u = User(username="dp"); s.add(u); await s.flush()
+        m = ModelConfig(user_id=u.id, name="mdp", base_url="http://x", api_key_enc="enc",
+                        default_params_json=json.dumps({"temperature": 0,
+                            "extra_body": {"headers": {"Authorization": "Bearer SECRET"}}}))
+        s.add(m); await s.flush()
+        graph = {"nodes": [{"id": "g", "type": "llm_synth", "config": {"model_config_id": m.id}}], "edges": []}
+        wf = Workflow(user_id=u.id, name="w", graph_json=json.dumps(graph)); s.add(wf); await s.commit()
+        wf_id = wf.id
+    dest = tmp_path / "o.gfpkg"
+    async with session_factory() as s:
+        await wp.export_package(s, await s.get(Workflow, wf_id), str(dest))
+    with zipfile.ZipFile(dest) as zf:
+        manifest = json.loads(zf.read("manifest.json"))
+    dp = manifest["models"][0]["default_params"]
+    assert dp["temperature"] == 0
+    assert dp["extra_body"]["headers"]["Authorization"] == wp.REDACTED
+
+
+def _write_pkg_with_dataset_bytes(tmp_path, raw_jsonl: bytes):
+    manifest = {**_good_manifest(),
+                "datasets": [{"id": 1, "name": "d", "columns": ["q"], "row_count": 1, "file": "datasets/1.jsonl"}]}
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False))
+        zf.writestr("datasets/1.jsonl", raw_jsonl)
+    path = tmp_path / "z.gfpkg"; path.write_bytes(buf.getvalue())
+    return path
+
+
+async def test_import_non_utf8_dataset_is_422_not_500(session_factory, tmp_path):
+    path = _write_pkg_with_dataset_bytes(tmp_path, '{"q": "甲"}\n'.encode("gbk"))   # GBK，非 UTF-8
+    async with session_factory() as s:
+        u = User(username="enc1"); s.add(u); await s.flush(); uid = u.id
+    async with session_factory() as s:
+        with pytest.raises(wp.PackageError):
+            await wp.import_package(s, str(path), uid)
+
+
+async def test_import_bom_dataset_ok(session_factory, tmp_path):
+    path = _write_pkg_with_dataset_bytes(tmp_path, '﻿{"q": "甲"}\n'.encode("utf-8"))  # 带 BOM
+    async with session_factory() as s:
+        u = User(username="enc2"); s.add(u); await s.flush(); uid = u.id
+    async with session_factory() as s:
+        await wp.import_package(s, str(path), uid)
+    async with session_factory() as s:
+        from sqlalchemy import select
+        d = (await s.execute(select(Dataset).where(Dataset.user_id == uid))).scalars().first()
+        rows = (await s.execute(select(DatasetRow.data_json).where(
+            DatasetRow.dataset_id == d.id))).all()
+    assert [json.loads(r[0]) for r in rows] == [{"q": "甲"}]   # BOM 被容错剥除
+
+
+async def test_import_dirty_graph_shape_is_422(session_factory, tmp_path):
+    async with session_factory() as s:
+        u = User(username="shape"); s.add(u); await s.flush(); uid = u.id
+    for bad_graph in ({"nodes": 123, "edges": []},
+                      {"nodes": ["x"], "edges": []},
+                      {"nodes": [], "edges": [123]}):
+        manifest = {**_good_manifest(), "workflow": {"name": "w", "graph": bad_graph}}
+        path = tmp_path / "z.gfpkg"; path.write_bytes(_pkg_bytes(manifest))
+        async with session_factory() as s:
+            with pytest.raises(wp.PackageError):
+                await wp.import_package(s, str(path), uid)
+            await s.rollback()
+
+
+def test_parse_manifest_schema_version_strict(tmp_path):
+    def mp(ver):
+        path = tmp_path / "z.gfpkg"
+        path.write_bytes(_pkg_bytes({**_good_manifest(), "schema_version": ver}))
+        with wp._open_safe_zip(str(path)) as zf:
+            return wp._parse_manifest(zf)
+    for bad in (True, 1.0, "1", [1]):
+        with pytest.raises(wp.PackageError):
+            mp(bad)
+    assert mp(1)["schema_version"] == 1
+
+
+def test_open_safe_zip_rejects_unsupported_compression(tmp_path, monkeypatch):
+    # stdlib 写不出非法压缩方法的 zip，故构造合法 zip 后改写中央目录里 ZipInfo.compress_type 校验逻辑路径：
+    # 直接验证 _open_safe_zip 对声明非常规 compress_type 的条目报 PackageError。
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("manifest.json", "{}")
+    path = tmp_path / "z.gfpkg"; path.write_bytes(buf.getvalue())
+    real_infolist = zipfile.ZipFile.infolist
+
+    def fake_infolist(self):
+        infos = real_infolist(self)
+        for i in infos:
+            i.compress_type = 6      # imploded：_ALLOWED_COMPRESS 之外
+        return infos
+    monkeypatch.setattr(zipfile.ZipFile, "infolist", fake_infolist)
+    with pytest.raises(wp.PackageError):
+        wp._open_safe_zip(str(path))
+
+
+async def test_export_draft_graph_endpoint_422(auth_client):
+    wf = (await auth_client.post("/api/workflows", json={"name": "草稿"})).json()
+    bad = {"nodes": [{"id": "x"}], "edges": []}   # 节点缺 type → parse_graph 抛 GraphError
+    await auth_client.put(f"/api/workflows/{wf['id']}", json={"graph": bad})
+    assert (await auth_client.get(f"/api/workflows/{wf['id']}/export")).status_code == 422
 

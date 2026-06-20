@@ -81,7 +81,7 @@ export interface ImportReport {
   prompts_created: { name: string; id: number }[]
   datasets_reused: { name: string; id: number }[]
   datasets_created: { name: string; id: number }[]
-  headers_need_refill: { node_id: string; header: string }[]
+  secrets_need_refill: { node_id: string | null; field: string }[]
   draft_unresolved: { node_id: string; kind: string; old_id: number }[]
 }
 export interface ImportResult { workflow: { id: number; name: string }; report: ImportReport }

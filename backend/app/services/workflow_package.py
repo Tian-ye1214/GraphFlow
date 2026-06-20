@@ -3,7 +3,9 @@
 import io
 import json
 import re
+import urllib.parse as urlparse
 import zipfile
+import zlib
 
 from sqlalchemy import insert, select
 
@@ -20,9 +22,20 @@ REDACTED = "***REDACTED***"
 MAX_ENTRIES = 10_000
 MAX_MANIFEST_BYTES = 64 * 1024 * 1024            # 64MB manifest 限读
 MAX_TOTAL_UNCOMPRESSED = 4 * 1024 ** 3           # 4GB 解压总量上限
+# 仅放行常规压缩方法；imploded/AES 等读取期会抛 NotImplementedError → 提前拒成 422。
+_ALLOWED_COMPRESS = (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+# 读包阶段一切非 PackageError 的底层异常（损坏流/截断/编码/不支持压缩）统一归一为 PackageError → 422。
+_READ_ERRORS = (zipfile.BadZipFile, zlib.error, EOFError, OSError, NotImplementedError, UnicodeDecodeError)
 
-# 敏感 http 头名（大小写不敏感子串）。值含 {{ 模板的放行（逐行注入，非固化密钥）。
-_SENSITIVE_HEADER = re.compile(r"authorization|cookie|token|secret|key|password|auth", re.I)
+# 敏感名（大小写不敏感子串）：http 头名 / url 查询参数名 / body 键名 / 模型 default_params 键名
+# 命中即视为凭据。值含 {{ 模板的放行（逐行注入，非固化密钥）。
+_SENSITIVE = re.compile(
+    r"authorization|cookie|token|secret|key|password|auth|sign|hmac|credential|bearer", re.I)
+
+
+def _is_literal_secret(v):
+    """字符串、非空、且非 {{ 模板（模板是逐行注入的占位，不是固化密钥）。"""
+    return isinstance(v, str) and bool(v) and "{{" not in v
 
 
 class PackageError(ValueError):
@@ -51,22 +64,79 @@ def collect_refs(graph):
     return ds, models, prompts
 
 
-def redact_headers(graph_dict):
-    """把 http_fetch 节点 headers 里敏感头的固化值替成 REDACTED；返回 [{node_id, header}]。
-    模板值（含 {{）与非敏感头放行。原地改 graph_dict。"""
+def _redact_dict_secrets(obj, node_id, prefix, redactions):
+    """递归 dict：敏感键名的固化标量值替 REDACTED 并登记 {node_id, field}。原地改。"""
+    if not isinstance(obj, dict):
+        return
+    for k in list(obj):
+        v = obj[k]
+        if isinstance(v, dict):
+            _redact_dict_secrets(v, node_id, f"{prefix}.{k}", redactions)
+        elif _SENSITIVE.search(str(k)) and _is_literal_secret(v):
+            obj[k] = REDACTED
+            redactions.append({"node_id": node_id, "field": f"{prefix}.{k}"})
+
+
+def _redact_url(url, node_id, redactions):
+    """剔除 url 的 userinfo(user:pass@)、对敏感查询参数值打码。返回新 url。
+    逐组件判模板（含 {{ 的凭据/值放行），且按字符串就地改 query——不经 urlencode，避免把 {{}} 模板百分号转义。"""
+    if not isinstance(url, str) or not url:
+        return url
+    try:
+        parts = urlparse.urlsplit(url)
+    except ValueError:
+        return url
+    netloc, query, changed = parts.netloc, parts.query, False
+    if "@" in netloc:
+        creds, host = netloc.rsplit("@", 1)
+        if "{{" not in creds:                       # 模板凭据放行
+            netloc = f"{REDACTED}@{host}"
+            changed = True
+            redactions.append({"node_id": node_id, "field": "url.userinfo"})
+    if query:
+        new_pairs, q_changed = [], False
+        for pair in query.split("&"):
+            k, sep, v = pair.partition("=")
+            if sep and v and "{{" not in v and _SENSITIVE.search(urlparse.unquote(k)):
+                new_pairs.append(f"{k}={REDACTED}"); q_changed = True
+                redactions.append({"node_id": node_id, "field": f"url.{urlparse.unquote(k)}"})
+            else:
+                new_pairs.append(pair)               # 原样保留（含 {{}} 模板、普通参数）
+        if q_changed:
+            query = "&".join(new_pairs); changed = True
+    return urlparse.urlunsplit(parts._replace(netloc=netloc, query=query)) if changed else url
+
+
+def redact_secrets(graph_dict):
+    """脱敏 http_fetch 节点的 headers / url / body 里的固化凭据，返回 [{node_id, field}]。
+    模板值（含 {{）与非敏感项放行。原地改 graph_dict。"""
     redactions = []
     for node in graph_dict.get("nodes", []):
         if not isinstance(node, dict) or node.get("type") != "http_fetch":
             continue
         cfg = node.get("config")
-        headers = cfg.get("headers") if isinstance(cfg, dict) else None
-        if not isinstance(headers, dict):
+        if not isinstance(cfg, dict):
             continue
-        for k in list(headers):
-            v = headers[k]
-            if _SENSITIVE_HEADER.search(str(k)) and isinstance(v, str) and v and "{{" not in v:
-                headers[k] = REDACTED
-                redactions.append({"node_id": node.get("id"), "header": k})
+        nid = node.get("id")
+        headers = cfg.get("headers")
+        if isinstance(headers, dict):
+            for k in list(headers):
+                if _SENSITIVE.search(str(k)) and _is_literal_secret(headers[k]):
+                    headers[k] = REDACTED
+                    redactions.append({"node_id": nid, "field": str(k)})
+        if isinstance(cfg.get("url"), str):
+            cfg["url"] = _redact_url(cfg["url"], nid, redactions)
+        body = cfg.get("body")
+        if isinstance(body, str) and body:           # body 整体可含模板，逐键判模板而非整串
+            try:
+                parsed = json.loads(body)
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, dict):
+                before = len(redactions)
+                _redact_dict_secrets(parsed, nid, "body", redactions)
+                if len(redactions) > before:
+                    cfg["body"] = json.dumps(parsed, ensure_ascii=False)
     return redactions
 
 
@@ -75,7 +145,7 @@ async def export_package(session, workflow, dest_path):
     只收集属于 workflow.user_id 的资源；悬空/非自有引用跳过（导入时降级草稿）。"""
     uid = workflow.user_id
     graph_dict = json.loads(workflow.graph_json)        # 新对象，redact 改它不影响库
-    redactions = redact_headers(graph_dict)
+    redactions = redact_secrets(graph_dict)
     ds_ids, model_ids, prompt_ids = collect_refs(parse_graph(graph_dict))
 
     models = []
@@ -83,9 +153,12 @@ async def export_package(session, workflow, dest_path):
         m = await session.get(ModelConfig, mid)
         if m is None or m.user_id != uid:
             continue
+        # default_params 是无 schema 任意字典，可能夹带凭据（如 extra_body 内代理鉴权）→ 同样脱敏
+        dp = json.loads(m.default_params_json)
+        _redact_dict_secrets(dp, None, f"model[{m.name}].default_params", redactions)
         models.append({"id": m.id, "name": m.name, "model_name": m.model_name, "base_url": m.base_url,
                        "provider": m.provider, "azure_api_mode": m.azure_api_mode,
-                       "api_version": m.api_version, "default_params": json.loads(m.default_params_json)})
+                       "api_version": m.api_version, "default_params": dp})
     prompts = []
     for pid in sorted(prompt_ids):
         p = await session.get(Prompt, pid)
@@ -142,6 +215,9 @@ def _open_safe_zip(zip_path):
         if _unsafe_name(info.filename):
             zf.close()
             raise PackageError(f"非法条目路径: {info.filename}")
+        if info.compress_type not in _ALLOWED_COMPRESS:
+            zf.close()
+            raise PackageError(f"不支持的压缩方法: {info.compress_type}")
         total += info.file_size
     if total > MAX_TOTAL_UNCOMPRESSED:
         zf.close()
@@ -150,12 +226,14 @@ def _open_safe_zip(zip_path):
 
 
 def _read_entry(zf, name, cap):
-    """按 cap+1 限读单条目（防 lying-header 炸弹）；缺/超抛 PackageError。"""
+    """按 cap+1 限读单条目（防 lying-header 炸弹）；缺/超/损坏流一律 PackageError。"""
     try:
         with zf.open(name) as fh:
             data = fh.read(cap + 1)
     except KeyError:
         raise PackageError(f"包内缺少 {name}")
+    except _READ_ERRORS as e:                 # 损坏/截断/CRC错/不支持压缩 → 422 不 500
+        raise PackageError(f"读取 {name} 失败: {e}")
     if len(data) > cap:
         raise PackageError(f"{name} 过大")
     return data
@@ -169,14 +247,24 @@ def _parse_manifest(zf):
     if not isinstance(m, dict) or m.get("kind") != PACKAGE_KIND:
         raise PackageError("不是 GraphFlow 链路包")
     ver = m.get("schema_version")
+    if not isinstance(ver, int) or isinstance(ver, bool):     # 严格 int：拒 True/1.0/"1" 等等值陷阱
+        raise PackageError(f"不支持的包版本: {ver!r}")
     if ver != SCHEMA_VERSION:
-        if isinstance(ver, int) and not isinstance(ver, bool) and ver > SCHEMA_VERSION:
+        if ver > SCHEMA_VERSION:
             raise PackageError(f"包版本过新（v{ver}），请升级 GraphFlow")
         raise PackageError(f"不支持的包版本: {ver!r}")
     wf = m.get("workflow")
     if (not isinstance(wf, dict) or not isinstance(wf.get("graph"), dict)
             or not isinstance(wf.get("name"), str)):
         raise PackageError("manifest.workflow 结构非法")
+    # 图 nodes/edges 须为 dict 列表：否则 _rewrite_refs 在 parse_graph(有 GraphError 兜底)之前
+    # 就会 TypeError/AttributeError 逃逸成 500（不可信包，必须 422）。
+    graph = wf["graph"]
+    nodes, edges = graph.get("nodes", []), graph.get("edges", [])
+    if not isinstance(nodes, list) or not all(isinstance(n, dict) for n in nodes):
+        raise PackageError("manifest 图 nodes 结构非法")
+    if not isinstance(edges, list) or not all(isinstance(e, dict) for e in edges):
+        raise PackageError("manifest 图 edges 结构非法")
     for key in ("models", "prompts", "datasets", "redactions"):
         if not isinstance(m.get(key, []), list):
             raise PackageError(f"manifest.{key} 必须是数组")
@@ -215,23 +303,29 @@ async def _create_dataset_streaming(session, zf, dmeta, user_id):
             handle = zf.open(fname)
         except KeyError:
             raise PackageError(f"包内缺少数据集文件 {fname}")
-        with handle:
-            for raw in io.TextIOWrapper(handle, encoding="utf-8"):
-                read_bytes += len(raw)
-                if read_bytes > MAX_TOTAL_UNCOMPRESSED:
-                    raise PackageError("数据集解压超限")
-                line = raw.strip()
-                if not line:
-                    continue
-                obj = _loads_row(line)
-                if not isinstance(obj, dict):
-                    raise PackageError(f"数据集 {fname} 第 {count + 1} 行不是 JSON 对象")
-                batch.append({"dataset_id": ds.id, "idx": count,
-                              "data_json": json.dumps(obj, ensure_ascii=False)})
-                count += 1
-                if len(batch) >= 1000:
-                    await session.execute(insert(DatasetRow), batch)
-                    batch = []
+        except _READ_ERRORS as e:
+            raise PackageError(f"读取数据集 {fname} 失败: {e}")
+        try:
+            # utf-8-sig 容 BOM；非 UTF-8/损坏流在迭代时抛 _READ_ERRORS → 422（不可信包不得 500）
+            with handle:
+                for raw in io.TextIOWrapper(handle, encoding="utf-8-sig"):
+                    read_bytes += len(raw.encode("utf-8"))     # 按字节计，多字节内容不绕过上限
+                    if read_bytes > MAX_TOTAL_UNCOMPRESSED:
+                        raise PackageError("数据集解压超限")
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    obj = _loads_row(line)
+                    if not isinstance(obj, dict):
+                        raise PackageError(f"数据集 {fname} 第 {count + 1} 行不是 JSON 对象")
+                    batch.append({"dataset_id": ds.id, "idx": count,
+                                  "data_json": json.dumps(obj, ensure_ascii=False)})
+                    count += 1
+                    if len(batch) >= 1000:
+                        await session.execute(insert(DatasetRow), batch)
+                        batch = []
+        except _READ_ERRORS as e:
+            raise PackageError(f"读取数据集 {fname} 失败: {e}")
         if batch:
             await session.execute(insert(DatasetRow), batch)
     ds.row_count = count
@@ -285,7 +379,7 @@ async def import_package(session, zip_path, user_id):
     report = {"models_reused": [], "models_created": [], "models_need_key": [],
               "prompts_reused": [], "prompts_created": [],
               "datasets_reused": [], "datasets_created": [],
-              "headers_need_refill": [], "draft_unresolved": []}
+              "secrets_need_refill": [], "draft_unresolved": []}
     with _open_safe_zip(zip_path) as zf:
         m = _parse_manifest(zf)
         model_map, prompt_map, ds_map = {}, {}, {}
@@ -355,7 +449,7 @@ async def import_package(session, zip_path, user_id):
         await session.flush()
         for r in m["redactions"]:
             if isinstance(r, dict):
-                report["headers_need_refill"].append({"node_id": r.get("node_id"), "header": r.get("header")})
+                report["secrets_need_refill"].append({"node_id": r.get("node_id"), "field": r.get("field")})
         wf_id, wf_name = wf.id, wf.name
         await session.commit()
     return {"id": wf_id, "name": wf_name}, report

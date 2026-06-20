@@ -1,4 +1,5 @@
 """工作流与图结构：wf ls|add|rm|restore|rename|export|import / use / show / cols / link / unlink / node add|rm。"""
+import re
 from pathlib import Path
 
 from app.cli import save_state
@@ -142,7 +143,11 @@ def cmd_wf_export(args):
     wf_id = cli.resolve("workflows", args.ref) if args.ref else cli.current_wf()
     wf = cli.req("GET", f"/api/workflows/{wf_id}")
     r = cli.check(cli.http.get(f"/api/workflows/{wf_id}/export"))
-    out = Path(args.output) if args.output else Path(f"{wf['name']}.gfpkg")
+    if args.output:
+        out = Path(args.output)
+    else:   # 默认名取自服务端链路名：仅留末段并替非法字符，避免名含 / 写错位置
+        safe = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", Path(wf["name"]).name).strip(" .") or "workflow"
+        out = Path(f"{safe}.gfpkg")
     out.write_bytes(r.content)
     print(f"已导出链路「{wf['name']}」到 {out}")
 
@@ -164,9 +169,9 @@ def cmd_wf_import(args):
         print("  复用: " + "、".join(reused))
     if rep["models_need_key"]:
         print("  待回填密钥的模型: " + "、".join(x["name"] for x in rep["models_need_key"]))
-    if rep["headers_need_refill"]:
-        print("  待回填的 http 头: " + "、".join(
-            f"{x['node_id']}.{x['header']}" for x in rep["headers_need_refill"]))
+    if rep["secrets_need_refill"]:
+        print("  待回填的密钥位: " + "、".join(
+            f"{x['node_id']}.{x['field']}" for x in rep["secrets_need_refill"]))
     if rep["draft_unresolved"]:
         print("  ⚠ 有引用无法解析，已降级草稿: " + "、".join(
             f"{x['node_id']}({x['kind']})" for x in rep["draft_unresolved"]))
