@@ -2,16 +2,16 @@ import shutil
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
-from sqlalchemy import delete as sa_delete, select
+from sqlalchemy import delete as sa_delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.turns import _safe
 from app.auth import ACT_AS_COOKIE, COOKIE_MAX_AGE, make_act_as_cookie, require_admin
 from app.config import settings
 from app.db import get_session
-from app.models import (AgentMessage, AgentSession, Dataset, DatasetRow, ModelConfig,
-                        QcFailure, QcMetric, Run, RunLog, RunNodeState, RunRow, User,
-                        Workflow, WorkflowVersion)
+from app.models import (AgentMessage, AgentSession, Dataset, DatasetRow, ModelCallLog, ModelConfig,
+                        Prompt, PromptVersion, QcFailure, QcMetric, Run, RunLog, RunNodeState,
+                        RunRow, User, Workflow, WorkflowVersion)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -84,7 +84,19 @@ async def delete_user(user_id: int, admin: User = Depends(require_admin),
         select(Workflow.id).where(Workflow.user_id == user_id))).scalars().all()
     sess_ids = (await session.execute(
         select(AgentSession.id).where(AgentSession.user_id == user_id))).scalars().all()
+    prompt_ids = (await session.execute(
+        select(Prompt.id).where(Prompt.user_id == user_id))).scalars().all()
     # --- 级联删除：子表 → 父表 → User ---
+    # 模型调用日志(request_json=完整提示词、response_json=模型回复正文)：按 user_id 为主，
+    # run/workflow/session 关联兜底 user_id 未填的历史行。须先于 Run/Workflow/AgentSession 删（有外键指向三者）。
+    mcl_conds = [ModelCallLog.user_id == user_id]
+    if run_ids:
+        mcl_conds.append(ModelCallLog.run_id.in_(run_ids))
+    if wf_ids:
+        mcl_conds.append(ModelCallLog.workflow_id.in_(wf_ids))
+    if sess_ids:
+        mcl_conds.append(ModelCallLog.session_id.in_(sess_ids))
+    await session.execute(sa_delete(ModelCallLog).where(or_(*mcl_conds)))
     if ds_ids:
         await session.execute(sa_delete(DatasetRow).where(DatasetRow.dataset_id.in_(ds_ids)))
     await session.execute(sa_delete(Dataset).where(Dataset.user_id == user_id))
@@ -102,6 +114,9 @@ async def delete_user(user_id: int, admin: User = Depends(require_admin),
     if sess_ids:
         await session.execute(sa_delete(AgentMessage).where(AgentMessage.session_id.in_(sess_ids)))
     await session.execute(sa_delete(AgentSession).where(AgentSession.user_id == user_id))
+    if prompt_ids:
+        await session.execute(sa_delete(PromptVersion).where(PromptVersion.prompt_id.in_(prompt_ids)))
+    await session.execute(sa_delete(Prompt).where(Prompt.user_id == user_id))
     await session.execute(sa_delete(User).where(User.id == user_id))
     await session.commit()
     # 该用户上传的数据集文件都在 uploads/<user_id>/，整目录删除即可（运行结果数据集 file_path 为空）
