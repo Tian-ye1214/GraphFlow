@@ -164,6 +164,15 @@ def strip_qc_internal(row: dict) -> dict:
     return {k: v for k, v in row.items() if k not in _QC_INTERNAL_KEYS}
 
 
+def zero_usage() -> dict:
+    return {"prompt_tokens": 0, "completion_tokens": 0}
+
+
+def add_usage(acc: dict, u: dict) -> None:
+    acc["prompt_tokens"] += u["prompt_tokens"]
+    acc["completion_tokens"] += u["completion_tokens"]
+
+
 async def run_llm_synth_row(config: dict, row: dict, mc: ModelConfig,
                             user_sem: asyncio.Semaphore) -> tuple[list[dict], dict]:
     """处理一条输入行：扇出 fanout_n 次调用，返回 (输出行列表, usage 汇总)。失败抛异常由 runner 记为行失败。"""
@@ -191,10 +200,9 @@ async def run_llm_synth_row(config: dict, row: dict, mc: ModelConfig,
         raise
 
     out_rows: list[dict] = []
-    usage_total = {"prompt_tokens": 0, "completion_tokens": 0}
+    usage_total = zero_usage()
     for text, usage in results:
-        usage_total["prompt_tokens"] += usage["prompt_tokens"]
-        usage_total["completion_tokens"] += usage["completion_tokens"]
+        add_usage(usage_total, usage)
         if config.get("output_mode") == "json":
             # parse_constant：模型返回非标准 NaN/Infinity 时就地归一为 None，保持逐行隔离——
             # 否则非法浮点进 out_rows，_write_unit(成功分支、行 try 之外) 序列化抛错会拖垮整 run。
@@ -235,7 +243,7 @@ async def run_qc_judge_row(config: dict, row: dict, mcs: list[ModelConfig], pass
     返回 (是否通过, 聚合理由, usage 汇总, per_model 列表)。"""
     base = strip_qc_internal(row)
     if not any(str(v).strip() for v in base.values()):   # 空/全空白样本：直接判不通过，不调 judge
-        return False, "样本内容为空", {"prompt_tokens": 0, "completion_tokens": 0}, []
+        return False, "样本内容为空", zero_usage(), []
     system = render_template(config.get("system_prompt", ""), base) + QC_EMPTY_ANCHOR
     user = render_template(config.get("user_prompt", ""), base)
     # 判定默认：思考开启、力度 high、max_tokens 65536、温度 0 —— 均置于 config.params 之前，
@@ -247,14 +255,13 @@ async def run_qc_judge_row(config: dict, row: dict, mcs: list[ModelConfig], pass
     async def judge_one(mc: ModelConfig):
         """单模型判定：报错/非 JSON/缺 status/空回复/限流等一律重试，retries 次仍失败即投「不通过」票。
         绝不向上抛——一行里某个判定模型抽风不该拖垮整个质检节点与 run（对照 llm_synth 的逐行隔离）。"""
-        usage_acc = {"prompt_tokens": 0, "completion_tokens": 0}
+        usage_acc = zero_usage()
         last_err = None
         for attempt in range(retries):
             try:
                 async with user_sem:
                     text, usage = await llm.chat(mc, system, user, params=params, retries=1)
-                usage_acc["prompt_tokens"] += usage["prompt_tokens"]
-                usage_acc["completion_tokens"] += usage["completion_tokens"]
+                add_usage(usage_acc, usage)
                 verdict = _json.loads(text)
                 if "status" not in verdict:
                     raise ValueError("判定未返回 status 字段")
@@ -266,11 +273,10 @@ async def run_qc_judge_row(config: dict, row: dict, mcs: list[ModelConfig], pass
         return mc.id, "failed", f"判定重试 {retries} 次仍失败：{last_err}", usage_acc
 
     results = await asyncio.gather(*[judge_one(mc) for mc in mcs])
-    usage_total = {"prompt_tokens": 0, "completion_tokens": 0}
+    usage_total = zero_usage()
     per_model, n_pass, dissent = [], 0, []
     for mc_id, status, reason, usage in results:
-        usage_total["prompt_tokens"] += usage["prompt_tokens"]
-        usage_total["completion_tokens"] += usage["completion_tokens"]
+        add_usage(usage_total, usage)
         per_model.append({"model_config_id": mc_id, "status": status, "reason": reason})
         if status.lower() == "pass":
             n_pass += 1

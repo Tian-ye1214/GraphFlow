@@ -421,11 +421,10 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
             raise ValueError(f"质检节点 {node.id}: 输出列 {col} 与输入已有列同名，将覆盖原始数据，请改用其他列名")
     await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running",
                           total=len(inputs), done=0, failed=0)
-    usage = {"prompt_tokens": 0, "completion_tokens": 0}
+    usage = nodes.zero_usage()
 
     def fold(u):
-        usage["prompt_tokens"] += u["prompt_tokens"]
-        usage["completion_tokens"] += u["completion_tokens"]
+        nodes.add_usage(usage, u)
 
     sem = asyncio.Semaphore(cfg.get("concurrency", 4))
 
