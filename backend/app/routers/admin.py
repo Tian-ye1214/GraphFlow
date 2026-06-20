@@ -10,8 +10,8 @@ from app.auth import ACT_AS_COOKIE, COOKIE_MAX_AGE, make_act_as_cookie, require_
 from app.config import settings
 from app.db import get_session
 from app.models import (AgentMessage, AgentSession, Dataset, DatasetRow, ModelCallLog, ModelConfig,
-                        Prompt, PromptVersion, QcFailure, QcMetric, Run, RunLog, RunNodeState,
-                        RunRow, User, Workflow, WorkflowVersion)
+                        Prompt, PromptVersion, Run, User, Workflow, WorkflowVersion)
+from app.services.run_service import purge_run_rows, unlink_run_exports
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -101,13 +101,8 @@ async def delete_user(user_id: int, admin: User = Depends(require_admin),
         await session.execute(sa_delete(DatasetRow).where(DatasetRow.dataset_id.in_(ds_ids)))
     await session.execute(sa_delete(Dataset).where(Dataset.user_id == user_id))
     await session.execute(sa_delete(ModelConfig).where(ModelConfig.user_id == user_id))
-    if run_ids:
-        await session.execute(sa_delete(RunRow).where(RunRow.run_id.in_(run_ids)))
-        await session.execute(sa_delete(RunNodeState).where(RunNodeState.run_id.in_(run_ids)))
-        await session.execute(sa_delete(RunLog).where(RunLog.run_id.in_(run_ids)))
-        await session.execute(sa_delete(QcMetric).where(QcMetric.run_id.in_(run_ids)))
-        await session.execute(sa_delete(QcFailure).where(QcFailure.run_id.in_(run_ids)))
-    await session.execute(sa_delete(Run).where(Run.user_id == user_id))
+    # run 子表 + Run 本身（ModelCallLog 上方已按 or_ 删过，purge 内再按 run_id 删一次幂等无害）
+    await purge_run_rows(session, run_ids)
     if wf_ids:
         await session.execute(sa_delete(WorkflowVersion).where(WorkflowVersion.workflow_id.in_(wf_ids)))
     await session.execute(sa_delete(Workflow).where(Workflow.user_id == user_id))
@@ -122,7 +117,5 @@ async def delete_user(user_id: int, admin: User = Depends(require_admin),
     # 该用户上传的数据集文件都在 uploads/<user_id>/，整目录删除即可（运行结果数据集 file_path 为空）
     shutil.rmtree(settings.data_dir / "uploads" / str(user_id), ignore_errors=True)
     shutil.rmtree(settings.data_dir / "agent" / _safe(username), ignore_errors=True)
-    for rid in run_ids:
-        for p in (settings.data_dir / "exports").glob(f"run{rid}_*"):
-            p.unlink(missing_ok=True)
+    unlink_run_exports(run_ids, settings.data_dir)
     return {"ok": True}

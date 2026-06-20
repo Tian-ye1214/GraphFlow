@@ -2,14 +2,40 @@
 import json
 import re
 
-from sqlalchemy import func, select
+from sqlalchemy import delete as sa_delete, func, select
 
 from app.engine.graph import parse_graph, validate_graph
 from app.engine.manager import manager
-from app.models import QcFailure, QcMetric, Run, User, Workflow, WorkflowVersion
+from app.models import (ModelCallLog, QcFailure, QcMetric, Run, RunLog, RunNodeState, RunRow, User,
+                        Workflow, WorkflowVersion)
+
+# run 的全部子表（按 run_id 外键）。新增 run 子表只需加到这里，所有删除入口（删单 run / 清空 run /
+# 删工作流 / 删用户）自动级联，避免某入口漏删致孤儿数据 + 跨租户泄漏。
+RUN_CHILD_MODELS = (RunRow, RunNodeState, RunLog, QcMetric, QcFailure, ModelCallLog)
 
 _PCT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 _FRAC_RE = re.compile(r"\b(0?\.\d+|1\.0)\b")
+
+
+async def purge_run_rows(session, run_ids, *, version_ids=None) -> None:
+    """级联删除一批 run 的全部子表行 + Run 本身 +（可选）WorkflowVersion 快照。
+    只发删除语句、不 commit、不删落盘导出文件（落盘文件由 unlink_run_exports 在 commit 成功后清理，
+    以免事务回滚后文件已丢）。空 run_ids 直接返回。"""
+    if not run_ids:
+        return
+    for Model in RUN_CHILD_MODELS:
+        await session.execute(sa_delete(Model).where(Model.run_id.in_(run_ids)))
+    await session.execute(sa_delete(Run).where(Run.id.in_(run_ids)))
+    if version_ids:
+        await session.execute(sa_delete(WorkflowVersion).where(WorkflowVersion.id.in_(version_ids)))
+
+
+def unlink_run_exports(run_ids, data_dir) -> None:
+    """删除一批 run 的落盘导出文件（commit 成功后调用）。"""
+    exports = data_dir / "exports"
+    for rid in run_ids:
+        for p in exports.glob(f"run{rid}_*"):
+            p.unlink(missing_ok=True)
 
 
 def parse_threshold(text: str) -> float | None:

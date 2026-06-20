@@ -11,8 +11,8 @@ from app.db import get_session
 from app.engine.columns import propagate_columns, resolve_dataset_cols
 from app.engine.graph import GraphError, parse_graph, validate_graph
 from app.events import publish
-from app.models import (ModelCallLog, QcFailure, QcMetric, Run, RunLog, RunNodeState, RunRow,
-                        User, Workflow, WorkflowVersion)
+from app.models import ModelCallLog, Run, User, Workflow, WorkflowVersion
+from app.services.run_service import purge_run_rows, unlink_run_exports
 
 router = APIRouter(prefix="/api/workflows", tags=["workflows"])
 
@@ -104,17 +104,14 @@ async def delete_workflow(wf_id: int, user: User = Depends(get_current_user),
     if any(st in ("queued", "running") for _, st in runs):
         raise HTTPException(status_code=409, detail="存在运行中的任务，请先取消再删除")
     run_ids = [rid for rid, _ in runs]
-    if run_ids:  # 级联清理子数据，否则版本/运行/行/日志/指标全成孤儿，run 还会脱离列表泄漏
-        for Model in (RunRow, RunNodeState, RunLog, QcMetric, QcFailure, ModelCallLog):
-            await session.execute(sa_delete(Model).where(Model.run_id.in_(run_ids)))
-        await session.execute(sa_delete(Run).where(Run.workflow_id == wf.id))
+    # 级联清理子数据，否则版本/运行/行/日志/指标全成孤儿，run 还会脱离列表泄漏。
+    # 版本按 workflow_id 整体删（含没有 run 的草稿版本），故 purge 不带 version_ids。
+    await purge_run_rows(session, run_ids)
     # 节点助手类日志（无 run、按 workflow 归属）一并清
     await session.execute(sa_delete(ModelCallLog).where(ModelCallLog.workflow_id == wf.id))
     await session.execute(sa_delete(WorkflowVersion).where(WorkflowVersion.workflow_id == wf.id))
     await session.delete(wf)
     await session.commit()
-    for rid in run_ids:
-        for p in (settings.data_dir / "exports").glob(f"run{rid}_*"):
-            p.unlink(missing_ok=True)
+    unlink_run_exports(run_ids, settings.data_dir)
     publish(user.id, "workflow", wf_id)
     return {"ok": True}
