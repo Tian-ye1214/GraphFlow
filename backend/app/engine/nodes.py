@@ -238,7 +238,10 @@ async def run_qc_judge_row(config: dict, row: dict, mcs: list[ModelConfig], pass
         return False, "样本内容为空", {"prompt_tokens": 0, "completion_tokens": 0}, []
     system = render_template(config.get("system_prompt", ""), base) + QC_EMPTY_ANCHOR
     user = render_template(config.get("user_prompt", ""), base)
-    params = {"temperature": 0, **config.get("params", {}), "json_mode": True}
+    # 判定是 temperature=0 的结构化二分类：默认关思考 + 给小封顶，砍掉「high 推理 × N模型 × rescan轮」的
+    # 隐性 token 放大（合成节点的故意 high 不受影响）。默认在前、config.params 在后 → 用户仍可显式覆盖。
+    params = {"temperature": 0, "thinking_enabled": False, "max_tokens": 1024,
+              **config.get("params", {}), "json_mode": True}
     retries = config.get("retries", 3)
 
     async def judge_one(mc: ModelConfig):
