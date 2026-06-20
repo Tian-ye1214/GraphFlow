@@ -1,5 +1,5 @@
-"""工作流与图结构：wf ls|add|rm|restore|rename|dump|load / use / show / cols / link / unlink / node add|rm。"""
-import json
+"""工作流与图结构：wf ls|add|rm|restore|rename|export|import / use / show / cols / link / unlink / node add|rm。"""
+import re
 from pathlib import Path
 
 from app.cli import save_state
@@ -138,23 +138,43 @@ def cmd_cols(args):
         print(f"  输出: {', '.join(io['output']) or '（无）'}")
 
 
-def cmd_wf_dump(args):
+def cmd_wf_export(args):
     cli = Cli()
-    wf = cli.get_wf()
-    out = Path(args.output or f"{wf['name']}.json")
-    out.write_text(json.dumps(wf["graph"], ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"已导出工作流图到 {out}")
+    wf_id = cli.resolve("workflows", args.ref) if args.ref else cli.current_wf()
+    wf = cli.req("GET", f"/api/workflows/{wf_id}")
+    r = cli.check(cli.http.get(f"/api/workflows/{wf_id}/export"))
+    if args.output:
+        out = Path(args.output)
+    else:   # 默认名取自服务端链路名：仅留末段并替非法字符，避免名含 / 写错位置
+        safe = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", Path(wf["name"]).name).strip(" .") or "workflow"
+        out = Path(f"{safe}.gfpkg")
+    out.write_bytes(r.content)
+    print(f"已导出链路「{wf['name']}」到 {out}")
 
 
-def cmd_wf_load(args):
+def cmd_wf_import(args):
     cli = Cli()
     path = Path(args.file)
     if not path.is_file():
         die(f"文件不存在: {args.file}")
-    graph = json.loads(path.read_text(encoding="utf-8"))
-    wf_id = cli.current_wf()
-    cli.put_graph(wf_id, graph)
-    print(f"已从 {args.file} 载入工作流图（#{wf_id}）")
+    with open(path, "rb") as f:
+        d = cli.req("POST", "/api/workflows/import",
+                    files={"file": (path.name, f, "application/zip")})
+    rep, w = d["report"], d["workflow"]
+    print(f"已导入为链路「{w['name']}」(#{w['id']})")
+    reused = ([f"模型 {x['name']}" for x in rep["models_reused"]]
+              + [f"提示词 {x['name']}" for x in rep["prompts_reused"]]
+              + [f"数据集 {x['name']}" for x in rep["datasets_reused"]])
+    if reused:
+        print("  复用: " + "、".join(reused))
+    if rep["models_need_key"]:
+        print("  待回填密钥的模型: " + "、".join(x["name"] for x in rep["models_need_key"]))
+    if rep["secrets_need_refill"]:
+        print("  待回填的密钥位: " + "、".join(
+            f"{x['node_id']}.{x['field']}" for x in rep["secrets_need_refill"]))
+    if rep["draft_unresolved"]:
+        print("  ⚠ 有引用无法解析，已降级草稿: " + "、".join(
+            f"{x['node_id']}({x['kind']})" for x in rep["draft_unresolved"]))
 
 
 def register(sub):
@@ -164,8 +184,10 @@ def register(sub):
     s = wf.add_parser("rm"); s.add_argument("ref"); s.set_defaults(func=cmd_wf_rm)
     s = wf.add_parser("restore"); s.add_argument("run_id", type=int); s.set_defaults(func=cmd_wf_restore)
     s = wf.add_parser("rename"); s.add_argument("ref"); s.add_argument("name"); s.set_defaults(func=cmd_wf_rename)
-    s = wf.add_parser("dump"); s.add_argument("-o", "--output"); s.set_defaults(func=cmd_wf_dump)
-    s = wf.add_parser("load"); s.add_argument("file"); s.set_defaults(func=cmd_wf_load)
+    s = wf.add_parser("export", help="导出链路为 .gfpkg 包")
+    s.add_argument("ref", nargs="?"); s.add_argument("-o", "--output"); s.set_defaults(func=cmd_wf_export)
+    s = wf.add_parser("import", help="从 .gfpkg 包导入链路")
+    s.add_argument("file"); s.set_defaults(func=cmd_wf_import)
 
     s = sub.add_parser("use", help="设当前工作流")
     s.add_argument("ref")
