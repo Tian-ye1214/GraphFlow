@@ -184,6 +184,15 @@ def _merge_branches(node_id: str, branches: list[list[dict]]) -> list[dict]:
     if len(set(counts)) > 1:
         raise ValueError(f"节点 {node_id}: 多个上游行数不一致 {counts}，无法按行合并"
                          f"（某分支的 fanout/过滤/质检改变了行数）")
+    # 按位合并依赖共享列作对齐锚：某分支经 auto_process 的 shuffle 重排行序(行数不变)、又删掉与其它支
+    # 唯一的共享列时，无锚可校验对齐 → 会把错配的行静默并到一起。要求各支至少共享一列：有锚则错配会被
+    # 下面的「取值不同」检查拦下；无锚则此处直接报错点名整 run failed，杜绝静默错配落库。0 行无可错配，跳过。
+    if counts and counts[0] > 0:
+        col_sets = [set().union(*(set(r) for r in b)) for b in branches]
+        if not set.intersection(*col_sets):
+            raise ValueError(f"节点 {node_id}: 多个上游分支间无共享列，无法校验按行对齐"
+                             f"（按位合并依赖共享列作对齐锚；请为各分支保留至少一个共同列，"
+                             f"或改用 input 节点选多个数据集来纵向堆叠）")
     merged: list[dict] = []
     for i in range(counts[0]):
         row: dict = {}
