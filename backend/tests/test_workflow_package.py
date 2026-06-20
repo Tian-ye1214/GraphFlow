@@ -156,3 +156,111 @@ def test_parse_manifest_rejects_corrupt_json(tmp_path):
         with pytest.raises(wp.PackageError):
             wp._parse_manifest(zf)
 
+
+# ---------------- Task 4: 导入 ----------------
+
+async def test_import_roundtrip_cross_tenant_reuse_and_create(session_factory, tmp_path):
+    from sqlalchemy import select
+    from app.crypto import decrypt, encrypt
+    # 导出账号 A 的链路
+    _uid_a, wf_id = await _seed_workflow(session_factory)
+    dest = tmp_path / "out.gfpkg"
+    async with session_factory() as s:
+        await wp.export_package(s, await s.get(Workflow, wf_id), str(dest))
+    # 账号 B 先有一个同名模型 "m1"（带 key）→ 导入应复用它；提示词/数据集 B 没有 → 新建
+    async with session_factory() as s:
+        b = User(username="importer"); s.add(b); await s.flush()
+        s.add(ModelConfig(user_id=b.id, name="m1", model_name="b-model", base_url="http://b",
+                          api_key_enc=encrypt("B-KEY"), default_params_json="{}"))
+        await s.commit(); uid_b = b.id
+    async with session_factory() as s:
+        wf_out, report = await wp.import_package(s, str(dest), uid_b)
+    async with session_factory() as s:
+        new = await s.get(Workflow, wf_out["id"])
+        assert new.user_id == uid_b and new.name == "链路A(导入)"
+        g = json.loads(new.graph_json)
+        gen = next(n for n in g["nodes"] if n["id"] == "g")
+        bm = (await s.execute(select(ModelConfig).where(
+            ModelConfig.user_id == uid_b, ModelConfig.name == "m1"))).scalars().first()
+        assert gen["config"]["model_config_id"] == bm.id        # 复用 B 既有同名（非包内 A 的 id）
+        assert decrypt(bm.api_key_enc) == "B-KEY"               # 复用模型保留自己的 key，未被覆盖
+        pid = gen["config"]["system_prompt_ref"]
+        np = await s.get(Prompt, pid); assert np.user_id == uid_b   # 提示词新建并重连
+        inn = next(n for n in g["nodes"] if n["id"] == "in")
+        did = inn["config"]["dataset_ids"][0]
+        nd = await s.get(Dataset, did); assert nd.user_id == uid_b and nd.row_count == 2
+        rows = (await s.execute(select(DatasetRow.data_json).where(
+            DatasetRow.dataset_id == did).order_by(DatasetRow.idx))).all()
+        assert [json.loads(r[0]) for r in rows] == [{"q": "007"}, {"q": "你好"}]   # 行保真
+    assert report["models_reused"] and report["datasets_created"] and report["prompts_created"]
+    assert report["headers_need_refill"] == [{"node_id": "h", "header": "Authorization"}]
+
+
+async def test_import_ignores_embedded_user_id(session_factory, tmp_path):
+    """包里就算夹带 user_id 也无视：一切落到导入者账号。"""
+    from sqlalchemy import select
+    async with session_factory() as s:
+        u = User(username="victim"); s.add(u); await s.flush(); uid = u.id
+    manifest = {**_good_manifest(),
+                "workflow": {"name": "x", "graph": {"nodes": [], "edges": []}},
+                "models": [{"id": 1, "name": "evil", "user_id": 999}]}
+    path = tmp_path / "z.gfpkg"; path.write_bytes(_pkg_bytes(manifest))
+    async with session_factory() as s:
+        wf_out, _report = await wp.import_package(s, str(path), uid)
+    async with session_factory() as s:
+        wf = await s.get(Workflow, wf_out["id"]); assert wf.user_id == uid
+        m = (await s.execute(select(ModelConfig).where(ModelConfig.name == "evil"))).scalars().first()
+        assert m.user_id == uid          # 落到导入者，非包内 user_id 999
+
+
+async def test_import_atomic_rollback_on_bad_graph(session_factory, tmp_path):
+    """图有环（validate 失败）但带数据集 → 整体回滚、不留孤儿数据集。"""
+    from sqlalchemy import select
+    async with session_factory() as s:
+        u = User(username="atom"); s.add(u); await s.flush(); uid = u.id
+    manifest = {"kind": wp.PACKAGE_KIND, "schema_version": 1,
+                "workflow": {"name": "环", "graph": {"nodes": [
+                    {"id": "a", "type": "auto_process", "config": {}},
+                    {"id": "b", "type": "auto_process", "config": {}}],
+                    "edges": [{"source": "a", "target": "b", "kind": "normal"},
+                              {"source": "b", "target": "a", "kind": "normal"}]}},
+                "models": [], "prompts": [],
+                "datasets": [{"id": 9, "name": "孤儿集", "columns": ["q"], "row_count": 1,
+                              "file": "datasets/9.jsonl"}],
+                "redactions": []}
+    path = tmp_path / "z.gfpkg"
+    path.write_bytes(_pkg_bytes(manifest, {"datasets/9.jsonl": '{"q": "1"}\n'}))
+    async with session_factory() as s:
+        with pytest.raises(wp.PackageError):
+            await wp.import_package(s, str(path), uid)
+        await s.rollback()
+    async with session_factory() as s:
+        left = (await s.execute(select(Dataset).where(Dataset.user_id == uid))).scalars().all()
+        assert left == []      # 回滚后无孤儿数据集
+
+
+async def test_import_missing_ref_degrades_to_draft(session_factory, tmp_path):
+    """包内 graph 引用了 manifest 资源目录里没有的模型 → 重连失败置空 + draft_unresolved 点名。"""
+    async with session_factory() as s:
+        u = User(username="draft"); s.add(u); await s.flush(); uid = u.id
+    manifest = {**_good_manifest(),
+                "workflow": {"name": "缺引用", "graph": {"nodes": [
+                    {"id": "g", "type": "llm_synth", "config": {"model_config_id": 42}}], "edges": []}}}
+    path = tmp_path / "z.gfpkg"; path.write_bytes(_pkg_bytes(manifest))
+    async with session_factory() as s:
+        wf_out, report = await wp.import_package(s, str(path), uid)
+        g = json.loads((await s.get(Workflow, wf_out["id"])).graph_json)
+    assert g["nodes"][0]["config"]["model_config_id"] is None
+    assert report["draft_unresolved"] == [{"node_id": "g", "kind": "模型", "old_id": 42}]
+
+
+async def test_import_workflow_name_suffix_increments(session_factory, tmp_path):
+    async with session_factory() as s:
+        u = User(username="dup"); s.add(u); await s.flush(); uid = u.id
+        s.add(Workflow(user_id=uid, name="w(导入)"))
+        await s.commit()
+    path = tmp_path / "z.gfpkg"; path.write_bytes(_pkg_bytes(_good_manifest()))
+    async with session_factory() as s:
+        wf_out, _ = await wp.import_package(s, str(path), uid)
+    assert wf_out["name"] == "w(导入 2)"   # "w(导入)" 已占用 → 递增
+
