@@ -427,6 +427,43 @@ def test_merge_conflict_distinguishes_int_bool_float():
     assert runner._merge_branches("m", [[{"k": 5}], [{"k": 5}]]) == [{"k": 5}]  # 同类型相等不报(回归)
 
 
+def test_merge_requires_shared_anchor_column():
+    """分支间无共享列→按位合并无锚可校验对齐→报错点名(堵住「某支shuffle重排+删唯一共享列」的静默错配)。
+    有共享列正常合并、空分支(0行无可错配)不误触——均为回归。"""
+    import pytest
+    with pytest.raises(ValueError, match="无共享列"):
+        runner._merge_branches("m", [[{"a": 1}, {"a": 2}], [{"b": 3}, {"b": 4}]])
+    # 有共享锚列 q：照常按位合并
+    assert runner._merge_branches("m", [[{"q": 1, "a": 2}], [{"q": 1, "b": 3}]]) == [{"q": 1, "a": 2, "b": 3}]
+    # 空分支：无行可错配，护栏不触发
+    assert runner._merge_branches("m", [[], []]) == []
+
+
+async def test_merge_no_shared_column_fails_run_named(session_factory, monkeypatch):
+    """某分支删掉与另一支唯一共享列(concat→qcopy 再 drop q)→按位合并无锚→整 run failed 点名，
+    替代原本的静默错配落库。"""
+    patch_chat(monkeypatch, lambda u: ("v", {"prompt_tokens": 1, "completion_tokens": 1}))
+    graph = {
+        "nodes": [
+            {"id": "in", "type": "input", "config": {"dataset_ids": []}},
+            {"id": "A", "type": "llm_synth",
+             "config": {"model_config_id": 0, "user_prompt": "A:{{q}}", "output_column": "a"}},
+            {"id": "procB", "type": "auto_process", "config": {"operations": [
+                {"op": "concat", "columns": ["q"], "target": "qcopy", "sep": ""},
+                {"op": "drop", "columns": ["q"]}]}},
+            {"id": "out", "type": "output", "config": {}},
+        ],
+        "edges": [{"source": "in", "target": "A", "kind": "normal"},
+                  {"source": "in", "target": "procB", "kind": "normal"},
+                  {"source": "A", "target": "out", "kind": "normal"},
+                  {"source": "procB", "target": "out", "kind": "normal"}],
+    }
+    run_id = await make_run(session_factory, graph=graph, rows=2)
+    await run_it(session_factory, run_id)
+    run = await get_run(session_factory, run_id)
+    assert run.status == "failed" and "无共享列" in (run.error or "") and "out" in (run.error or "")
+
+
 async def test_fanout_zero_fails_run_pointing_node(session_factory, monkeypatch):
     """fanout_n<=0 是节点配置错误 → 整 run failed 并点名节点（不再逐行失败而 run 仍 completed）。"""
     patch_chat(monkeypatch)
