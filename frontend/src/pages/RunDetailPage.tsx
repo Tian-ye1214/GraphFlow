@@ -66,19 +66,23 @@ export default function RunDetailPage() {
   const node = selectedNode ?? run?.graph.nodes.find((n) => n.type === 'output')?.id
   const isActive = run ? ACTIVE.includes(run.status) : true
 
-  useEffect(() => {
-    if (!run || isActive || !node) return
+  // 运行期也可观测：后端对 running 无限制，故结果/失败行/模型对话在运行中即按需拉取并随轮询实时刷新
+  const refreshRows = useCallback(() => {
+    if (!node) return
     void api.get<RowsPage>(`/api/runs/${id}/rows?node_id=${node}&page=${page}&page_size=20`).then(setRows)
     void api.get<RowsPage>(`/api/runs/${id}/rows?node_id=${node}&status=failed&page=${failedPage}&page_size=20`).then(setFailed)
-  }, [run?.status, node, page, failedPage, id, isActive])
-  useEffect(() => {
-    if (!run || isActive) return
+  }, [id, node, page, failedPage])
+  const refreshAux = useCallback(() => {
     void api.get<QcFailureEntry[]>(`/api/runs/${id}/qc-failures`).then(setQcFailures)
-  }, [run?.status, id, isActive])
-  useEffect(() => {
-    if (!run || isActive) return
     void api.get<ModelLogEntry[]>(`/api/runs/${id}/model-logs`).then(setModelLogs)
-  }, [run?.status, id, isActive])
+  }, [id])
+  useEffect(() => { if (run) refreshRows() }, [run?.status, refreshRows])
+  useEffect(() => { if (run) refreshAux() }, [run?.status, refreshAux])
+  useEffect(() => {  // 运行中每 2 秒实时刷新结果数据（与日志/进度同频）
+    if (!run || !ACTIVE.includes(run.status)) return
+    const t = setInterval(() => { refreshRows(); refreshAux() }, 2000)
+    return () => clearInterval(t)
+  }, [run?.status, refreshRows, refreshAux])
 
   const nodeLabel = useCallback((nid: string) => {
     const n = run?.graph.nodes.find((g) => g.id === nid)
@@ -152,7 +156,7 @@ export default function RunDetailPage() {
           {!logs.length && <span style={{ color: '#999' }}>暂无日志</span>}
         </div>
       </Card>
-      {!isActive && qcFailures.length > 0 && (
+      {qcFailures.length > 0 && (
         <Card size="small" title={`质检失败样本（${qcFailures.length}）`} style={{ marginBottom: 16 }}
               extra={<Button size="small" onClick={() => window.open(`/api/runs/${id}/qc-failures.jsonl`)}>
                 下载 jsonl
@@ -168,10 +172,11 @@ export default function RunDetailPage() {
                  ]} />
         </Card>
       )}
-      {!isActive && (
+      {run && (
         <>
-          <Space style={{ marginBottom: 8 }}>
+          <Space style={{ marginBottom: 8 }} wrap>
             查看节点：
+            {isActive && <Tag color="processing">运行中 · 实时刷新（数据随节点完成陆续出现）</Tag>}
             <Select style={{ width: 260 }} value={node}
                     onChange={(v) => { setSelectedNode(v); setPage(1); setFailedPage(1) }}
                     options={run.graph.nodes.map((n) => ({ value: n.id, label: nodeLabel(n.id) }))} />
