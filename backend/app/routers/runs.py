@@ -19,6 +19,7 @@ from app.models import (Dataset, ModelCallLog, ModelConfig, QcFailure, QcMetric,
                         RunNodeState, RunRow, User, Workflow, WorkflowVersion)
 from app.routers.workflows import get_owned_workflow
 from app.services.export import export_rows
+from app.services.run_service import purge_run_rows, unlink_run_exports
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
@@ -190,14 +191,9 @@ async def delete_all_runs(user: User = Depends(get_current_user),
     run_ids = [r.id for r in runs]
     ver_ids = [r.workflow_version_id for r in runs]
     if run_ids:
-        for Model in (RunRow, RunNodeState, RunLog, QcMetric, QcFailure, ModelCallLog):
-            await session.execute(sa_delete(Model).where(Model.run_id.in_(run_ids)))
-        await session.execute(sa_delete(Run).where(Run.id.in_(run_ids)))
-        await session.execute(sa_delete(WorkflowVersion).where(WorkflowVersion.id.in_(ver_ids)))
+        await purge_run_rows(session, run_ids, version_ids=ver_ids)
         await session.commit()
-        for rid in run_ids:
-            for p in (settings.data_dir / "exports").glob(f"run{rid}_*"):
-                p.unlink(missing_ok=True)
+        unlink_run_exports(run_ids, settings.data_dir)
     return {"deleted": len(run_ids)}
 
 
@@ -208,17 +204,9 @@ async def delete_run(run_id: int, user: User = Depends(get_current_user),
     if run.status in ("queued", "running"):
         raise HTTPException(status_code=409, detail="运行中，请先取消再删除")
     ver_id = run.workflow_version_id
-    await session.execute(sa_delete(RunRow).where(RunRow.run_id == run_id))
-    await session.execute(sa_delete(RunNodeState).where(RunNodeState.run_id == run_id))
-    await session.execute(sa_delete(RunLog).where(RunLog.run_id == run_id))
-    await session.execute(sa_delete(QcMetric).where(QcMetric.run_id == run_id))
-    await session.execute(sa_delete(QcFailure).where(QcFailure.run_id == run_id))
-    await session.execute(sa_delete(ModelCallLog).where(ModelCallLog.run_id == run_id))
-    await session.execute(sa_delete(Run).where(Run.id == run_id))
-    await session.execute(sa_delete(WorkflowVersion).where(WorkflowVersion.id == ver_id))
+    await purge_run_rows(session, [run_id], version_ids=[ver_id])
     await session.commit()
-    for p in (settings.data_dir / "exports").glob(f"run{run_id}_*"):
-        p.unlink(missing_ok=True)
+    unlink_run_exports([run_id], settings.data_dir)
     publish(user.id, "run", run_id)
     return {"ok": True}
 

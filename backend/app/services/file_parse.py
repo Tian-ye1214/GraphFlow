@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from app.engine.columns import ordered_union
+
 
 def _decode(content: bytes) -> str:
     """容错解码文本类文件：优先 UTF-8（连带剥除 BOM），失败回退 GBK（Windows 中文 Excel/记事本常见）。"""
@@ -75,9 +77,4 @@ def parse_sheets(filename: str, content: bytes) -> list[tuple[str, list[dict]]]:
 
 
 def union_columns(rows: list[dict]) -> list[str]:
-    cols: list[str] = []
-    for row in rows:
-        for key in row:
-            if key not in cols:
-                cols.append(key)
-    return cols
+    return ordered_union([list(row) for row in rows])

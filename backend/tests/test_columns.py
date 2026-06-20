@@ -193,3 +193,18 @@ def test_drop_columns_empty_is_noop():
 
 def test_empty_graph():
     assert propagate_columns(parse_graph({"nodes": [], "edges": []}), {}) == {}
+
+
+def test_ordered_union_is_shared_and_order_preserving():
+    """ordered_union 单点：保「首次出现顺序」的列名并集，空入参→[]。原 columns/data_preview 各一份复制粘贴已合并到此。"""
+    from app.engine.columns import ordered_union
+    assert ordered_union([["a", "b"], ["b", "c"], ["a", "d"]]) == ["a", "b", "c", "d"]
+    assert ordered_union([]) == []
+    assert ordered_union([[], ["x"], []]) == ["x"]
+
+
+def test_union_columns_delegates_to_ordered_union():
+    """file_parse.union_columns 现委托给 ordered_union：按行键取保序并集。"""
+    from app.services.file_parse import union_columns
+    assert union_columns([{"a": 1, "b": 2}, {"b": 3, "c": 4}]) == ["a", "b", "c"]
+    assert union_columns([]) == []
