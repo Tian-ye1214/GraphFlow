@@ -1,9 +1,14 @@
 import json
+import os
+import tempfile
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.background import BackgroundTask
 
 from app.auth import get_current_user
 from app.config import settings
@@ -12,7 +17,9 @@ from app.engine.columns import propagate_columns, resolve_dataset_cols
 from app.engine.graph import GraphError, parse_graph, validate_graph
 from app.events import publish
 from app.models import ModelCallLog, Run, User, Workflow, WorkflowVersion
+from app.routers.datasets import _safe_filename
 from app.services.run_service import purge_run_rows, unlink_run_exports
+from app.services.workflow_package import export_package, import_package, PackageError
 
 router = APIRouter(prefix="/api/workflows", tags=["workflows"])
 
@@ -115,3 +122,41 @@ async def delete_workflow(wf_id: int, user: User = Depends(get_current_user),
     unlink_run_exports(run_ids, settings.data_dir)
     publish(user.id, "workflow", wf_id)
     return {"ok": True}
+
+
+@router.get("/{wf_id}/export")
+async def export_workflow(wf_id: int, user: User = Depends(get_current_user),
+                          session: AsyncSession = Depends(get_session)):
+    wf = await get_owned_workflow(wf_id, user, session)
+    fd, tmp = tempfile.mkstemp(suffix=".gfpkg", dir=settings.data_dir)
+    os.close(fd)
+    try:
+        await export_package(session, wf, tmp)
+    except Exception:
+        os.unlink(tmp)
+        raise
+    safe = _safe_filename(wf.name)
+    ascii_name = (safe.encode("ascii", "ignore").decode().strip() or "workflow") + ".gfpkg"
+    disp = (f"attachment; filename=\"{ascii_name}\"; "
+            f"filename*=UTF-8''{quote(safe + '.gfpkg')}")
+    return FileResponse(tmp, media_type="application/zip",
+                        headers={"Content-Disposition": disp},
+                        background=BackgroundTask(os.unlink, tmp))
+
+
+@router.post("/import")
+async def import_workflow(file: UploadFile, user: User = Depends(get_current_user),
+                          session: AsyncSession = Depends(get_session)):
+    fd, tmp = tempfile.mkstemp(suffix=".gfpkg", dir=settings.data_dir)
+    try:
+        with os.fdopen(fd, "wb") as out:
+            while chunk := await file.read(1024 * 1024):
+                out.write(chunk)
+        try:
+            wf_out, report = await import_package(session, tmp, user.id)
+        except (PackageError, GraphError) as e:
+            raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        os.unlink(tmp)
+    publish(user.id, "workflow", wf_out["id"])
+    return {"workflow": wf_out, "report": report}

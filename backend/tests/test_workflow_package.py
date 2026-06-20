@@ -264,3 +264,40 @@ async def test_import_workflow_name_suffix_increments(session_factory, tmp_path)
         wf_out, _ = await wp.import_package(s, str(path), uid)
     assert wf_out["name"] == "w(导入 2)"   # "w(导入)" 已占用 → 递增
 
+
+# ---------------- Task 5: REST 端点 ----------------
+
+async def test_export_import_endpoints_roundtrip(auth_client):
+    up = await auth_client.post("/api/datasets/upload",
+        files={"files": ("d.jsonl", b'{"q": "007"}\n{"q": "x"}\n', "application/x-ndjson")})
+    did = up.json()[0]["id"]
+    wf = (await auth_client.post("/api/workflows", json={"name": "导链"})).json()
+    graph = {"nodes": [{"id": "in", "type": "input", "config": {"dataset_ids": [did]}}], "edges": []}
+    await auth_client.put(f"/api/workflows/{wf['id']}", json={"graph": graph})
+    r = await auth_client.get(f"/api/workflows/{wf['id']}/export")
+    assert r.status_code == 200 and r.headers["content-type"] == "application/zip"
+    pkg = r.content
+    await auth_client.post("/api/auth/login", json={"username": "importer2"})
+    r2 = await auth_client.post("/api/workflows/import",
+        files={"file": ("x.gfpkg", pkg, "application/zip")})
+    assert r2.status_code == 200
+    body = r2.json()
+    assert body["workflow"]["name"] == "导链(导入)"
+    assert body["report"]["datasets_created"]
+    got = (await auth_client.get(f"/api/workflows/{body['workflow']['id']}")).json()
+    new_did = got["graph"]["nodes"][0]["config"]["dataset_ids"][0]
+    rows = (await auth_client.get(f"/api/datasets/{new_did}/rows")).json()
+    assert rows["rows"][0] == {"q": "007"}
+
+
+async def test_import_endpoint_rejects_garbage(auth_client):
+    r = await auth_client.post("/api/workflows/import",
+        files={"file": ("x.gfpkg", b"not a zip", "application/zip")})
+    assert r.status_code == 422
+
+
+async def test_export_foreign_workflow_404(auth_client):
+    wf = (await auth_client.post("/api/workflows", json={"name": "私有"})).json()
+    await auth_client.post("/api/auth/login", json={"username": "intruder"})
+    assert (await auth_client.get(f"/api/workflows/{wf['id']}/export")).status_code == 404
+
