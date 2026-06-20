@@ -1,11 +1,10 @@
 """gf 公共：HTTP 客户端、资源解析、参数转换、常量表。"""
-import json
 import sys
 import time
 
 import httpx
 
-from app.cli import load_state, save_state, STATE_FILE  # noqa: F401  状态原语由包顶层提供
+from app.cli import load_state
 
 NODE_TYPES = {"input": "input", "llm": "llm_synth", "auto": "auto_process", "output": "output",
               "qc": "qc", "llm_synth": "llm_synth", "auto_process": "auto_process",

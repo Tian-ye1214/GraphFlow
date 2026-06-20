@@ -1,6 +1,4 @@
 """提示词库：prompt ls / show / add / edit / rm / versions / rollback / dup。"""
-import json
-
 from app.cli.client import Cli
 from app.cli.commands.node import _read_prompt
 
