@@ -26,7 +26,7 @@ def test_create_model_decrypts_key(monkeypatch):
     assert captured == {"base_url": "http://llm.local/v1", "api_key": "sk-test"}
     assert model.model_name == "qwen-max"
     assert model.settings["temperature"] == 0.3
-    assert model.settings["max_tokens"] == 100
+    assert model.settings["max_tokens"] == 65536  # force_xhigh 写死 65536，覆盖模型配置的 100
     assert "json_mode" not in model.settings  # 非 ModelSettings 键被忽略
 
 

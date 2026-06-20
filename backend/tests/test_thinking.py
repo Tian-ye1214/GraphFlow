@@ -53,9 +53,9 @@ def test_agent_chat_settings():
 
 
 def test_force_xhigh_overrides():
-    assert force_xhigh(None) == {"thinking_enabled": True, "reasoning_effort": "xhigh"}
-    assert force_xhigh({"thinking_enabled": False, "reasoning_effort": "low", "temperature": 0.3}) == {
-        "thinking_enabled": True, "reasoning_effort": "xhigh", "temperature": 0.3}
+    assert force_xhigh(None) == {"thinking_enabled": True, "reasoning_effort": "xhigh", "max_tokens": 65536}
+    assert force_xhigh({"thinking_enabled": False, "reasoning_effort": "low", "temperature": 0.3, "max_tokens": 10}) == {
+        "thinking_enabled": True, "reasoning_effort": "xhigh", "max_tokens": 65536, "temperature": 0.3}
 
 
 def test_agent_chat_settings_carries_effort():

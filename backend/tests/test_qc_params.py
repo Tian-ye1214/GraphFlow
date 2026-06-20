@@ -36,8 +36,8 @@ async def test_qc_params_default_temperature_zero(monkeypatch):
     assert seen["params"]["json_mode"] is True
 
 
-async def test_qc_params_default_thinking_off_and_capped(monkeypatch):
-    """判定是 temperature=0 的结构化二分类：默认关思考 + 给小封顶，砍隐性 token 放大（不动合成 high）。"""
+async def test_qc_params_thinking_default_high(monkeypatch):
+    """判定默认：思考开启 + 力度 high + max_tokens 65536（未设节点 params 时）。"""
     seen = {}
 
     async def fake_chat(mc, system, user, params=None, retries=3):
@@ -48,12 +48,13 @@ async def test_qc_params_default_thinking_off_and_capped(monkeypatch):
     mc = ModelConfig(user_id=1, name="m", base_url="http://x", api_key_enc="")
     await nodes.run_qc_judge_row({"system_prompt": "判定", "user_prompt": "{{q}}"},
                                  {"q": "非空"}, [mc], 1, asyncio.Semaphore(4))
-    assert seen["params"]["thinking_enabled"] is False
-    assert seen["params"]["max_tokens"] == 1024
+    assert seen["params"]["thinking_enabled"] is True
+    assert seen["params"]["reasoning_effort"] == "high"
+    assert seen["params"]["max_tokens"] == 65536
 
 
-async def test_qc_params_user_can_reenable_thinking(monkeypatch):
-    """用户在节点 params 里显式开思考/改 max_tokens 仍可覆盖默认（默认在前、config.params 在后）。"""
+async def test_qc_params_thinking_user_overridable(monkeypatch):
+    """节点默认非写死：用户在 params 里关思考/调档/改 max_tokens 均生效（覆盖默认）。"""
     seen = {}
 
     async def fake_chat(mc, system, user, params=None, retries=3):
@@ -63,7 +64,8 @@ async def test_qc_params_user_can_reenable_thinking(monkeypatch):
     monkeypatch.setattr(nodes.llm, "chat", fake_chat)
     mc = ModelConfig(user_id=1, name="m", base_url="http://x", api_key_enc="")
     config = {"system_prompt": "判定", "user_prompt": "{{q}}",
-              "params": {"thinking_enabled": True, "max_tokens": 4096}}
+              "params": {"thinking_enabled": False, "reasoning_effort": "low", "max_tokens": 100}}
     await nodes.run_qc_judge_row(config, {"q": "非空"}, [mc], 1, asyncio.Semaphore(4))
-    assert seen["params"]["thinking_enabled"] is True
-    assert seen["params"]["max_tokens"] == 4096
+    assert seen["params"]["thinking_enabled"] is False
+    assert seen["params"]["reasoning_effort"] == "low"
+    assert seen["params"]["max_tokens"] == 100
