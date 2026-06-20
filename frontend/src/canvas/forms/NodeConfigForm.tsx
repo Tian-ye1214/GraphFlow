@@ -3,6 +3,7 @@ import { Button, Collapse, Input, InputNumber, Popover, Radio, Select, Space, Sp
 import { api } from '../../api/client'
 import type { CodegenOut, ColumnsMap, Dataset, ModelConfig, PromptDetail, PromptSummary, RowsPage } from '../../api/types'
 import { sendAssist, setDraft, useNodeAssist } from '../../agent/nodeAssistantStore'
+import { extractTplVars, renderCell } from '../../utils'
 
 export interface FormProps {
   config: Record<string, any>
@@ -61,21 +62,12 @@ function ThinkingControls({ params, patchParams }: {
   )
 }
 
-const TPL_RE = /\{\{\s*([^{}]+?)\s*\}\}/g
 function missingCols(text: string, inputCols: string[]): string[] {
-  const out: string[] = []
-  for (const m of (text ?? '').matchAll(TPL_RE)) {
-    if (!inputCols.includes(m[1]) && !out.includes(m[1])) out.push(m[1])
-  }
-  return out
+  return extractTplVars(text).filter((c) => !inputCols.includes(c))
 }
 
 function referencedCols(text: string, inputCols: string[]): string[] {
-  const out: string[] = []
-  for (const m of (text ?? '').matchAll(TPL_RE)) {
-    if (inputCols.includes(m[1]) && !out.includes(m[1])) out.push(m[1])
-  }
-  return out
+  return extractTplVars(text).filter((c) => inputCols.includes(c))
 }
 
 // 切换某列在文本里的 {{列}} 引用：已存在则删除全部该列占位，否则在末尾追加
@@ -237,8 +229,7 @@ function DatasetHeadPreview({ ds }: { ds: Dataset }) {
         size="small" rowKey={(_r, i) => String(i)} pagination={false} dataSource={rows}
         scroll={{ x: 'max-content' }}
         columns={ds.columns.map((c) => ({
-          title: c, dataIndex: c, ellipsis: true,
-          render: (v: unknown) => (typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v ?? '')),
+          title: c, dataIndex: c, ellipsis: true, render: renderCell,
         }))}
       />
     </div>

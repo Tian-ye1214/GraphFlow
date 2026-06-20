@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Card, Popconfirm, Progress, Select, Space, Table, Tabs, Tag, message } from 'antd'
 import { useParams } from 'react-router-dom'
-import { api } from '../api/client'
+import { api, triggerDownload } from '../api/client'
 import { useEvents } from '../api/events'
 import type { ModelLogEntry, NodeState, QcFailureEntry, RowsPage, RunDetail, RunLogEntry } from '../api/types'
 import { formatRunLog } from './runLog'
 import { NODE_LABELS } from '../canvas/serialize'
 import { STATUS_COLORS, STATUS_LABELS } from './RunsPage'
+import { renderCell } from '../utils'
 
 const ACTIVE = ['queued', 'running']
 
@@ -31,13 +32,7 @@ export default function RunDetailPage() {
     return () => clearInterval(t)
   }, [run?.status, refreshLogs])
   const downloadLog = () => {
-    const blob = new Blob([formatRunLog(logs)], { type: 'text/plain' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `run${id}.log`
-    a.click()
-    URL.revokeObjectURL(url)
+    triggerDownload(new Blob([formatRunLog(logs)], { type: 'text/plain' }), `run${id}.log`)
   }
 
   const refresh = useCallback(() => api.get<RunDetail>(`/api/runs/${id}`).then(setRun), [id])
@@ -98,8 +93,7 @@ export default function RunDetailPage() {
   if (!run) return null
   const hasFailed = run.node_states.some((s) => s.failed > 0)
   const previewColumns = Object.keys(rows.rows[0] ?? {}).map((c) => ({
-    title: c, dataIndex: c, ellipsis: true,
-    render: (v: unknown) => (typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v ?? '')),
+    title: c, dataIndex: c, ellipsis: true, render: renderCell,
   }))
 
   return (

@@ -4,6 +4,7 @@ import { UploadOutlined } from '@ant-design/icons'
 import { api } from '../api/client'
 import type { Dataset, RowsPage } from '../api/types'
 import { useEvents } from '../api/events'
+import { renderCell } from '../utils'
 
 export default function DatasetsPage() {
   const [list, setList] = useState<Dataset[]>([])
@@ -77,8 +78,7 @@ export default function DatasetsPage() {
           rowKey={(_, i) => String(i)}
           dataSource={rows.rows}
           columns={(preview?.columns ?? []).map((c) => ({
-            title: c, dataIndex: c, ellipsis: true,
-            render: (v: unknown) => (typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v ?? '')),
+            title: c, dataIndex: c, ellipsis: true, render: renderCell,
           }))}
           pagination={{ current: page, pageSize: 20, total: rows.total, onChange: setPage }}
           scroll={{ x: 'max-content' }}

@@ -36,15 +36,20 @@ export function filenameFromDisposition(dispo: string | null, fallback: string):
   return m ? decodeURIComponent(m[1]) : fallback
 }
 
-// 链路导出：取 zip blob 触发浏览器下载（绕开 api.request 的 res.json()）。
-export async function downloadWorkflowPackage(id: number, fallback: string): Promise<void> {
-  const res = await fetch(`/api/workflows/${id}/export`)
-  if (!res.ok) throw new ApiError(res.status, '导出失败')
-  const name = filenameFromDisposition(res.headers.get('content-disposition'), `${fallback}.gfpkg`)
-  const url = URL.createObjectURL(await res.blob())
+// 把 blob 触发为浏览器下载（建临时 <a> 点击后回收 URL）。
+export function triggerDownload(blob: Blob, name: string): void {
+  const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
   a.download = name
   a.click()
   URL.revokeObjectURL(url)
+}
+
+// 链路导出：取 zip blob 触发浏览器下载（绕开 api.request 的 res.json()）。
+export async function downloadWorkflowPackage(id: number, fallback: string): Promise<void> {
+  const res = await fetch(`/api/workflows/${id}/export`)
+  if (!res.ok) throw new ApiError(res.status, '导出失败')
+  const name = filenameFromDisposition(res.headers.get('content-disposition'), `${fallback}.gfpkg`)
+  triggerDownload(await res.blob(), name)
 }

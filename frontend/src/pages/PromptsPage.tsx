@@ -4,13 +4,10 @@ import ReactMarkdown from 'react-markdown'
 import { api } from '../api/client'
 import type { PromptDetail, PromptSummary } from '../api/types'
 import { useEvents } from '../api/events'
-
-const VAR_RE = /\{\{\s*([^{}]+?)\s*\}\}/g
+import { extractTplVars } from '../utils'
 
 export function extractVars(body: string): string[] {
-  const set = new Set<string>()
-  for (const m of (body ?? '').matchAll(VAR_RE)) set.add(m[1])
-  return [...set].sort()
+  return extractTplVars(body).sort()
 }
 
 export function buildPromptPayload(v: { name: string; description: string; body: string }) {
