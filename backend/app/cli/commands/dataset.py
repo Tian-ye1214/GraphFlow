@@ -41,10 +41,9 @@ def cmd_data_rm(args):
 def cmd_data_download(args):
     cli = Cli()
     ds_id = cli.resolve("datasets", args.ref)
-    r = cli.check(cli.http.get(f"/api/datasets/{ds_id}/export", params={"format": args.format}))
     out = Path(args.output or f"{args.ref}.{args.format}")
-    out.write_bytes(r.content)
-    print(f"已下载 {out}（{len(r.content)} 字节）")
+    n = cli.download(f"/api/datasets/{ds_id}/export", out, params={"format": args.format})
+    print(f"已下载 {out}（{n} 字节）")
 
 
 def register(sub):

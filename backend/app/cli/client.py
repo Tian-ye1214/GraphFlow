@@ -1,6 +1,7 @@
 """gf 公共：HTTP 客户端、资源解析、参数转换、常量表。"""
 import sys
 import time
+from pathlib import Path
 
 import httpx
 
@@ -42,6 +43,12 @@ class Cli:
 
     def req(self, method: str, path: str, **kw):
         return self.check(self.http.request(method, path, **kw)).json()
+
+    def download(self, path: str, out: Path, *, params=None) -> int:
+        """GET 二进制落盘到 out，返回写入字节数。"""
+        r = self.check(self.http.get(path, params=params))
+        out.write_bytes(r.content)
+        return len(r.content)
 
     def resolve(self, kind: str, ref: str) -> int:
         """纯数字按 ID，否则按名字精确匹配。kind: workflows/datasets/models。"""

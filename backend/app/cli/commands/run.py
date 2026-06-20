@@ -48,11 +48,10 @@ def cmd_export(args):
     params = {"format": args.format}
     if args.node:
         params["node_id"] = args.node
-    r = cli.check(cli.http.get(f"/api/runs/{args.run_id}/export", params=params))
     name = f"run{args.run_id}_{args.node}.{args.format}" if args.node else f"run{args.run_id}.{args.format}"
     out = Path(args.output or name)
-    out.write_bytes(r.content)
-    print(f"已导出 {out}（{len(r.content)} 字节）")
+    n = cli.download(f"/api/runs/{args.run_id}/export", out, params=params)
+    print(f"已导出 {out}（{n} 字节）")
 
 
 def _default_output_node(cli: Cli, run_id: int) -> str:
@@ -87,10 +86,9 @@ def cmd_logs(args):
 def cmd_qc(args):
     cli = Cli()
     if args.download:
-        r = cli.check(cli.http.get(f"/api/runs/{args.run_id}/qc-failures.jsonl"))
         out = Path(args.output or f"run{args.run_id}_qc_failures.jsonl")
-        out.write_bytes(r.content)
-        print(f"已下载失败样本 {out}（{len(r.content)} 字节）")
+        n = cli.download(f"/api/runs/{args.run_id}/qc-failures.jsonl", out)
+        print(f"已下载失败样本 {out}（{n} 字节）")
         return
     for m in cli.req("GET", f"/api/runs/{args.run_id}/qc-metrics"):
         print(f"{m['node_id']}  首轮通过 {m['first_round_pass']}/{m['total']}"

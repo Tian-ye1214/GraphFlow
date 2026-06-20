@@ -142,13 +142,12 @@ def cmd_wf_export(args):
     cli = Cli()
     wf_id = cli.resolve("workflows", args.ref) if args.ref else cli.current_wf()
     wf = cli.req("GET", f"/api/workflows/{wf_id}")
-    r = cli.check(cli.http.get(f"/api/workflows/{wf_id}/export"))
     if args.output:
         out = Path(args.output)
     else:   # 默认名取自服务端链路名：仅留末段并替非法字符，避免名含 / 写错位置
         safe = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", Path(wf["name"]).name).strip(" .") or "workflow"
         out = Path(f"{safe}.gfpkg")
-    out.write_bytes(r.content)
+    cli.download(f"/api/workflows/{wf_id}/export", out)
     print(f"已导出链路「{wf['name']}」到 {out}")
 
 
