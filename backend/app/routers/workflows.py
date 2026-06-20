@@ -142,6 +142,9 @@ async def export_workflow(wf_id: int, user: User = Depends(get_current_user),
     except (GraphError, PackageError) as e:        # 草稿态/畸形图无法解析 → 422，对齐 columns 契约
         os.unlink(tmp)
         raise HTTPException(status_code=422, detail=f"草稿态图无法导出: {e}")
+    except RecursionError:                          # 超深嵌套图/配置 → 422 兜底，不 500
+        os.unlink(tmp)
+        raise HTTPException(status_code=422, detail="链路配置嵌套过深，无法导出")
     except Exception:
         os.unlink(tmp)
         raise
@@ -160,6 +163,8 @@ async def import_workflow(file: UploadFile, user: User = Depends(get_current_use
             wf_out, report = await import_package(session, tmp, user.id)
         except (PackageError, GraphError) as e:
             raise HTTPException(status_code=422, detail=str(e))
+        except RecursionError:                      # 不可信包超深嵌套 JSON → 422 兜底，不 500
+            raise HTTPException(status_code=422, detail="包内 JSON 嵌套过深")
     finally:
         os.unlink(tmp)
     publish(user.id, "workflow", wf_out["id"])

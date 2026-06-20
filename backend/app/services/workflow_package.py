@@ -41,7 +41,12 @@ def _is_secret_value(v):
     故非字符串也可能是活凭据，不能只盯 str。"""
     if v is None or v == "" or v == [] or v == {}:
         return False
-    s = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False, default=str)
+    if isinstance(v, str):
+        return "{{" not in v
+    try:
+        s = json.dumps(v, ensure_ascii=False, default=str)
+    except RecursionError:
+        return True            # 敏感键下深不可测的值：宁可整体打码，绝不冒泄漏/500 风险
     return "{{" not in s
 
 
@@ -271,6 +276,8 @@ def _parse_manifest(zf):
         m = json.loads(_read_entry(zf, "manifest.json", MAX_MANIFEST_BYTES))
     except ValueError as e:
         raise PackageError(f"manifest.json 不是合法 JSON: {e}")
+    except RecursionError:
+        raise PackageError("manifest 嵌套过深")
     if not isinstance(m, dict) or m.get("kind") != PACKAGE_KIND:
         raise PackageError("不是 GraphFlow 链路包")
     ver = m.get("schema_version")

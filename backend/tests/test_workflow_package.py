@@ -520,6 +520,34 @@ def test_redact_secrets_deep_body_is_packageerror():
         wp.redact_secrets(g)
 
 
+def test_redact_secrets_deep_value_under_sensitive_key_no_500():
+    """敏感键的值本身是超深 dict（不被递归下探、被整体打码）：_is_secret_value 的 json.dumps
+    不得 RecursionError 逃逸——应整体打码。"""
+    deep = {}; cur = deep
+    for _ in range(2500):
+        nxt = {}; cur["x"] = nxt; cur = nxt
+    g = {"nodes": [{"id": "h", "type": "http_fetch",
+                    "config": {"headers": {"authorization": deep}}}], "edges": []}
+    red = wp.redact_secrets(g)        # 不得抛 RecursionError
+    assert g["nodes"][0]["config"]["headers"]["authorization"] == wp.REDACTED
+    assert red == [{"node_id": "h", "field": "authorization"}]
+
+
+def test_parse_manifest_deep_json_is_packageerror(tmp_path):
+    deep = "[" * 3000 + "1" + "]" * 3000          # 3000 层数组：json.loads 抛 RecursionError
+    raw = ('{"kind":"%s","schema_version":1,'
+           '"workflow":{"name":"w","graph":{"nodes":[],"edges":[]}},'
+           '"models":[],"prompts":[],"datasets":[],"redactions":[],"junk":%s}'
+           % (wp.PACKAGE_KIND, deep))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("manifest.json", raw)
+    path = tmp_path / "z.gfpkg"; path.write_bytes(buf.getvalue())
+    with wp._open_safe_zip(str(path)) as zf:
+        with pytest.raises(wp.PackageError):
+            wp._parse_manifest(zf)
+
+
 async def test_export_deep_default_params_is_packageerror(session_factory, tmp_path):
     deep = {}; cur = deep
     for _ in range(100):
