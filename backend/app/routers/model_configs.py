@@ -118,7 +118,8 @@ async def test_model(mc_id: int, user: User = Depends(get_current_user),
                      session: AsyncSession = Depends(get_session)):
     mc = await _get_owned(mc_id, user, session)
     try:
-        text, _ = await llm.chat(mc, "", "这是一次连通测试，没问题回复OK", params={"max_tokens": 512}, retries=1)
+        # max_tokens 给足 65536：推理模型(思考默认开)会先吃推理预算，512 太小会被吃光返回空内容，连通也测成失败
+        text, _ = await llm.chat(mc, "", "这是一次连通测试，没问题回复OK", params={"max_tokens": 65536}, retries=1)
         return {"ok": True, "reply": text[:100]}
     except llm.LLMError as e:
         return {"ok": False, "error": str(e)}

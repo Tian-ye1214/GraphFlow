@@ -39,8 +39,8 @@ async def test_compaction_skips_on_summarize_failure():
     assert out is history                          # 压缩失败 -> 用原历史
 
 
-async def test_default_summarize_forces_xhigh(monkeypatch):
-    """compactor 属 RedLotus：经 llm.chat 的思考被强制 xhigh，忽略传入的关闭/低力度。"""
+async def test_default_summarize_forces_max(monkeypatch):
+    """compactor 属 RedLotus 相关 Agent：经 llm.chat 的思考被写死 思考开 + 力度 max，忽略传入的关闭/低力度。"""
     from app.services import llm as llm_mod
     from app import crypto
     from app.models import ModelConfig
@@ -57,4 +57,5 @@ async def test_default_summarize_forces_xhigh(monkeypatch):
     out = await cp._default_summarize(mc, "一些历史文本", params={"thinking_enabled": False})
     assert out == "摘要"
     assert seen["params"]["thinking_enabled"] is True
-    assert seen["params"]["reasoning_effort"] == "xhigh"
+    assert seen["params"]["reasoning_effort"] == "max"
+    assert seen["params"]["max_tokens"] == 65536

@@ -1,5 +1,5 @@
 from app.thinking import (agent_chat_settings, agent_responses_settings, chat_thinking_kwargs,
-                          force_xhigh, reasoning_effort, thinking_enabled, with_thinking_defaults)
+                          force_max_thinking, reasoning_effort, thinking_enabled, with_thinking_defaults)
 
 
 def test_with_thinking_defaults_fills_enabled_high():
@@ -52,10 +52,10 @@ def test_agent_chat_settings():
     assert agent_chat_settings({"thinking_enabled": False}) == {}
 
 
-def test_force_xhigh_overrides():
-    assert force_xhigh(None) == {"thinking_enabled": True, "reasoning_effort": "xhigh", "max_tokens": 65536}
-    assert force_xhigh({"thinking_enabled": False, "reasoning_effort": "low", "temperature": 0.3, "max_tokens": 10}) == {
-        "thinking_enabled": True, "reasoning_effort": "xhigh", "max_tokens": 65536, "temperature": 0.3}
+def test_force_max_thinking_overrides():
+    assert force_max_thinking(None) == {"thinking_enabled": True, "reasoning_effort": "max", "max_tokens": 65536}
+    assert force_max_thinking({"thinking_enabled": False, "reasoning_effort": "low", "temperature": 0.3, "max_tokens": 10}) == {
+        "thinking_enabled": True, "reasoning_effort": "max", "max_tokens": 65536, "temperature": 0.3}
 
 
 def test_agent_chat_settings_carries_effort():

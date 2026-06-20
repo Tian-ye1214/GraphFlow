@@ -9,10 +9,11 @@ def with_thinking_defaults(params: dict | None) -> dict:
     return out
 
 
-def force_xhigh(params: dict | None) -> dict:
-    """RedLotus + 节点助手 + codegen + compactor 专用：写死开启思考、力度 xhigh、max_tokens 65536，
-    覆盖任何传入值（保留其余键）。Agent 路径思考不暴露给用户调整（与各节点的「默认可覆盖」相区分）。"""
-    return {**(params or {}), "thinking_enabled": True, "reasoning_effort": "xhigh", "max_tokens": 65536}
+def force_max_thinking(params: dict | None) -> dict:
+    """RedLotus 相关 Agent（协调/构建各角色 + 节点助手 + codegen + compactor）专用：写死开启思考、
+    力度 max、max_tokens 65536，覆盖任何传入值（保留其余键）。Agent 路径思考不暴露给用户调整
+    （与各节点「参数默认值可被用户覆盖」相区分）。注：azure 下 reasoning_effort 会在 reasoning_effort() 内回落 xhigh。"""
+    return {**(params or {}), "thinking_enabled": True, "reasoning_effort": "max", "max_tokens": 65536}
 
 
 def thinking_enabled(params: dict | None) -> bool:
