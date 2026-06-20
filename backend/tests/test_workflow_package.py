@@ -503,6 +503,40 @@ async def test_import_resource_id_non_int_is_422(session_factory, tmp_path):
             await s.rollback()
 
 
+def test_redact_secrets_url_semicolon_separator():
+    g = {"nodes": [{"id": "s", "type": "http_fetch",
+                    "config": {"url": "https://api.x.com/c?q=hi;token=SECRET;page=2"}}], "edges": []}
+    red = wp.redact_secrets(g)
+    url = g["nodes"][0]["config"]["url"]
+    assert "token=SECRET" not in url and wp.REDACTED in url
+    assert "q=hi" in url and "page=2" in url          # 分号分隔的非敏感参数保留（不丢）
+    assert any(r["field"] == "url.token" for r in red)
+
+
+def test_redact_secrets_deep_body_is_packageerror():
+    deep = "[" * 100 + "1" + "]" * 100               # 100 层：json 可解析但超脱敏深度上限
+    g = {"nodes": [{"id": "d", "type": "http_fetch", "config": {"body": deep}}], "edges": []}
+    with pytest.raises(wp.PackageError):
+        wp.redact_secrets(g)
+
+
+async def test_export_deep_default_params_is_packageerror(session_factory, tmp_path):
+    deep = {}; cur = deep
+    for _ in range(100):
+        nxt = {}; cur["x"] = nxt; cur = nxt
+    async with session_factory() as s:
+        u = User(username="deepdp"); s.add(u); await s.flush()
+        m = ModelConfig(user_id=u.id, name="m", base_url="http://x", api_key_enc="e",
+                        default_params_json=json.dumps(deep))
+        s.add(m); await s.flush()
+        graph = {"nodes": [{"id": "g", "type": "llm_synth", "config": {"model_config_id": m.id}}], "edges": []}
+        wf = Workflow(user_id=u.id, name="w", graph_json=json.dumps(graph)); s.add(wf); await s.commit()
+        wf_id = wf.id
+    async with session_factory() as s:
+        with pytest.raises(wp.PackageError):
+            await wp.export_package(s, await s.get(Workflow, wf_id), str(tmp_path / "o.gfpkg"))
+
+
 async def test_import_same_name_distinct_resources_not_folded(session_factory, tmp_path):
     """包内两个同名不同 id 的数据集（行不同）在全新账号导入 → 各自新建、行不丢、引用各指各的。"""
     manifest = {**_good_manifest(),

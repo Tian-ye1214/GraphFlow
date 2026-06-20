@@ -31,6 +31,8 @@ _READ_ERRORS = (zipfile.BadZipFile, zlib.error, EOFError, OSError, NotImplemente
 # 命中即视为凭据。值含 {{ 模板的放行（逐行注入，非固化密钥）。
 _SENSITIVE = re.compile(
     r"authorization|cookie|token|secret|key|password|auth|sign|hmac|credential|bearer", re.I)
+# 递归脱敏深度上限：远超任何真实配置嵌套，超出即判脏（防 RecursionError 在导出端逃逸成 500）。
+_MAX_REDACT_DEPTH = 64
 
 
 def _is_secret_value(v):
@@ -69,9 +71,12 @@ def collect_refs(graph):
     return ds, models, prompts
 
 
-def _redact_recursive(obj, node_id, prefix, redactions):
+def _redact_recursive(obj, node_id, prefix, redactions, depth=0):
     """递归 dict / list：敏感键名的值（任意类型）整体打码并登记；非敏感的容器继续下探。原地改。
-    必须遍历 list——否则 list 内 dict（如 extra_body.providers[].api_key）里的密钥永不脱敏。"""
+    必须遍历 list——否则 list 内 dict（如 extra_body.providers[].api_key）里的密钥永不脱敏。
+    超深嵌套抛 PackageError（导出端转 422），不让 RecursionError 逃逸成 500。"""
+    if depth > _MAX_REDACT_DEPTH:
+        raise PackageError("配置嵌套过深，无法安全脱敏")
     if isinstance(obj, dict):
         for k in list(obj):
             v = obj[k]
@@ -79,11 +84,11 @@ def _redact_recursive(obj, node_id, prefix, redactions):
                 obj[k] = REDACTED
                 redactions.append({"node_id": node_id, "field": f"{prefix}.{k}"})
             elif isinstance(v, (dict, list)):
-                _redact_recursive(v, node_id, f"{prefix}.{k}", redactions)
+                _redact_recursive(v, node_id, f"{prefix}.{k}", redactions, depth + 1)
     elif isinstance(obj, list):
         for i, v in enumerate(obj):
             if isinstance(v, (dict, list)):
-                _redact_recursive(v, node_id, f"{prefix}[{i}]", redactions)
+                _redact_recursive(v, node_id, f"{prefix}[{i}]", redactions, depth + 1)
 
 
 def _redact_url(url, node_id, redactions):
@@ -103,19 +108,18 @@ def _redact_url(url, node_id, redactions):
             changed = True
             redactions.append({"node_id": node_id, "field": "url.userinfo"})
 
-    def _redact_kv(s, where):                        # query / fragment 同款：按 & 拆、打码敏感参数值
+    def _redact_kv(s, where):                        # query / fragment：& 与 ; 都是合法分隔符
         nonlocal changed
-        out, hit = [], False
-        for pair in s.split("&"):
-            k, sep, v = pair.partition("=")
+        tokens = re.split(r"([&;])", s)              # 偶数位=参数对，奇数位=分隔符（原样保留，不改 & / ;）
+        hit = False
+        for i in range(0, len(tokens), 2):
+            k, sep, v = tokens[i].partition("=")
             if sep and v and "{{" not in v and _SENSITIVE.search(urlparse.unquote(k)):
-                out.append(f"{k}={REDACTED}"); hit = True
+                tokens[i] = f"{k}={REDACTED}"; hit = True
                 redactions.append({"node_id": node_id, "field": f"{where}.{urlparse.unquote(k)}"})
-            else:
-                out.append(pair)                     # 原样保留（含 {{}} 模板、普通参数）
         if hit:
             changed = True
-            return "&".join(out)
+            return "".join(tokens)
         return s
     if query:
         query = _redact_kv(query, "url")
@@ -150,6 +154,8 @@ def redact_secrets(graph_dict):
                 parsed = json.loads(body)
             except ValueError:
                 parsed = None
+            except RecursionError:                   # 超深 body：拒绝导出而非 500
+                raise PackageError("http body 嵌套过深，无法安全脱敏")
             if isinstance(parsed, (dict, list)):     # 顶层数组的 body 也要脱敏
                 before = len(redactions)
                 _redact_recursive(parsed, nid, "body", redactions)
@@ -172,7 +178,10 @@ async def export_package(session, workflow, dest_path):
         if m is None or m.user_id != uid:
             continue
         # default_params 是无 schema 任意字典，可能夹带凭据（如 extra_body 内代理鉴权）→ 同样脱敏
-        dp = json.loads(m.default_params_json)
+        try:
+            dp = json.loads(m.default_params_json)
+        except RecursionError:                       # 超深 default_params：拒绝导出而非 500
+            raise PackageError("模型参数嵌套过深，无法安全脱敏")
         _redact_recursive(dp, None, f"model[{m.name}].default_params", redactions)
         models.append({"id": m.id, "name": m.name, "model_name": m.model_name, "base_url": m.base_url,
                        "provider": m.provider, "azure_api_mode": m.azure_api_mode,
