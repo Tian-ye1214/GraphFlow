@@ -9,7 +9,6 @@ import zlib
 
 from sqlalchemy import insert, select
 
-from app.crypto import encrypt
 from app.engine.graph import GraphError, parse_graph, validate_graph
 from app.models import Dataset, DatasetRow, ModelConfig, Prompt, PromptVersion, Workflow, now
 
@@ -455,7 +454,7 @@ async def import_package(session, zip_path, user_id):
                                  base_url=str(item.get("base_url", "")),
                                  provider=str(item.get("provider", "openai")),
                                  azure_api_mode=str(item.get("azure_api_mode", "legacy")),
-                                 api_version=str(item.get("api_version", "")), api_key_enc=encrypt(""),
+                                 api_version=str(item.get("api_version", "")), api_key_enc="",
                                  default_params_json=json.dumps(item.get("default_params") or {},
                                                                 ensure_ascii=False))
                 session.add(mc)
