@@ -33,9 +33,14 @@ _SENSITIVE = re.compile(
     r"authorization|cookie|token|secret|key|password|auth|sign|hmac|credential|bearer", re.I)
 
 
-def _is_literal_secret(v):
-    """字符串、非空、且非 {{ 模板（模板是逐行注入的占位，不是固化密钥）。"""
-    return isinstance(v, str) and bool(v) and "{{" not in v
+def _is_secret_value(v):
+    """敏感键下的值是否需打码：非 None/非空，且字符串化后不含 {{ 模板。
+    覆盖任意类型（str/int/float/list/dict）——runner 会对非字符串头/体值 str() 后真实发出，
+    故非字符串也可能是活凭据，不能只盯 str。"""
+    if v is None or v == "" or v == [] or v == {}:
+        return False
+    s = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False, default=str)
+    return "{{" not in s
 
 
 class PackageError(ValueError):
@@ -64,17 +69,21 @@ def collect_refs(graph):
     return ds, models, prompts
 
 
-def _redact_dict_secrets(obj, node_id, prefix, redactions):
-    """递归 dict：敏感键名的固化标量值替 REDACTED 并登记 {node_id, field}。原地改。"""
-    if not isinstance(obj, dict):
-        return
-    for k in list(obj):
-        v = obj[k]
-        if isinstance(v, dict):
-            _redact_dict_secrets(v, node_id, f"{prefix}.{k}", redactions)
-        elif _SENSITIVE.search(str(k)) and _is_literal_secret(v):
-            obj[k] = REDACTED
-            redactions.append({"node_id": node_id, "field": f"{prefix}.{k}"})
+def _redact_recursive(obj, node_id, prefix, redactions):
+    """递归 dict / list：敏感键名的值（任意类型）整体打码并登记；非敏感的容器继续下探。原地改。
+    必须遍历 list——否则 list 内 dict（如 extra_body.providers[].api_key）里的密钥永不脱敏。"""
+    if isinstance(obj, dict):
+        for k in list(obj):
+            v = obj[k]
+            if _SENSITIVE.search(str(k)) and _is_secret_value(v):
+                obj[k] = REDACTED
+                redactions.append({"node_id": node_id, "field": f"{prefix}.{k}"})
+            elif isinstance(v, (dict, list)):
+                _redact_recursive(v, node_id, f"{prefix}.{k}", redactions)
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            if isinstance(v, (dict, list)):
+                _redact_recursive(v, node_id, f"{prefix}[{i}]", redactions)
 
 
 def _redact_url(url, node_id, redactions):
@@ -86,25 +95,34 @@ def _redact_url(url, node_id, redactions):
         parts = urlparse.urlsplit(url)
     except ValueError:
         return url
-    netloc, query, changed = parts.netloc, parts.query, False
+    netloc, query, fragment, changed = parts.netloc, parts.query, parts.fragment, False
     if "@" in netloc:
         creds, host = netloc.rsplit("@", 1)
         if "{{" not in creds:                       # 模板凭据放行
             netloc = f"{REDACTED}@{host}"
             changed = True
             redactions.append({"node_id": node_id, "field": "url.userinfo"})
-    if query:
-        new_pairs, q_changed = [], False
-        for pair in query.split("&"):
+
+    def _redact_kv(s, where):                        # query / fragment 同款：按 & 拆、打码敏感参数值
+        nonlocal changed
+        out, hit = [], False
+        for pair in s.split("&"):
             k, sep, v = pair.partition("=")
             if sep and v and "{{" not in v and _SENSITIVE.search(urlparse.unquote(k)):
-                new_pairs.append(f"{k}={REDACTED}"); q_changed = True
-                redactions.append({"node_id": node_id, "field": f"url.{urlparse.unquote(k)}"})
+                out.append(f"{k}={REDACTED}"); hit = True
+                redactions.append({"node_id": node_id, "field": f"{where}.{urlparse.unquote(k)}"})
             else:
-                new_pairs.append(pair)               # 原样保留（含 {{}} 模板、普通参数）
-        if q_changed:
-            query = "&".join(new_pairs); changed = True
-    return urlparse.urlunsplit(parts._replace(netloc=netloc, query=query)) if changed else url
+                out.append(pair)                     # 原样保留（含 {{}} 模板、普通参数）
+        if hit:
+            changed = True
+            return "&".join(out)
+        return s
+    if query:
+        query = _redact_kv(query, "url")
+    if fragment:
+        fragment = _redact_kv(fragment, "fragment")
+    return (urlparse.urlunsplit(parts._replace(netloc=netloc, query=query, fragment=fragment))
+            if changed else url)
 
 
 def redact_secrets(graph_dict):
@@ -121,8 +139,8 @@ def redact_secrets(graph_dict):
         headers = cfg.get("headers")
         if isinstance(headers, dict):
             for k in list(headers):
-                if _SENSITIVE.search(str(k)) and _is_literal_secret(headers[k]):
-                    headers[k] = REDACTED
+                if _SENSITIVE.search(str(k)) and _is_secret_value(headers[k]):
+                    headers[k] = REDACTED        # 非字符串(int/list/dict)敏感头也整体打码
                     redactions.append({"node_id": nid, "field": str(k)})
         if isinstance(cfg.get("url"), str):
             cfg["url"] = _redact_url(cfg["url"], nid, redactions)
@@ -132,9 +150,9 @@ def redact_secrets(graph_dict):
                 parsed = json.loads(body)
             except ValueError:
                 parsed = None
-            if isinstance(parsed, dict):
+            if isinstance(parsed, (dict, list)):     # 顶层数组的 body 也要脱敏
                 before = len(redactions)
-                _redact_dict_secrets(parsed, nid, "body", redactions)
+                _redact_recursive(parsed, nid, "body", redactions)
                 if len(redactions) > before:
                     cfg["body"] = json.dumps(parsed, ensure_ascii=False)
     return redactions
@@ -155,7 +173,7 @@ async def export_package(session, workflow, dest_path):
             continue
         # default_params 是无 schema 任意字典，可能夹带凭据（如 extra_body 内代理鉴权）→ 同样脱敏
         dp = json.loads(m.default_params_json)
-        _redact_dict_secrets(dp, None, f"model[{m.name}].default_params", redactions)
+        _redact_recursive(dp, None, f"model[{m.name}].default_params", redactions)
         models.append({"id": m.id, "name": m.name, "model_name": m.model_name, "base_url": m.base_url,
                        "provider": m.provider, "azure_api_mode": m.azure_api_mode,
                        "api_version": m.api_version, "default_params": dp})
@@ -281,10 +299,25 @@ def _loads_row(line):
         raise PackageError(f"数据行不是合法 JSON: {e}")
 
 
-async def _reuse_by_name(session, model_cls, user_id, name):
-    return (await session.execute(select(model_cls).where(
-        model_cls.user_id == user_id, model_cls.name == name
-    ).order_by(model_cls.id.desc()))).scalars().first()
+async def _name_snapshot(session, model_cls, user_id):
+    """导入前快照：导入者已有资源 name → id（同名取 id 最大）。复用判定基于此快照，
+    不受本次导入新建（flush 可见）的行影响——否则包内两个同名不同资源会折叠成一个、丢数据。"""
+    rows = (await session.execute(
+        select(model_cls.id, model_cls.name).where(model_cls.user_id == user_id))).all()
+    snap = {}
+    for rid, name in rows:
+        if name not in snap or rid > snap[name]:
+            snap[name] = rid
+    return snap
+
+
+def _require_id(item, kind):
+    """资源项 id 必须是严格 int（导出恒用 DB int id）。非 int/缺失/list/dict/bool → 422，
+    既挡不可哈希作键 500，也避免字符串/浮点 id 与图中 int 引用静默失配。"""
+    rid = item.get("id")
+    if not isinstance(rid, int) or isinstance(rid, bool):
+        raise PackageError(f"{kind} 项 id 非法: {rid!r}")
+    return rid
 
 
 async def _create_dataset_streaming(session, zf, dmeta, user_id):
@@ -383,15 +416,24 @@ async def import_package(session, zip_path, user_id):
     with _open_safe_zip(zip_path) as zf:
         m = _parse_manifest(zf)
         model_map, prompt_map, ds_map = {}, {}, {}
+        # 导入前快照 + 已认领集：每个既有名最多被一个包内资源复用，其余同名项各自新建，
+        # 杜绝「同名不同资源折叠成一个 / 数据集行被吞」。
+        m_snap = await _name_snapshot(session, ModelConfig, user_id)
+        p_snap = await _name_snapshot(session, Prompt, user_id)
+        d_snap = await _name_snapshot(session, Dataset, user_id)
+        m_claimed, p_claimed, d_claimed = set(), set(), set()
 
         for item in m["models"]:
             if not isinstance(item, dict):
                 raise PackageError("models 项必须是对象")
+            rid = _require_id(item, "models")
+            if rid in model_map:           # 重复 old_id：只解析一次
+                continue
             name = str(item.get("name", ""))
-            ex = await _reuse_by_name(session, ModelConfig, user_id, name)
-            if ex is not None:
-                model_map[item.get("id")] = ex.id
-                report["models_reused"].append({"name": name, "id": ex.id})
+            if name in m_snap and name not in m_claimed:
+                m_claimed.add(name)
+                model_map[rid] = m_snap[name]
+                report["models_reused"].append({"name": name, "id": m_snap[name]})
             else:
                 mc = ModelConfig(user_id=user_id, name=name, model_name=str(item.get("model_name", "")),
                                  base_url=str(item.get("base_url", "")),
@@ -402,18 +444,21 @@ async def import_package(session, zip_path, user_id):
                                                                 ensure_ascii=False))
                 session.add(mc)
                 await session.flush()
-                model_map[item.get("id")] = mc.id
+                model_map[rid] = mc.id
                 report["models_created"].append({"name": name, "id": mc.id})
                 report["models_need_key"].append({"name": name, "id": mc.id})
 
         for item in m["prompts"]:
             if not isinstance(item, dict):
                 raise PackageError("prompts 项必须是对象")
+            rid = _require_id(item, "prompts")
+            if rid in prompt_map:
+                continue
             name = str(item.get("name", ""))
-            ex = await _reuse_by_name(session, Prompt, user_id, name)
-            if ex is not None:
-                prompt_map[item.get("id")] = ex.id
-                report["prompts_reused"].append({"name": name, "id": ex.id})
+            if name in p_snap and name not in p_claimed:
+                p_claimed.add(name)
+                prompt_map[rid] = p_snap[name]
+                report["prompts_reused"].append({"name": name, "id": p_snap[name]})
             else:
                 pr = Prompt(user_id=user_id, name=name, description=str(item.get("description", "")))
                 session.add(pr)
@@ -421,20 +466,23 @@ async def import_package(session, zip_path, user_id):
                 session.add(PromptVersion(prompt_id=pr.id, version=1, body=str(item.get("body", "")),
                                           variables_json=json.dumps(item.get("variables") or [],
                                                                     ensure_ascii=False)))
-                prompt_map[item.get("id")] = pr.id
+                prompt_map[rid] = pr.id
                 report["prompts_created"].append({"name": name, "id": pr.id})
 
         for item in m["datasets"]:
             if not isinstance(item, dict):
                 raise PackageError("datasets 项必须是对象")
+            rid = _require_id(item, "datasets")
+            if rid in ds_map:
+                continue
             name = str(item.get("name", ""))
-            ex = await _reuse_by_name(session, Dataset, user_id, name)
-            if ex is not None:
-                ds_map[item.get("id")] = ex.id
-                report["datasets_reused"].append({"name": name, "id": ex.id})
+            if name in d_snap and name not in d_claimed:
+                d_claimed.add(name)
+                ds_map[rid] = d_snap[name]
+                report["datasets_reused"].append({"name": name, "id": d_snap[name]})
             else:
                 new_id = await _create_dataset_streaming(session, zf, item, user_id)
-                ds_map[item.get("id")] = new_id
+                ds_map[rid] = new_id
                 report["datasets_created"].append({"name": name, "id": new_id})
 
         graph_dict = m["workflow"]["graph"]

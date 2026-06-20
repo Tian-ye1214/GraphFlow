@@ -444,3 +444,92 @@ async def test_export_draft_graph_endpoint_422(auth_client):
     await auth_client.put(f"/api/workflows/{wf['id']}", json={"graph": bad})
     assert (await auth_client.get(f"/api/workflows/{wf['id']}/export")).status_code == 422
 
+
+# ---------------- Task 8: 第二轮复审修复 ----------------
+
+def test_redact_secrets_list_nested_and_nonstring():
+    g = {"nodes": [
+        {"id": "a", "type": "http_fetch", "config": {
+            "body": '[{"api_key": "sk-TOP-ARRAY"}, {"prompt": "hi"}]'}},          # 顶层数组 body
+        {"id": "b", "type": "http_fetch", "config": {
+            "body": '{"items": [{"authorization": "Bearer sk-NESTED"}]}'}},        # list 内 dict
+        {"id": "c", "type": "http_fetch", "config": {
+            "headers": {"x-api-key": 9876543210, "authorization": ["Bearer", "sk-LIST"]}}},  # 非字符串头值
+    ], "edges": []}
+    red = wp.redact_secrets(g)
+    assert json.loads(g["nodes"][0]["config"]["body"])[0]["api_key"] == wp.REDACTED
+    assert json.loads(g["nodes"][1]["config"]["body"])["items"][0]["authorization"] == wp.REDACTED
+    assert g["nodes"][2]["config"]["headers"]["x-api-key"] == wp.REDACTED        # int 头值打码
+    assert g["nodes"][2]["config"]["headers"]["authorization"] == wp.REDACTED    # list 头值打码
+    assert len(red) == 4
+
+
+def test_redact_secrets_url_fragment():
+    g = {"nodes": [{"id": "f", "type": "http_fetch",
+                    "config": {"url": "https://api.x.com/c#api_key=sk-FRAG&v=1"}}], "edges": []}
+    red = wp.redact_secrets(g)
+    url = g["nodes"][0]["config"]["url"]
+    assert "sk-FRAG" not in url and wp.REDACTED in url and "v=1" in url
+    assert any(r["field"] == "fragment.api_key" for r in red)
+
+
+async def test_export_redacts_list_nested_default_params(session_factory, tmp_path):
+    async with session_factory() as s:
+        u = User(username="dpl"); s.add(u); await s.flush()
+        m = ModelConfig(user_id=u.id, name="ml", base_url="http://x", api_key_enc="enc",
+                        default_params_json=json.dumps({"extra_body": {"providers": [
+                            {"api_key": "sk-DP-LIST"}]}}))
+        s.add(m); await s.flush()
+        graph = {"nodes": [{"id": "g", "type": "llm_synth", "config": {"model_config_id": m.id}}], "edges": []}
+        wf = Workflow(user_id=u.id, name="w", graph_json=json.dumps(graph)); s.add(wf); await s.commit()
+        wf_id = wf.id
+    dest = tmp_path / "o.gfpkg"
+    async with session_factory() as s:
+        await wp.export_package(s, await s.get(Workflow, wf_id), str(dest))
+    with zipfile.ZipFile(dest) as zf:
+        manifest = json.loads(zf.read("manifest.json"))
+    assert manifest["models"][0]["default_params"]["extra_body"]["providers"][0]["api_key"] == wp.REDACTED
+
+
+async def test_import_resource_id_non_int_is_422(session_factory, tmp_path):
+    async with session_factory() as s:
+        u = User(username="badid"); s.add(u); await s.flush(); uid = u.id
+    for bad in ([], {}, "5", 5.0, None):
+        manifest = {**_good_manifest(), "models": [{"id": bad, "name": "x"}]}
+        path = tmp_path / "z.gfpkg"; path.write_bytes(_pkg_bytes(manifest))
+        async with session_factory() as s:
+            with pytest.raises(wp.PackageError):
+                await wp.import_package(s, str(path), uid)
+            await s.rollback()
+
+
+async def test_import_same_name_distinct_resources_not_folded(session_factory, tmp_path):
+    """包内两个同名不同 id 的数据集（行不同）在全新账号导入 → 各自新建、行不丢、引用各指各的。"""
+    manifest = {**_good_manifest(),
+                "workflow": {"name": "w", "graph": {"nodes": [
+                    {"id": "in1", "type": "input", "config": {"dataset_ids": [11]}},
+                    {"id": "in2", "type": "input", "config": {"dataset_ids": [22]}}], "edges": []}},
+                "datasets": [
+                    {"id": 11, "name": "data", "columns": ["q"], "row_count": 1, "file": "datasets/11.jsonl"},
+                    {"id": 22, "name": "data", "columns": ["q"], "row_count": 1, "file": "datasets/22.jsonl"}]}
+    path = tmp_path / "z.gfpkg"
+    path.write_bytes(_pkg_bytes(manifest, {"datasets/11.jsonl": '{"q": "a"}\n',
+                                           "datasets/22.jsonl": '{"q": "b"}\n'}))
+    async with session_factory() as s:
+        u = User(username="fold"); s.add(u); await s.flush(); uid = u.id
+    async with session_factory() as s:
+        wf_out, report = await wp.import_package(s, str(path), uid)
+    assert len(report["datasets_created"]) == 2 and not report["datasets_reused"]
+    async with session_factory() as s:
+        from sqlalchemy import select
+        g = json.loads((await s.get(Workflow, wf_out["id"])).graph_json)
+        d1 = next(n for n in g["nodes"] if n["id"] == "in1")["config"]["dataset_ids"][0]
+        d2 = next(n for n in g["nodes"] if n["id"] == "in2")["config"]["dataset_ids"][0]
+        assert d1 != d2          # 两节点指向不同数据集（未折叠）
+        rows = {}
+        for did in (d1, d2):
+            r = (await s.execute(select(DatasetRow.data_json).where(
+                DatasetRow.dataset_id == did))).all()
+            rows[did] = [json.loads(x[0]) for x in r]
+        assert sorted(v[0]["q"] for v in rows.values()) == ["a", "b"]   # 两份数据都在，无吞
+
