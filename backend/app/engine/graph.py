@@ -86,3 +86,16 @@ def descendants(g: Graph, node_id: str) -> set[str]:
                 out.add(e["target"])
                 frontier.append(e["target"])
     return out
+
+
+def ancestors(g: Graph, node_id: str) -> set[str]:
+    """沿 normal 边可达的所有上游节点 id（不含自身）。"""
+    out: set[str] = set()
+    frontier = [node_id]
+    while frontier:
+        nid = frontier.pop()
+        for e in g.edges:
+            if e["kind"] == "normal" and e["target"] == nid and e["source"] not in out:
+                out.add(e["source"])
+                frontier.append(e["source"])
+    return out

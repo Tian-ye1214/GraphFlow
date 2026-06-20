@@ -65,3 +65,23 @@ def test_descendants():
     graph = g(nodes, edges)
     assert descendants(graph, "b") == {"c", "d"}
     assert descendants(graph, "d") == set()
+
+
+def test_ancestors():
+    from app.engine.graph import ancestors
+    nodes = [("a", "input"), ("b", "llm_synth"), ("c", "auto_process"), ("d", "output")]
+    edges = [("a", "b", "normal"), ("b", "c", "normal"), ("c", "d", "normal")]
+    graph = g(nodes, edges)
+    assert ancestors(graph, "c") == {"a", "b"}
+    assert ancestors(graph, "a") == set()
+
+
+def test_ancestors_ignores_rescan_edges():
+    from app.engine.graph import ancestors
+    # rescan 回扫边不算 normal 上游：qc 节点 b 经 rescan 指回 d，不应使 b 成为 d 的祖先
+    nodes = [("a", "input"), ("b", "qc"), ("c", "qc"), ("d", "output")]
+    edges = [("a", "b", "normal"), ("b", "c", "normal"), ("c", "d", "normal"),
+             ("b", "d", "rescan")]
+    graph = g(nodes, edges)
+    assert ancestors(graph, "d") == {"a", "b", "c"}
+    assert ancestors(graph, "c") == {"a", "b"}

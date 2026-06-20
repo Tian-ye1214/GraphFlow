@@ -7,7 +7,8 @@ from sqlalchemy import func, select, update as sa_update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.engine import nodes
-from app.engine.graph import Graph, Node, parse_graph, topo_order, upstream_ids, validate_graph
+from app.engine.graph import (Graph, Node, ancestors, parse_graph, topo_order, upstream_ids,
+                              validate_graph)
 from app.events import publish
 from app.models import (DatasetRow, ModelConfig, Prompt, PromptVersion, QcFailure, QcMetric, Run,
                         RunLog, RunNodeState, RunRow, WorkflowVersion)
@@ -406,12 +407,7 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
     # 状态/反馈列名撞输入已有数据列 → 写回时会静默覆盖用户原始列(对照 rename 撞列已 raise)：整 run failed 点名。
     # 但上游 QC 节点产出的同名 qc 列允许被本节点覆盖刷新（链式 QC→QC 是合法拓扑、qc 列会透传下来），
     # 只对真正的用户/其它数据列撞名报错。
-    anc, stack = set(), list(upstream_ids(graph, node.id))
-    while stack:
-        nid = stack.pop()
-        if nid not in anc:
-            anc.add(nid)
-            stack.extend(upstream_ids(graph, nid))
+    anc = ancestors(graph, node.id)
     upstream_qc_cols = {c for n in graph.nodes if n.id in anc and n.type == "qc"
                         for c in ((n.config.get("status_column") or "qc_status"),
                                   (n.config.get("feedback_column") or "qc_feedback"))}
