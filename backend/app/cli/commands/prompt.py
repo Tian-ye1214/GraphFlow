@@ -1,6 +1,6 @@
 """提示词库：prompt ls / show / add / edit / rm / versions / rollback / dup。"""
 from app.cli.client import Cli
-from app.cli.commands.node import _read_prompt
+from app.cli.commands.node import _read_prompt, add_prompt_source_args
 
 
 def cmd_prompt_ls(args):
@@ -76,16 +76,12 @@ def register(sub):
 
     s = prompt.add_parser("add")
     s.add_argument("name"); s.add_argument("--desc")
-    g = s.add_mutually_exclusive_group(required=True)
-    g.add_argument("--file"); g.add_argument("--edit", action="store_true")
-    g.add_argument("-", dest="from_stdin", action="store_true")
+    add_prompt_source_args(s)
     s.set_defaults(func=cmd_prompt_add)
 
     s = prompt.add_parser("edit")
     s.add_argument("ref"); s.add_argument("--name"); s.add_argument("--desc")
-    g = s.add_mutually_exclusive_group(required=True)
-    g.add_argument("--file"); g.add_argument("--edit", action="store_true")
-    g.add_argument("-", dest="from_stdin", action="store_true")
+    add_prompt_source_args(s)
     s.set_defaults(func=cmd_prompt_edit)
 
     s = prompt.add_parser("rm"); s.add_argument("ref"); s.set_defaults(func=cmd_prompt_rm)

@@ -108,6 +108,16 @@ def _read_prompt(args) -> str:
     return sys.stdin.read()   # args.from_stdin
 
 
+def add_prompt_source_args(parser, *, required=True):
+    """添加 `--file/--edit/-`(stdin) 互斥提示词来源参数组，返回该组（供调用方追加额外互斥项）。
+    与 _read_prompt 配对使用。"""
+    g = parser.add_mutually_exclusive_group(required=required)
+    g.add_argument("--file")
+    g.add_argument("--edit", action="store_true")
+    g.add_argument("-", dest="from_stdin", action="store_true")
+    return g
+
+
 def cmd_node_prompt(args):
     cli = Cli()
     wf = cli.get_wf()
@@ -168,10 +178,7 @@ def register(sub):
     g1 = s.add_mutually_exclusive_group(required=True)
     g1.add_argument("--system", action="store_true")
     g1.add_argument("--user", action="store_true")
-    g2 = s.add_mutually_exclusive_group(required=True)
-    g2.add_argument("--file")
-    g2.add_argument("--edit", action="store_true")
-    g2.add_argument("-", dest="from_stdin", action="store_true")
+    g2 = add_prompt_source_args(s)
     g2.add_argument("--library", help="库提示词 id 或名")
     g3 = s.add_mutually_exclusive_group()
     g3.add_argument("--ref", action="store_true", help="引用（运行时取最新版）")
