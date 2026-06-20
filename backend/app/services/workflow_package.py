@@ -68,3 +68,55 @@ def redact_headers(graph_dict):
                 headers[k] = REDACTED
                 redactions.append({"node_id": node.get("id"), "header": k})
     return redactions
+
+
+async def export_package(session, workflow, dest_path):
+    """收集 workflow 引用到的资源，写 .gfpkg（zip）到 dest_path。数据集行流式写以支持超大文件。
+    只收集属于 workflow.user_id 的资源；悬空/非自有引用跳过（导入时降级草稿）。"""
+    uid = workflow.user_id
+    graph_dict = json.loads(workflow.graph_json)        # 新对象，redact 改它不影响库
+    redactions = redact_headers(graph_dict)
+    ds_ids, model_ids, prompt_ids = collect_refs(parse_graph(graph_dict))
+
+    models = []
+    for mid in sorted(model_ids):
+        m = await session.get(ModelConfig, mid)
+        if m is None or m.user_id != uid:
+            continue
+        models.append({"id": m.id, "name": m.name, "model_name": m.model_name, "base_url": m.base_url,
+                       "provider": m.provider, "azure_api_mode": m.azure_api_mode,
+                       "api_version": m.api_version, "default_params": json.loads(m.default_params_json)})
+    prompts = []
+    for pid in sorted(prompt_ids):
+        p = await session.get(Prompt, pid)
+        if p is None or p.user_id != uid:
+            continue
+        pv = (await session.execute(select(PromptVersion).where(PromptVersion.prompt_id == pid)
+              .order_by(PromptVersion.version.desc()).limit(1))).scalar_one_or_none()
+        prompts.append({"id": p.id, "name": p.name, "description": p.description,
+                        "body": pv.body if pv else "",
+                        "variables": json.loads(pv.variables_json) if pv else []})
+    datasets_meta, valid_ds = [], []
+    for did in sorted(ds_ids):
+        d = await session.get(Dataset, did)
+        if d is None or d.user_id != uid:
+            continue
+        datasets_meta.append({"id": d.id, "name": d.name, "original_filename": d.original_filename,
+                              "columns": json.loads(d.columns_json), "row_count": d.row_count,
+                              "file": f"datasets/{d.id}.jsonl"})
+        valid_ds.append(d.id)
+
+    manifest = {"kind": PACKAGE_KIND, "schema_version": SCHEMA_VERSION, "exporter": EXPORTER,
+                "exported_at": now().isoformat(),
+                "source": {"workflow_id": workflow.id, "workflow_name": workflow.name},
+                "workflow": {"name": workflow.name, "graph": graph_dict},
+                "models": models, "prompts": prompts, "datasets": datasets_meta,
+                "redactions": redactions}
+    with zipfile.ZipFile(dest_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+        for did in valid_ds:
+            with zf.open(f"datasets/{did}.jsonl", "w") as fh:
+                result = await session.stream(select(DatasetRow.data_json).where(
+                    DatasetRow.dataset_id == did).order_by(DatasetRow.idx))
+                async for (data_json,) in result:
+                    fh.write((data_json + "\n").encode("utf-8"))
