@@ -232,6 +232,7 @@ async def test_import_ignores_embedded_user_id(session_factory, tmp_path):
         wf = await s.get(Workflow, wf_out["id"]); assert wf.user_id == uid
         m = (await s.execute(select(ModelConfig).where(ModelConfig.name == "evil"))).scalars().first()
         assert m.user_id == uid          # 落到导入者，非包内 user_id 999
+        assert m.api_key_enc == ""       # 新建模型空 key（api_key_set=bool(enc)=False，不误报有 key）
 
 
 async def test_import_atomic_rollback_on_bad_graph(session_factory, tmp_path):
