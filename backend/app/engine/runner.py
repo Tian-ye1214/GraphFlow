@@ -1,5 +1,6 @@
 import asyncio
 import json
+from contextlib import nullcontext
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select, update as sa_update
@@ -292,16 +293,14 @@ async def _barrier_output(session_factory, user_id, node: Node, inputs, run_id: 
     raise ValueError(f"未知节点类型: {node.type}")
 
 
-async def _run_llm_node(session_factory, run_id, user_id, node: Node, inputs,
-                        user_sem, cancel_event):
+async def _run_per_row_node(session_factory, run_id, user_id, node: Node, inputs, cancel_event,
+                            *, row_coro, log_source=None):
+    """逐行隔离节点（llm_synth / http_fetch）的公共脚手架：断点续跑（跳过已 done/failed 的行）、
+    节点内并发、硬中断、逐行成败计数与落库、收尾置节点终态——这套语义必须两类节点完全一致。
+    差异只在 row_coro（产生第 idx 行结果的协程，返回 (out_rows, usage)）与 log_source（模型日志归因来源；
+    http 无模型调用故为 None）。节点特有的 config 预校验由各包装函数在调用本函数前完成。"""
     cfg = node.config
-    fanout = cfg.get("fanout_n", 1)   # 配置错误：先于逐行循环校验，整 run failed 点名节点，而非逐行失败留 run=completed
-    if not isinstance(fanout, int) or fanout < 1:
-        raise ValueError(f"节点 {node.id}: fanout_n 必须为 ≥1 的整数，当前为 {fanout!r}")
     async with session_factory() as s:
-        mc = await s.get(ModelConfig, cfg.get("model_config_id"))
-        if mc is None or mc.user_id != user_id:
-            raise ValueError(f"节点 {node.id}: 模型配置不存在")
         existing = (await s.execute(select(RunRow.row_idx, RunRow.status).where(
             RunRow.run_id == run_id, RunRow.node_id == node.id))).all()
     done_idx = {idx for idx, st in existing if st == "done"}
@@ -318,10 +317,11 @@ async def _run_llm_node(session_factory, run_id, user_id, node: Node, inputs,
         async with node_sem:
             if cancel_event.is_set():
                 return
+            ctx = (log_context(run_id=run_id, node_id=node.id, user_id=user_id, source=log_source)
+                   if log_source else nullcontext())
             try:
-                with log_context(run_id=run_id, node_id=node.id, user_id=user_id, source="synth"):
-                    out_rows, usage = await _cancellable(
-                        nodes.run_llm_synth_row(cfg, inputs[idx], mc, user_sem), cancel_event)
+                with ctx:
+                    out_rows, usage = await _cancellable(row_coro(idx), cancel_event)
             except asyncio.CancelledError:
                 return  # 硬中断：在途请求已 abort，该行不落库（保持 pending）
             except Exception as e:
@@ -340,6 +340,22 @@ async def _run_llm_node(session_factory, run_id, user_id, node: Node, inputs,
                               total=total, done=done_count, failed=failed_count)
 
 
+async def _run_llm_node(session_factory, run_id, user_id, node: Node, inputs,
+                        user_sem, cancel_event):
+    cfg = node.config
+    fanout = cfg.get("fanout_n", 1)   # 配置错误：先于逐行循环校验，整 run failed 点名节点，而非逐行失败留 run=completed
+    if not isinstance(fanout, int) or fanout < 1:
+        raise ValueError(f"节点 {node.id}: fanout_n 必须为 ≥1 的整数，当前为 {fanout!r}")
+    async with session_factory() as s:
+        mc = await s.get(ModelConfig, cfg.get("model_config_id"))
+        if mc is None or mc.user_id != user_id:
+            raise ValueError(f"节点 {node.id}: 模型配置不存在")
+    await _run_per_row_node(
+        session_factory, run_id, user_id, node, inputs, cancel_event,
+        row_coro=lambda idx: nodes.run_llm_synth_row(cfg, inputs[idx], mc, user_sem),
+        log_source="synth")
+
+
 async def _run_http_node(session_factory, run_id, user_id, node: Node, inputs, cancel_event):
     cfg = node.config
     # 脏草稿 config 形状预校验(对照 _run_llm_node 的 fanout_n)：非字符串 url/body、非 dict headers/extract
@@ -353,42 +369,9 @@ async def _run_http_node(session_factory, run_id, user_id, node: Node, inputs, c
         raise ValueError(f"http_fetch 节点 {node.id}: headers 必须为对象，当前为 {type(cfg.get('headers')).__name__}")
     if cfg.get("extract") is not None and not isinstance(cfg.get("extract"), dict):
         raise ValueError(f"http_fetch 节点 {node.id}: extract 必须为对象，当前为 {type(cfg.get('extract')).__name__}")
-    async with session_factory() as s:
-        existing = (await s.execute(select(RunRow.row_idx, RunRow.status).where(
-            RunRow.run_id == run_id, RunRow.node_id == node.id))).all()
-    done_idx = {idx for idx, st in existing if st == "done"}
-    failed_idx = {idx for idx, st in existing if st == "failed"}
-    total = len(inputs)
-    done_count, failed_count = len(done_idx), len(failed_idx)
-    await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running",
-                          total=total, done=done_count, failed=failed_count)
-    todo = [i for i in range(total) if i not in done_idx and i not in failed_idx]
-    node_sem = asyncio.Semaphore(cfg.get("concurrency", 4))
-
-    async def work(idx: int):
-        nonlocal done_count, failed_count
-        async with node_sem:
-            if cancel_event.is_set():
-                return
-            try:
-                out_rows, usage = await _cancellable(
-                    nodes.run_http_fetch_row(cfg, inputs[idx]), cancel_event)
-            except asyncio.CancelledError:
-                return  # 硬中断：该行不落库（保持 pending）
-            except Exception as e:
-                await _write_unit(session_factory, run_id, node.id, idx, "failed", [], str(e))
-                failed_count += 1
-            else:
-                await _write_unit(session_factory, run_id, node.id, idx, "done", out_rows, "",
-                                  usage=usage, drop=cfg.get("drop_columns"))
-                done_count += 1
-            await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running",
-                                  total=total, done=done_count, failed=failed_count)
-
-    await asyncio.gather(*[work(i) for i in todo])
-    if not cancel_event.is_set():
-        await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="done",
-                              total=total, done=done_count, failed=failed_count)
+    await _run_per_row_node(
+        session_factory, run_id, user_id, node, inputs, cancel_event,
+        row_coro=lambda idx: nodes.run_http_fetch_row(cfg, inputs[idx]))
 
 
 async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Node, inputs,
