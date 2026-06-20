@@ -73,6 +73,19 @@ export interface ModelLogEntry {
   response: string; prompt_tokens: number; completion_tokens: number; created_at: string
 }
 
+export interface ImportReport {
+  models_reused: { name: string; id: number }[]
+  models_created: { name: string; id: number }[]
+  models_need_key: { name: string; id: number }[]
+  prompts_reused: { name: string; id: number }[]
+  prompts_created: { name: string; id: number }[]
+  datasets_reused: { name: string; id: number }[]
+  datasets_created: { name: string; id: number }[]
+  headers_need_refill: { node_id: string; header: string }[]
+  draft_unresolved: { node_id: string; kind: string; old_id: number }[]
+}
+export interface ImportResult { workflow: { id: number; name: string }; report: ImportReport }
+
 export type ColumnsMap = Record<string, { input: string[]; output: string[] }>
 
 export interface RunLogEntry { created_at: string; node_id: string; level: string; message: string }

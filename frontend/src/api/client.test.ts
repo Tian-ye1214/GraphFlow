@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
-import { api, ApiError } from './client'
+import { api, ApiError, filenameFromDisposition } from './client'
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -18,5 +18,15 @@ describe('api client', () => {
     await expect(api.post('/api/runs', { workflow_id: 1 })).rejects.toThrowError(
       new ApiError(422, '数据集不存在'),
     )
+  })
+})
+
+describe('filenameFromDisposition', () => {
+  it('解析 RFC5987 filename* 并解码', () => {
+    expect(filenameFromDisposition("attachment; filename=\"x.gfpkg\"; filename*=UTF-8''%E9%93%BE%E8%B7%AF.gfpkg", 'fb.gfpkg'))
+      .toBe('链路.gfpkg')
+  })
+  it('缺失时回退', () => {
+    expect(filenameFromDisposition(null, 'fb.gfpkg')).toBe('fb.gfpkg')
   })
 })
