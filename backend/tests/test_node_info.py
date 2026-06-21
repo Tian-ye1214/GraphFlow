@@ -101,8 +101,52 @@ async def test_read_node_model_logs(session_factory):
     assert out["rows"][0]["completion_tokens"] == 2
 
 
-async def test_node_info_tenant_isolated(session_factory):
+async def test_all_node_info_tools_tenant_isolated(session_factory):
+    """红线：他人(错误 uid)对本工作流的全部 5 个工具都拿不到数据。"""
     sf = session_factory
     uid, wf_id, _ = await _seed(sf)
-    out = json.loads(await NodeInfoTools(sf, uid + 999, wf_id, "gen").show_workflow_graph())
-    assert out.get("error") == "workflow_not_found"   # 他人不得读本工作流图
+    bad = NodeInfoTools(sf, uid + 999, wf_id, "gen")
+    for call in (bad.show_workflow_graph(), bad.latest_run_summary(),
+                 bad.read_node_output("done"), bad.read_node_output("failed"),
+                 bad.read_qc_failures(), bad.read_node_model_logs()):
+        assert json.loads(await call).get("error") == "workflow_not_found"
+
+
+async def test_read_node_output_edge_cases(session_factory):
+    sf = session_factory
+    uid, wf_id, _ = await _seed(sf)
+    empty = json.loads(await NodeInfoTools(sf, uid, wf_id, "out").read_node_output("failed"))
+    assert empty["rows"] == []   # 本节点无失败行 → 空，不崩
+    bad = json.loads(await NodeInfoTools(sf, uid, wf_id, "gen").read_node_output("weird"))
+    assert "error" in bad        # 非法 status
+
+
+async def test_show_workflow_graph_dirty_graph(session_factory):
+    sf = session_factory
+    async with sf() as s:
+        u = User(username="t2"); s.add(u); await s.flush()
+        wf = Workflow(user_id=u.id, name="脏", graph_json="{not json"); s.add(wf); await s.flush()
+        ids = (u.id, wf.id)
+        await s.commit()
+    uid, wf_id = ids
+    out = json.loads(await NodeInfoTools(sf, uid, wf_id, "x").show_workflow_graph())
+    assert out["error"] == "graph_unparseable"
+
+
+async def test_summarize_http_and_auto_nodes(session_factory):
+    sf = session_factory
+    g = json.dumps({"nodes": [
+        {"id": "h", "type": "http_fetch",
+         "config": {"method": "POST", "url": "http://api/{{q}}", "extract": {"t": "data.t"}}},
+        {"id": "a", "type": "auto_process",
+         "config": {"operations": [{"op": "dedup"}, {"op": "filter"}]}}], "edges": []})
+    async with sf() as s:
+        u = User(username="t3"); s.add(u); await s.flush()
+        wf = Workflow(user_id=u.id, name="hw", graph_json=g); s.add(wf); await s.flush()
+        ids = (u.id, wf.id)
+        await s.commit()
+    uid, wf_id = ids
+    out = json.loads(await NodeInfoTools(sf, uid, wf_id, "h").show_workflow_graph())
+    nodes = {n["id"]: n for n in out["rows"]}
+    assert nodes["h"]["config"]["method"] == "POST" and nodes["h"]["config"]["extract"] == {"t": "data.t"}
+    assert nodes["a"]["config"]["operations"] == ["dedup", "filter"]

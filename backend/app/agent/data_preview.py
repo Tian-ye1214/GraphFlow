@@ -2,7 +2,7 @@
 import json
 from typing import Literal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.engine.columns import ordered_union
@@ -165,18 +165,7 @@ class WorkflowDataPreview:
             payload = {"source": info["source"], "run_id": info.get("run_id"),
                        "total_rows": total, "sampled_rows": len(rows), "column_count": len(cols),
                        "columns": [_describe_column(c, rows) for c in cols]}
-            kept, used = [], 0   # 列多时按预算裁剪 columns，保完整可解析
-            for c in payload["columns"]:
-                size = len(json.dumps(c, ensure_ascii=False))
-                if kept and used + size > MAX_PREVIEW_CHARS:
-                    break
-                kept.append(c)
-                used += size
-            if len(payload["columns"]) - len(kept):
-                payload["omitted_columns"] = len(payload["columns"]) - len(kept)
-                payload["columns"] = kept
-                payload["hint"] = "列过多按预算裁剪；可按需缩小范围"
-            return json.dumps(payload, ensure_ascii=False)
+            return json.dumps(_fit_budget(payload, key="columns"), ensure_ascii=False)
 
     async def _dataset_total_rows(self, session, wf: Workflow) -> int | None:
         """输入数据集总行数(精确，零扫行)；脏图无法解析则 None。"""
@@ -248,17 +237,35 @@ class WorkflowDataPreview:
     async def _run_rows_for_preview(self, session, run: Run, node_id: str | None,
                                     limit: int) -> list[dict]:
         if not node_id:
-            # row_count 报真实数据行数(累加各 RunRow 的 data_json 长度)，而非 RunRow 条数——
-            # 否则 barrier 节点(input/output/qc/auto_process 各只写 1 条 row_idx=0)恒显 1，严重低估。
-            recs = (await session.execute(
-                select(RunRow.node_id, RunRow.data_json)
+            # row_count 报真实数据行数而非 RunRow 条数(否则 barrier 节点恒显 1)。为避免大 run 全量拉 data_json：
+            # 逐行节点(llm_synth/http_fetch)用 RunRow 条数(≈输入行数；fanout>1 时略低于产出，概览足够)，
+            # 只对 barrier 节点(各 1 条 RunRow 装全部行)读那条 data_json 算真实长度——IO 从 O(总行) 降到 O(barrier 节点)。
+            ver = await session.get(WorkflowVersion, run.workflow_version_id)
+            types: dict[str, str] = {}
+            if ver is not None:
+                try:
+                    types = {n.id: n.type for n in parse_graph(ver.graph_json).nodes}
+                except Exception:
+                    types = {}
+            grouped = (await session.execute(
+                select(RunRow.node_id, func.count())
                 .where(RunRow.run_id == run.id, RunRow.status == "done")
-                .order_by(RunRow.node_id)
-            )).all()
+                .group_by(RunRow.node_id))).all()
             counts: dict[str, int] = {}
-            for nid, data_json in recs:
-                rows = json.loads(data_json)
-                counts[nid] = counts.get(nid, 0) + (len(rows) if isinstance(rows, list) else 0)
+            barrier: list[str] = []
+            for nid, cnt in grouped:
+                if types.get(nid) in ("llm_synth", "http_fetch"):
+                    counts[nid] = cnt
+                else:
+                    barrier.append(nid)
+            if barrier:
+                recs = (await session.execute(
+                    select(RunRow.node_id, RunRow.data_json)
+                    .where(RunRow.run_id == run.id, RunRow.status == "done",
+                           RunRow.node_id.in_(barrier)))).all()
+                for nid, data_json in recs:
+                    rows = json.loads(data_json)
+                    counts[nid] = counts.get(nid, 0) + (len(rows) if isinstance(rows, list) else 0)
             return [{"node_id": nid, "row_count": counts[nid]} for nid in sorted(counts)][:limit]
 
         ver = await session.get(WorkflowVersion, run.workflow_version_id)

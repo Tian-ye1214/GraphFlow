@@ -54,6 +54,7 @@ async def test_wide_table_preview_stays_parseable_under_budget(session_factory):
     assert len(raw) <= MAX_PREVIEW_CHARS + 2000   # 受预算约束(留壳余量)
     assert payload["omitted_rows"] > 0 and "hint" in payload
     assert len(payload["rows"]) < 20     # 确实裁了行
+    assert payload.get("cells_truncated_to")   # 单行超宽触发单格收紧兜底
 
 
 async def _seed_dataset_wf(sf, recs, columns):
@@ -86,3 +87,26 @@ async def test_describe_reports_dtypes_missing_and_value_dist(session_factory):
     assert cols["cat"]["value_counts"]['"A"'] == 3   # 低基数值分布
     assert cols["score"]["missing_pct"] == 25         # None 计缺失
     assert cols["score"]["dtypes"].get("int") == 3
+
+
+async def test_describe_high_cardinality_distinct_estimate(session_factory):
+    """高基数列(>15 distinct)走 distinct_estimate 分支，不出 value_counts。"""
+    sf = session_factory
+    uid, wf_id = await _seed_dataset_wf(sf, [{"q": f"问题{i}"} for i in range(20)], ["q"])
+    out = json.loads(await WorkflowDataPreview(sf, uid).describe(wf_id, source="dataset", sample_limit=20))
+    col = out["columns"][0]
+    assert col["distinct_estimate"] == 20 and "value_counts" not in col
+
+
+async def test_preview_invalid_source_errors(session_factory):
+    sf = session_factory
+    uid, wf_id = await _seed_dataset_wf(sf, [{"q": "a"}], ["q"])
+    out = json.loads(await WorkflowDataPreview(sf, uid).preview_workflow_data(wf_id, source="bogus"))
+    assert out["error"] == "invalid_source"
+
+
+async def test_preview_auto_falls_back_to_dataset_when_no_run(session_factory):
+    sf = session_factory
+    uid, wf_id = await _seed_dataset_wf(sf, [{"q": "甲"}, {"q": "乙"}], ["q"])
+    out = json.loads(await WorkflowDataPreview(sf, uid).preview_workflow_data(wf_id, source="auto"))
+    assert out["source"] == "dataset" and out["rows"][0]["q"] == "甲"

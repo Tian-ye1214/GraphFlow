@@ -94,9 +94,9 @@ class NodeInfoTools:
                 RunNodeState.run_id == run.id))).scalars().all()
             rows = [{"node_id": st.node_id, "status": st.status, "total": st.total,
                      "done": st.done, "failed": st.failed} for st in states]
-            return json.dumps({"run_id": run.id, "status": run.status,
-                               "error": run.error, "stats": json.loads(run.stats_json),
-                               "rows": rows}, ensure_ascii=False)
+            return json.dumps(_fit_budget(
+                {"run_id": run.id, "status": run.status, "error": run.error,
+                 "stats": json.loads(run.stats_json), "rows": rows}), ensure_ascii=False)
 
     async def read_node_output(self, status: str = "done", limit: int = 5) -> str:
         """看本节点在最近一次运行的产出行(status=done)或失败行(status=failed: 行号/错误/重试次数)。
@@ -167,7 +167,8 @@ class NodeInfoTools:
             wf = await self._owned_wf(s)
             if wf is None:
                 return json.dumps({"error": "workflow_not_found"}, ensure_ascii=False)
-            run = await self._latest_run(s)   # 按 run_id 限定(run 日志不带 workflow_id)，自然限本工作流+本租户
+            # 引擎 log_context 不写 workflow_id，故按已校验属主 run 的 run_id 限定 + 显式 user_id，等价本租户本工作流
+            run = await self._latest_run(s)
             if run is None:
                 return json.dumps({"run_id": None, "rows": []}, ensure_ascii=False)
             recs = (await s.execute(select(ModelCallLog).where(

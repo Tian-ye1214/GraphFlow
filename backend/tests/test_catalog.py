@@ -51,5 +51,8 @@ async def test_prompts_list_and_get_latest_version(session_factory):
 async def test_catalog_tenant_isolated(session_factory):
     sf = session_factory
     uid, pid = await _seed(sf)
-    assert json.loads(await CatalogTools(sf, uid + 999).list_user_datasets())["rows"] == []
-    assert json.loads(await CatalogTools(sf, uid + 999).get_prompt(pid)).get("error") == "prompt_not_found"
+    bad = CatalogTools(sf, uid + 999)
+    assert json.loads(await bad.list_user_datasets())["rows"] == []
+    assert json.loads(await bad.list_user_models())["rows"] == []
+    assert json.loads(await bad.list_prompts())["rows"] == []
+    assert json.loads(await bad.get_prompt(pid)).get("error") == "prompt_not_found"

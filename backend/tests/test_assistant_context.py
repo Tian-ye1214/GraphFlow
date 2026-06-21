@@ -96,3 +96,40 @@ async def test_node_assist_endpoint_passes_current_config(auth_client, monkeypat
         "current_config": {"user_prompt": "把 {{A}} 翻译成 A1"}})
     assert r.status_code == 200
     assert cap["current_config"] == {"user_prompt": "把 {{A}} 翻译成 A1"}
+
+
+_EXPECTED_TOOLS = {"preview_current_node_input", "describe_current_node_input", "show_workflow_graph",
+                   "latest_run_summary", "read_node_output", "read_qc_failures", "read_node_model_logs",
+                   "list_user_datasets", "list_user_models", "list_prompts", "get_prompt"}
+
+
+async def test_node_assist_endpoint_wires_full_toolset(auth_client, monkeypatch):
+    cap = {}
+
+    async def fake_cfg(model, node_type, instruction, columns, current_config=None,
+                       preview_tools=None, params=None, history=None):
+        cap["tools"] = {t.__name__ for t in (preview_tools or [])}
+        return {"reply": "ok", "config": None}
+
+    monkeypatch.setattr("app.agent.codegen.generate_node_config", fake_cfg)
+    mc, wf = await _make_model_and_wf(auth_client, "ls", "llm_synth")
+    r = await auth_client.post("/api/agent/node-assist", json={
+        "workflow_id": wf["id"], "node_id": "ls", "node_type": "llm_synth",
+        "instruction": "x", "model_config_id": mc["id"]})
+    assert r.status_code == 200
+    assert _EXPECTED_TOOLS <= cap["tools"]   # 端点把全套只读工具接给了助手
+
+
+async def test_codegen_endpoint_wires_full_toolset(auth_client, monkeypatch):
+    cap = {}
+
+    async def fake_gen(model, instruction, columns, current_code="", preview_tools=None, params=None):
+        cap["tools"] = {t.__name__ for t in (preview_tools or [])}
+        return {"code": "x", "output_columns": []}
+
+    monkeypatch.setattr("app.routers.agent.generate_code", fake_gen)
+    mc, wf = await _make_model_and_wf(auth_client, "ap", "auto_process")
+    r = await auth_client.post("/api/agent/codegen", json={
+        "workflow_id": wf["id"], "node_id": "ap", "instruction": "x", "model_config_id": mc["id"]})
+    assert r.status_code == 200
+    assert _EXPECTED_TOOLS <= cap["tools"]
