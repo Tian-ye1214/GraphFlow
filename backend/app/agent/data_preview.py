@@ -2,7 +2,7 @@
 import json
 from typing import Literal
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.engine.columns import ordered_union
@@ -14,6 +14,7 @@ PreviewSource = Literal["auto", "dataset", "latest_run"]
 DEFAULT_LIMIT = 5
 MAX_LIMIT = 20
 DEFAULT_CELL_CHAR_LIMIT = 500
+MAX_PREVIEW_CHARS = 16000   # 预览 JSON 序列化预算；留余量给 wrap_tools 的 20000 上限，避免被腰斩成非法 JSON
 
 
 def _coerce_limit(limit: int) -> int:
@@ -52,6 +53,32 @@ def _columns_from_rows(rows: list[dict]) -> list[str]:
     return ordered_union([list(r.keys()) for r in rows])
 
 
+def _fit_budget(payload: dict) -> dict:
+    """把 payload['rows'] 裁到序列化预算内，保证 json.dumps(payload) 完整可解析(不被 wrap_tools 20k 腰斩)。
+    先按行裁(报 omitted_rows)，单/少数超宽行仍超预算则逐级收紧单格上限再裁(cells_truncated_to)。"""
+    rows = payload.get("rows") or []
+    kept, used = [], 0
+    for r in rows:
+        size = len(json.dumps(r, ensure_ascii=False))
+        if kept and used + size > MAX_PREVIEW_CHARS:
+            break
+        kept.append(r)
+        used += size
+    out = dict(payload)
+    out["rows"] = kept
+    omitted = len(rows) - len(kept)
+    limit = DEFAULT_CELL_CHAR_LIMIT
+    while out["rows"] and limit > 50 and len(json.dumps(out, ensure_ascii=False)) > MAX_PREVIEW_CHARS:
+        limit //= 2
+        out["rows"], _ = _safe_rows(out["rows"], limit)
+        out["cells_truncated_to"] = limit
+    if omitted:
+        out["omitted_rows"] = omitted
+    if omitted or "cells_truncated_to" in out:
+        out["hint"] = "预览按大小预算裁剪：可调小 limit / 减少列，或用 describe 看全部列名与统计"
+    return out
+
+
 class WorkflowDataPreview:
     def __init__(self, session_factory: async_sessionmaker, user_id: int,
                  cell_char_limit: int = DEFAULT_CELL_CHAR_LIMIT):
@@ -78,11 +105,11 @@ class WorkflowDataPreview:
             if source in ("auto", "latest_run"):
                 latest = await self._latest_run_preview(session, wf.id, node_id, row_limit)
                 if latest["rows"]:
-                    return json.dumps(latest, ensure_ascii=False)
+                    return json.dumps(_fit_budget(latest), ensure_ascii=False)
                 if source == "latest_run":
-                    return json.dumps(latest, ensure_ascii=False)
+                    return json.dumps(_fit_budget(latest), ensure_ascii=False)
             dataset = await self._dataset_preview(session, wf, row_limit)
-            return json.dumps(dataset, ensure_ascii=False)
+            return json.dumps(_fit_budget(dataset), ensure_ascii=False)
 
     def _dump(self, source: str, columns: list[str], rows: list[dict], *,
               run_id: int | None = None, truncated: bool = False, error: str | None = None) -> str:
@@ -138,13 +165,18 @@ class WorkflowDataPreview:
     async def _run_rows_for_preview(self, session, run: Run, node_id: str | None,
                                     limit: int) -> list[dict]:
         if not node_id:
-            grouped = (await session.execute(
-                select(RunRow.node_id, func.count())
+            # row_count 报真实数据行数(累加各 RunRow 的 data_json 长度)，而非 RunRow 条数——
+            # 否则 barrier 节点(input/output/qc/auto_process 各只写 1 条 row_idx=0)恒显 1，严重低估。
+            recs = (await session.execute(
+                select(RunRow.node_id, RunRow.data_json)
                 .where(RunRow.run_id == run.id, RunRow.status == "done")
-                .group_by(RunRow.node_id)
                 .order_by(RunRow.node_id)
             )).all()
-            return [{"node_id": nid, "row_count": count} for nid, count in grouped][:limit]
+            counts: dict[str, int] = {}
+            for nid, data_json in recs:
+                rows = json.loads(data_json)
+                counts[nid] = counts.get(nid, 0) + (len(rows) if isinstance(rows, list) else 0)
+            return [{"node_id": nid, "row_count": counts[nid]} for nid in sorted(counts)][:limit]
 
         ver = await session.get(WorkflowVersion, run.workflow_version_id)
         graph = parse_graph(ver.graph_json) if ver is not None else None
