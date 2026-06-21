@@ -6,8 +6,8 @@ from sqlalchemy import delete as sa_delete, func, select
 
 from app.engine.graph import parse_graph, validate_graph
 from app.engine.manager import manager
-from app.models import (ModelCallLog, QcFailure, QcMetric, Run, RunLog, RunNodeState, RunRow, User,
-                        Workflow, WorkflowVersion)
+from app.models import (Dataset, ModelCallLog, ModelConfig, QcFailure, QcMetric, Run, RunLog,
+                        RunNodeState, RunRow, User, Workflow, WorkflowVersion)
 
 # run 的全部子表（按 run_id 外键）。新增 run 子表只需加到这里，所有删除入口（删单 run / 清空 run /
 # 删工作流 / 删用户）自动级联，避免某入口漏删致孤儿数据 + 跨租户泄漏。
@@ -51,6 +51,31 @@ def parse_threshold(text: str) -> float | None:
 
 def workflow_has_qc(graph) -> bool:
     return any(n.type == "qc" for n in graph.nodes)
+
+
+async def validate_graph_resource_ownership(session, graph, user_id: int) -> None:
+    """逐节点校验图引用的资源(数据集/模型/判定模型)均属 user_id；不符 raise ValueError(点名节点)。
+    create_run 与 dry_run 共用此单点，杜绝两条跑数入口的归属校验漂移(防跨租户借草稿盗用他人模型/数据)。"""
+    for n in graph.nodes:
+        if n.type == "input":
+            for ds_id in n.config.get("dataset_ids", []):
+                ds = await session.get(Dataset, ds_id)
+                if ds is None or ds.user_id != user_id:
+                    raise ValueError(f"节点 {n.id}: 数据集不存在")
+        elif n.type == "llm_synth":
+            mc_id = n.config.get("model_config_id")
+            mc = await session.get(ModelConfig, mc_id) if mc_id else None
+            if mc is None or mc.user_id != user_id:
+                raise ValueError(f"节点 {n.id}: 未选择有效的模型配置")
+        elif n.type == "qc":
+            ids = n.config.get("judge_model_ids") or (
+                [n.config["model_config_id"]] if n.config.get("model_config_id") else [])
+            if not ids:
+                raise ValueError(f"节点 {n.id}: 未选择判定模型")
+            for jid in ids:
+                mc = await session.get(ModelConfig, jid)
+                if mc is None or mc.user_id != user_id:
+                    raise ValueError(f"节点 {n.id}: 判定模型无效")
 
 
 async def enqueue_run(session_factory, user_id: int, workflow_id: int) -> int:
