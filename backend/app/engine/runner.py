@@ -343,12 +343,30 @@ async def _run_per_row_node(session_factory, run_id, user_id, node: Node, inputs
                               total=total, done=done_count, failed=failed_count)
 
 
+def validate_node_config_shape(node: Node) -> None:
+    """节点 config 形状预校验(脏草稿)：配置错误属节点级(非行数据)，应整 run failed / dry_run 422 点名节点，
+    而非逐行裸 TypeError/AttributeError 且 run 误报 completed。正式 run(经 _run_*_node) 与 dry_run 共用此
+    单点，杜绝两条入口校验漂移。"""
+    cfg = node.config
+    if node.type == "llm_synth":
+        fanout = cfg.get("fanout_n", 1)
+        if not isinstance(fanout, int) or fanout < 1:
+            raise ValueError(f"节点 {node.id}: fanout_n 必须为 ≥1 的整数，当前为 {fanout!r}")
+    elif node.type == "http_fetch":
+        if not isinstance(cfg.get("url", ""), str):
+            raise ValueError(f"http_fetch 节点 {node.id}: url 必须为字符串，当前为 {type(cfg.get('url')).__name__}")
+        if cfg.get("body") and not isinstance(cfg.get("body"), str):
+            raise ValueError(f"http_fetch 节点 {node.id}: body 必须为字符串，当前为 {type(cfg.get('body')).__name__}")
+        if cfg.get("headers") is not None and not isinstance(cfg.get("headers"), dict):
+            raise ValueError(f"http_fetch 节点 {node.id}: headers 必须为对象，当前为 {type(cfg.get('headers')).__name__}")
+        if cfg.get("extract") is not None and not isinstance(cfg.get("extract"), dict):
+            raise ValueError(f"http_fetch 节点 {node.id}: extract 必须为对象，当前为 {type(cfg.get('extract')).__name__}")
+
+
 async def _run_llm_node(session_factory, run_id, user_id, node: Node, inputs,
                         user_sem, cancel_event):
     cfg = node.config
-    fanout = cfg.get("fanout_n", 1)   # 配置错误：先于逐行循环校验，整 run failed 点名节点，而非逐行失败留 run=completed
-    if not isinstance(fanout, int) or fanout < 1:
-        raise ValueError(f"节点 {node.id}: fanout_n 必须为 ≥1 的整数，当前为 {fanout!r}")
+    validate_node_config_shape(node)   # fanout_n 等配置错误：先于逐行循环校验，整 run failed 点名节点
     async with session_factory() as s:
         mc = await s.get(ModelConfig, cfg.get("model_config_id"))
         if mc is None or mc.user_id != user_id:
@@ -361,17 +379,7 @@ async def _run_llm_node(session_factory, run_id, user_id, node: Node, inputs,
 
 async def _run_http_node(session_factory, run_id, user_id, node: Node, inputs, cancel_event):
     cfg = node.config
-    # 脏草稿 config 形状预校验(对照 _run_llm_node 的 fanout_n)：非字符串 url/body、非 dict headers/extract
-    # 会在逐行渲染时抛裸 TypeError/AttributeError——这是节点配置错误(非行数据)，应整 run failed 点名节点，
-    # 而非逐行裸 Python 错误且 run 误报 completed。
-    if not isinstance(cfg.get("url", ""), str):
-        raise ValueError(f"http_fetch 节点 {node.id}: url 必须为字符串，当前为 {type(cfg.get('url')).__name__}")
-    if cfg.get("body") and not isinstance(cfg.get("body"), str):
-        raise ValueError(f"http_fetch 节点 {node.id}: body 必须为字符串，当前为 {type(cfg.get('body')).__name__}")
-    if cfg.get("headers") is not None and not isinstance(cfg.get("headers"), dict):
-        raise ValueError(f"http_fetch 节点 {node.id}: headers 必须为对象，当前为 {type(cfg.get('headers')).__name__}")
-    if cfg.get("extract") is not None and not isinstance(cfg.get("extract"), dict):
-        raise ValueError(f"http_fetch 节点 {node.id}: extract 必须为对象，当前为 {type(cfg.get('extract')).__name__}")
+    validate_node_config_shape(node)   # 非字符串 url/body、非 dict headers/extract：整 run failed 点名节点
     await _run_per_row_node(
         session_factory, run_id, user_id, node, inputs, cancel_event,
         row_coro=lambda idx: nodes.run_http_fetch_row(cfg, inputs[idx]))

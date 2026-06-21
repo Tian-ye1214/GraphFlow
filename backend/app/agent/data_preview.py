@@ -167,6 +167,51 @@ class WorkflowDataPreview:
                        "columns": [_describe_column(c, rows) for c in cols]}
             return json.dumps(_fit_budget(payload, key="columns"), ensure_ascii=False)
 
+    async def node_input_sample(self, workflow_id: int, node_id: str,
+                                source: PreviewSource = "auto",
+                                limit: int = DEFAULT_LIMIT) -> tuple[list[dict], str, int | None]:
+        """某节点真实输入行(原始未截断，供 dry_run 试跑喂给节点逻辑)；返回 (rows, source, run_id)。
+        auto：优先最近运行该节点的上游产出(最忠实)，否则回退输入数据集(适合首次试跑/链头节点)。
+        与预览不同——这里不截断单元格，否则渲染后的提示词会与正式 run 不一致而误导。"""
+        row_limit = _coerce_limit(limit)
+        async with self._session_factory() as session:
+            wf = await session.get(Workflow, workflow_id)
+            if wf is None or wf.user_id != self._user_id:
+                return [], "none", None
+            if source in ("auto", "latest_run"):
+                runs = (await session.execute(
+                    select(Run).where(Run.workflow_id == wf.id, Run.user_id == self._user_id)
+                    .order_by(Run.id.desc()).limit(20))).scalars().all()
+                for run in runs:
+                    rows = await self._run_rows_for_preview(session, run, node_id, row_limit)
+                    if rows:
+                        return rows[:row_limit], "latest_run", run.id
+                if source == "latest_run":
+                    return [], "latest_run", None
+            return await self._dataset_rows_raw(session, wf, row_limit), "dataset", None
+
+    async def _dataset_rows_raw(self, session, wf: Workflow, limit: int) -> list[dict]:
+        """输入数据集前 limit 行(原始未截断)。脏图无法解析则空。"""
+        try:
+            graph = parse_graph(wf.graph_json)
+        except Exception:
+            return []
+        rows: list[dict] = []
+        for node in graph.nodes:
+            if node.type != "input":
+                continue
+            for ds_id in node.config.get("dataset_ids", []):
+                if len(rows) >= limit:
+                    return rows[:limit]
+                ds = await session.get(Dataset, ds_id)
+                if ds is None or ds.user_id != self._user_id:
+                    continue
+                recs = (await session.execute(
+                    select(DatasetRow).where(DatasetRow.dataset_id == ds.id)
+                    .order_by(DatasetRow.idx).limit(limit - len(rows)))).scalars().all()
+                rows.extend(json.loads(r.data_json) for r in recs)
+        return rows[:limit]
+
     async def _dataset_total_rows(self, session, wf: Workflow) -> int | None:
         """输入数据集总行数(精确，零扫行)；脏图无法解析则 None。"""
         try:
