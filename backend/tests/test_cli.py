@@ -685,6 +685,44 @@ def test_rmrun_single_and_all(server, capsys, tmp_path, monkeypatch):
     assert capsys.readouterr().out.strip() == ""
 
 
+def _seed_agent_session(title="会话", messages=None, username="tester"):
+    import asyncio
+    import json as _json
+    from sqlalchemy import select
+    from app.db import get_session_factory
+    from app.models import AgentMessage, AgentSession, User
+
+    async def seed():
+        sf = get_session_factory()
+        async with sf() as s:
+            uid = (await s.execute(select(User).where(User.username == username))).scalar_one().id
+            sess = AgentSession(user_id=uid, title=title,
+                                models_json=_json.dumps({"coordinator": 1, "manager": 1, "worker": 1}),
+                                model_params_json="{}")
+            s.add(sess); await s.commit(); sid = sess.id
+            for role, text in (messages or []):
+                s.add(AgentMessage(session_id=sid, role=role,
+                                   content_json=_json.dumps({"text": text}, ensure_ascii=False)))
+            await s.commit()
+            return sid
+
+    return asyncio.new_event_loop().run_until_complete(seed())
+
+
+def test_agent_ls_and_show(server, capsys):
+    gf("login", "tester", "--server", server)
+    sid = _seed_agent_session(title="我的会话",
+                              messages=[("user", "把数据翻译成英文"), ("assistant", "好的已完成")])
+    capsys.readouterr()
+    gf("agent", "ls")
+    out = capsys.readouterr().out
+    assert "我的会话" in out and str(sid) in out
+    capsys.readouterr()
+    gf("agent", "show", str(sid))
+    out = capsys.readouterr().out
+    assert "把数据翻译成英文" in out and "好的已完成" in out and "user" in out
+
+
 def test_rmrun_requires_id_or_all(server, capsys):
     gf("login", "tester", "--server", server)
     with pytest.raises(SystemExit) as e:

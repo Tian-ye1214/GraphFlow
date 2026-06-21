@@ -23,10 +23,10 @@ def save_state(state: dict) -> None:
 
 def main(argv: list[str] | None = None):
     from app.cli.client import die
-    from app.cli.commands import auth, workflow, node, model, dataset, prompt, run
+    from app.cli.commands import auth, workflow, node, model, dataset, prompt, run, agent
     p = argparse.ArgumentParser(prog="gf", description="GraphFlow 命令行客户端")
     sub = p.add_subparsers(dest="cmd", required=True)
-    for mod in (auth, workflow, node, model, dataset, prompt, run):
+    for mod in (auth, workflow, node, model, dataset, prompt, run, agent):
         mod.register(sub)
     args = p.parse_args(argv)
     if sys.platform == "win32":
