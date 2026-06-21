@@ -2,7 +2,8 @@
 import json
 
 from app.agent.node_info import NodeInfoTools
-from app.models import Run, RunNodeState, RunRow, User, Workflow, WorkflowVersion
+from app.models import (ModelCallLog, QcFailure, Run, RunNodeState, RunRow, User, Workflow,
+                        WorkflowVersion)
 
 GRAPH = json.dumps({
     "nodes": [
@@ -70,6 +71,34 @@ async def test_read_node_output_done_and_failed(session_factory):
     assert len(done["rows"]) == 2 and done["rows"][0]["a"] == "答0"
     failed = json.loads(await NodeInfoTools(sf, uid, wf_id, "gen").read_node_output("failed", 5))
     assert failed["rows"][0]["error"] == "模型超时" and failed["rows"][0]["attempt"] == 3
+
+
+async def test_read_qc_failures(session_factory):
+    sf = session_factory
+    uid, wf_id, run_id = await _seed(sf)
+    async with sf() as s:
+        s.add(QcFailure(run_id=run_id, node_id="qc", sample_json=json.dumps({"a": "差译文"}),
+                        reasons_json=json.dumps([{"model_config_id": 1, "status": "failed",
+                                                  "reason": "不达标"}])))
+        await s.commit()
+    out = json.loads(await NodeInfoTools(sf, uid, wf_id, "qc").read_qc_failures())
+    assert out["run_id"] == run_id and out["rows"][0]["sample"]["a"] == "差译文"
+    assert out["rows"][0]["reasons"][0]["reason"] == "不达标"
+
+
+async def test_read_node_model_logs(session_factory):
+    sf = session_factory
+    uid, wf_id, run_id = await _seed(sf)
+    async with sf() as s:
+        s.add(ModelCallLog(user_id=uid, run_id=run_id, node_id="gen", source="synth",
+                           model_name="qwen",
+                           request_json=json.dumps([{"role": "user", "content": "翻译:你好"}]),
+                           response_json="hello", prompt_tokens=3, completion_tokens=2))
+        await s.commit()
+    out = json.loads(await NodeInfoTools(sf, uid, wf_id, "gen").read_node_model_logs())
+    assert out["rows"][0]["response"] == "hello"
+    assert out["rows"][0]["request"][0]["content"] == "翻译:你好"
+    assert out["rows"][0]["completion_tokens"] == 2
 
 
 async def test_node_info_tenant_isolated(session_factory):

@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.agent.data_preview import _fit_budget, _safe_rows
 from app.engine.graph import parse_graph
-from app.models import Run, RunNodeState, RunRow, Workflow
+from app.models import ModelCallLog, QcFailure, Run, RunNodeState, RunRow, Workflow
 
 OUTPUT_ROW_LIMIT = 20
 
@@ -136,8 +136,53 @@ class NodeInfoTools:
                 {"run_id": run.id, "node_id": self._node_id, "status": status, "rows": rows}),
                 ensure_ascii=False)
 
+    async def read_qc_failures(self, limit: int = 10) -> str:
+        """看最近一次运行的质检失败样本与各判定模型的不通过理由(据真实误判迭代质检提示词)。
+        每条带其所属 qc 节点 id。
+        Parameters:
+            limit: 最多返回失败样本数，默认 10，上限 50
+        """
+        limit = max(1, min(int(limit), 50))
+        async with self._sf() as s:
+            wf = await self._owned_wf(s)
+            if wf is None:
+                return json.dumps({"error": "workflow_not_found"}, ensure_ascii=False)
+            run = await self._latest_run(s)
+            if run is None:
+                return json.dumps({"run_id": None, "rows": []}, ensure_ascii=False)
+            recs = (await s.execute(select(QcFailure).where(QcFailure.run_id == run.id)
+                                    .order_by(QcFailure.id).limit(limit))).scalars().all()
+            rows = [{"node_id": f.node_id, "sample": json.loads(f.sample_json),
+                     "reasons": json.loads(f.reasons_json)} for f in recs]
+            return json.dumps(_fit_budget({"run_id": run.id, "rows": rows}), ensure_ascii=False)
+
+    async def read_node_model_logs(self, limit: int = 5) -> str:
+        """看本节点在最近一次运行的模型调用：渲染后的请求消息 + 模型回复正文 + tokens。
+        定位"提示词渲染成什么/模型实际返回什么"的问题。
+        Parameters:
+            limit: 最多返回条数，默认 5，上限 20
+        """
+        limit = max(1, min(int(limit), 20))
+        async with self._sf() as s:
+            wf = await self._owned_wf(s)
+            if wf is None:
+                return json.dumps({"error": "workflow_not_found"}, ensure_ascii=False)
+            run = await self._latest_run(s)   # 按 run_id 限定(run 日志不带 workflow_id)，自然限本工作流+本租户
+            if run is None:
+                return json.dumps({"run_id": None, "rows": []}, ensure_ascii=False)
+            recs = (await s.execute(select(ModelCallLog).where(
+                ModelCallLog.run_id == run.id, ModelCallLog.node_id == self._node_id,
+                ModelCallLog.user_id == self._uid).order_by(ModelCallLog.id.desc())
+                .limit(limit))).scalars().all()
+            rows = [{"model_name": r.model_name, "request": json.loads(r.request_json or "[]"),
+                     "response": r.response_json, "prompt_tokens": r.prompt_tokens,
+                     "completion_tokens": r.completion_tokens} for r in recs]
+            return json.dumps(_fit_budget(
+                {"run_id": run.id, "node_id": self._node_id, "rows": rows}), ensure_ascii=False)
+
 
 def make_node_info_tools(session_factory: async_sessionmaker, user_id: int,
                          workflow_id: int, node_id: str) -> list:
     t = NodeInfoTools(session_factory, user_id, workflow_id, node_id)
-    return [t.show_workflow_graph, t.latest_run_summary, t.read_node_output]
+    return [t.show_workflow_graph, t.latest_run_summary, t.read_node_output,
+            t.read_qc_failures, t.read_node_model_logs]
