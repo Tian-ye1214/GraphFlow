@@ -19,20 +19,22 @@ uv run gf st                          # 显示 服务器 / 用户 / 当前工作
 uv run gf logout                      # 登出并清本地 cookie + 当前工作流
 ```
 
-状态文件 `~/.graphflow/cli.json`：`{server, cookie, workflow_id}`；`login` 写前两项，`use` 写第三项。换用户 `login` 会清 cookie 但保留当前工作流，必要时重新 `gf use`。
+状态文件 `~/.graphflow/cli.json`：`{server, cookie, workflow_id}`；`login` 写前两项，`use` 写第三项。换用户 `login` 会清 cookie 但保留当前工作流，必要时重新 `gf use`。状态文件路径可用环境变量 `GF_STATE_FILE` 覆盖（多环境/测试场景）。
 
 ## 路由表（按你要做的事选技能）
 
 | 你要做的事 | 用哪个技能 | 代表命令 |
 |---|---|---|
-| 建/改工作流结构、连线、看图、列血缘、整图导入导出 | **gf-workflow** | `wf` `use` `show` `cols` `node add/rm` `link/unlink` `wf dump/load` |
+| 建/改工作流结构、连线、看图、列血缘、链路打包导入导出(.gfpkg) | **gf-workflow** | `wf add/rm/rename/restore` `use` `show` `cols` `node add/rm` `link/unlink` `wf export/import` |
 | 配置节点（`node set` 键名表）、写提示词、自动处理 `op`、质检回扫 | **gf-node-prompt** | `node set` `node show` `node prompt` `op` |
 | 配置/测试模型 | **gf-model** | `model ls/add/set/rm/test` |
 | 上传/下载/预览/删数据集 | **gf-dataset** | `data ls/up/download/head/rm` |
-| 跑工作流、看进度、看结果行/日志/质检、导出、删运行 | **gf-run** | `run` `runs` `watch` `cancel` `rerun` `export` `rows` `logs` `qc` `rmrun` |
+| 跑工作流、看进度/状态、看结果行/日志/质检/模型对话、导出、删运行 | **gf-run** | `run` `runs` `watch` `run-show` `cancel` `rerun` `export` `rows` `logs` `model-logs` `qc` `rmrun` |
 | 管理可复用提示词库（库 CRUD、版本、回滚、复制、被引用、引用到节点） | **gf-prompt** | `prompt ls/show/add/edit/rm/versions/rollback/dup` `node prompt --library` |
 
 报「未知配置键」「不确定 node set 键名 / op 语法」→ gf-node-prompt。
+
+RedLotus Agent 会话回看（只读，跨工作流）：`gf agent ls`（列会话） / `gf agent show <会话ID>`（看消息流）。
 
 ## 服务器没起？怎么起
 
@@ -49,7 +51,7 @@ uv run uvicorn app.main:app --port 8000      # 生产式（同时托管前端页
 ## 跨域坑（所有子命令通用）
 
 - **资源指代（resolve 规则）**：纯数字按 ID，否则按名字**精确匹配**；找不到报「找不到名为…的…」，重名报错并列出候选 ID（改用 ID）。适用于 `wf`/`use`/`data`/`model`/`node set dataset=/model=` 等所有引用资源处。
-- **PowerShell 写 jsonl 别带 BOM**：`Out-File`/`WriteAllText` 默认带 BOM，上传报「Unexpected UTF-8 BOM」。用 `[IO.File]::WriteAllText($p, $s, [Text.UTF8Encoding]::new($false))`。
+- **文件编码**：上传 jsonl/json/csv 即使带 BOM 也能正常上传（后端按 `utf-8-sig` 自动剥除 BOM，utf-8 失败再回退 GBK），无需特殊处理 BOM。
 - **退出码**：业务错误 1（打印后端中文 detail 到 stderr），argparse 参数/用法错误 2，Ctrl+C 130。
 - **不走系统代理**：gf 内部 `trust_env=False`，开了 Clash 等系统代理也不影响访问本地 127.0.0.1（否则会被代理拦成 502）。
 - **前端实时联动**：CLI 每次变更经 SSE 推送给同用户已打开的浏览器页；运行详情页自身 2 秒轮询，与 CLI 无关。
