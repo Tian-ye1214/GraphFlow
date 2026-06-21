@@ -1,6 +1,6 @@
 from pydantic_ai.models.test import TestModel
 
-from app import crypto
+from app import crypto, llm_clients
 from app.agent import factory
 from app.models import ModelConfig
 
@@ -43,6 +43,22 @@ def test_create_model_thinking_forced_max_even_if_disabled():
     model = factory.create_model(_mc(), params={"thinking_enabled": False, "reasoning_effort": "low"})
     assert model.settings["extra_body"] == {
         "thinking": {"type": "enabled"}, "reasoning_effort": "max"}
+
+
+def test_agent_http_client_cached_per_config():
+    """H1 回归：agent 路径 httpx 客户端按 model 配置缓存复用，避免每次 create_model 都新建
+    一个永不关闭的 AsyncClient（长跑累积致 socket/FD 泄漏）。对照 services/llm.py 的 _client 缓存。"""
+    llm_clients._agent_client_cache.clear()
+    mc1 = _mc()
+    llm_clients.make_agent_provider(mc1)
+    llm_clients.make_agent_provider(mc1)
+    assert len(llm_clients._agent_client_cache) == 1            # 同配置只建一个 client
+    c1 = llm_clients._agent_http_client(mc1)
+    assert llm_clients._agent_http_client(mc1) is c1            # 复用同一对象
+    mc2 = _mc(base_url="http://other.local/v1")
+    llm_clients.make_agent_provider(mc2)
+    assert len(llm_clients._agent_client_cache) == 2            # 不同配置各自一个
+    assert llm_clients._agent_http_client(mc2) is not c1
 
 
 async def test_create_agent_runs_tools():

@@ -55,19 +55,36 @@ def make_chat_client(mc: ModelConfig) -> AsyncOpenAI | AsyncAzureOpenAI:
     )
 
 
+# agent 路径 httpx 客户端按 model 配置缓存复用（对照 services/llm.py 的 _client_cache）：
+# create_model 每回合/每个 worker 都调 make_agent_provider，若每次新建 AsyncClient 且永不关闭，
+# 长跑会累积大量未关闭连接池→socket/FD 泄漏。缓存后每个配置只建一个、随进程长存。
+_agent_client_cache: dict[tuple, httpx.AsyncClient] = {}
+
+
+def _agent_http_client(mc: ModelConfig) -> httpx.AsyncClient:
+    provider = provider_name(mc)
+    mode = azure_api_mode(mc) if provider == "azure" else "openai"
+    api_version = getattr(mc, "api_version", None) or ""
+    key = (provider, mode, mc.base_url, api_version, mc.api_key_enc or "")
+    if key not in _agent_client_cache:
+        _agent_client_cache[key] = httpx.AsyncClient(http2=True)
+    return _agent_client_cache[key]
+
+
 def make_agent_provider(mc: ModelConfig, *, responses: bool = False) -> AzureProvider | OpenAIProvider:
     api_key = decrypt_api_key(mc)
+    http_client = _agent_http_client(mc)
     if provider_name(mc) != "azure":
-        return OpenAIProvider(base_url=mc.base_url, api_key=api_key, http_client=httpx.AsyncClient(http2=True))
+        return OpenAIProvider(base_url=mc.base_url, api_key=api_key, http_client=http_client)
     if azure_api_mode(mc) == "v1":
         return AzureProvider(
             azure_endpoint=azure_v1_base_url(mc),
             api_key=api_key,
-            http_client=httpx.AsyncClient(http2=True),
+            http_client=http_client,
         )
     return AzureProvider(
         azure_endpoint=mc.base_url,
         api_key=api_key,
         api_version=getattr(mc, "api_version", None) or "",
-        http_client=httpx.AsyncClient(http2=True),
+        http_client=http_client,
     )
