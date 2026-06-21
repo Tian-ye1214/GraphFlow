@@ -344,9 +344,8 @@ async def _run_per_row_node(session_factory, run_id, user_id, node: Node, inputs
 
 
 def validate_node_config_shape(node: Node) -> None:
-    """节点 config 形状预校验(脏草稿)：配置错误属节点级(非行数据)，应整 run failed / dry_run 422 点名节点，
-    而非逐行裸 TypeError/AttributeError 且 run 误报 completed。正式 run(经 _run_*_node) 与 dry_run 共用此
-    单点，杜绝两条入口校验漂移。"""
+    """节点 config 形状预校验(脏草稿)：配置错误属节点级(非行数据)，应整 run failed 点名节点，
+    而非逐行裸 TypeError/AttributeError 且 run 误报 completed。_run_llm_node/_run_http_node 共用单点。"""
     cfg = node.config
     if node.type == "llm_synth":
         fanout = cfg.get("fanout_n", 1)

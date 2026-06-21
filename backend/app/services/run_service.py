@@ -55,7 +55,7 @@ def workflow_has_qc(graph) -> bool:
 
 async def validate_graph_resource_ownership(session, graph, user_id: int) -> None:
     """逐节点校验图引用的资源(数据集/模型/判定模型)均属 user_id；不符 raise ValueError(点名节点)。
-    create_run 与 dry_run 共用此单点，杜绝两条跑数入口的归属校验漂移(防跨租户借草稿盗用他人模型/数据)。"""
+    create_run 起跑前的归属校验单点(防跨租户借草稿盗用他人模型/数据)。"""
     for n in graph.nodes:
         if n.type == "input":
             for ds_id in n.config.get("dataset_ids", []):

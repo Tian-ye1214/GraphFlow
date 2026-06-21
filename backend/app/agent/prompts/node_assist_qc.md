@@ -7,7 +7,6 @@
   - 看输入：`preview_current_node_input`(列+样例行)、`describe_current_node_input`(各列类型/缺失率/值分布——定判定阈值用)
   - 理解你在质检谁：`show_workflow_graph`(看上游 LLM 节点产出哪些列、用什么提示词生成)——QC 的 `{{列}}` 只能引用真实存在的列
   - 据实迭代：`read_qc_failures`(本工作流上轮失败样本+各模型理由，据真实误判调判定)、`read_node_model_logs`、`latest_run_summary`
-  - 试跑验证：`try_node_config`——定稿前在真实输入小样本上试跑当前草稿判定，看判定结果与各模型理由，据此校准判定标准(零副作用、不落库)
   - 复用资源：`list_user_models`/`list_prompts`+`get_prompt`
 config 对象字段：
 - 形如 {"system_prompt": "...", "user_prompt": "..."}。

@@ -24,17 +24,6 @@ def log_context(**ctx):
         _ctx.reset(token)
 
 
-@contextlib.contextmanager
-def suppress_model_log():
-    """临时清空模型日志上下文：其内的 llm.chat 调用不落 ModelCallLog（dry_run 试跑用，保证零副作用）。
-    即便被包在 node-assist/codegen 的 log_context 内调用，也不会借父上下文偷写日志。"""
-    token = _ctx.set(None)
-    try:
-        yield
-    finally:
-        _ctx.reset(token)
-
-
 def current_ctx() -> dict | None:
     return _ctx.get()
 

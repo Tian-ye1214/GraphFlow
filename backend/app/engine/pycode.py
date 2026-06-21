@@ -12,7 +12,7 @@ HARNESS = Path(__file__).resolve().parent / "pycode_harness.py"
 CODE_TIMEOUT = 120
 
 # 子进程跑用户/agent 代码：env 只给启动 python + 编码所需的最小项，绝不透传 GRAPHFLOW_*/密钥/cookie 等
-# 凭证类环境变量给被执行代码（防被执行代码读 os.environ 偷密钥——dry_run 会在更少审阅的草稿上跑此路径）。
+# 凭证类环境变量给被执行代码（防被执行代码读 os.environ 偷密钥）。
 _SAFE_ENV_KEYS = ("PATH", "Path", "SYSTEMROOT", "SystemRoot", "TEMP", "TMP", "TMPDIR", "HOME",
                   "COMSPEC", "PATHEXT", "NUMBER_OF_PROCESSORS", "LANG", "LC_ALL", "LD_LIBRARY_PATH")
 

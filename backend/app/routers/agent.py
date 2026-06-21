@@ -12,7 +12,6 @@ from app.agent.codegen import gather_upstream_columns, generate_code
 from app.agent.catalog import make_catalog_tools
 from app.agent.data_preview import make_preview_tools
 from app.agent.node_info import make_node_info_tools
-from app.engine.dry_run import make_codegen_dry_run_tools, make_dry_run_tools
 from app.agent.turns import session_dir, turn_manager
 from app.auth import get_current_user, make_session_cookie
 from app.db import get_session, get_session_factory
@@ -261,9 +260,7 @@ async def codegen(body: CodegenIn, user: User = Depends(get_current_user),
                                         workflow_id=body.workflow_id, node_id=body.node_id)
                      + make_node_info_tools(get_session_factory(), user.id,
                                             body.workflow_id, body.node_id)
-                     + make_catalog_tools(get_session_factory(), user.id)
-                     + make_codegen_dry_run_tools(get_session_factory(), user.id,
-                                                  body.workflow_id, body.node_id))
+                     + make_catalog_tools(get_session_factory(), user.id))
     try:
         with log_context(user_id=user.id, workflow_id=body.workflow_id,
                          node_id=body.node_id, source="codegen"):
@@ -306,9 +303,7 @@ async def node_assist(body: NodeAssistIn, user: User = Depends(get_current_user)
                                         workflow_id=body.workflow_id, node_id=body.node_id)
                      + make_node_info_tools(get_session_factory(), user.id,
                                             body.workflow_id, body.node_id)
-                     + make_catalog_tools(get_session_factory(), user.id)
-                     + make_dry_run_tools(get_session_factory(), user.id, body.workflow_id,
-                                          body.node_id, current_config=body.current_config))
+                     + make_catalog_tools(get_session_factory(), user.id))
     try:
         with log_context(user_id=user.id, workflow_id=body.workflow_id,
                          node_id=body.node_id, source="assistant"):

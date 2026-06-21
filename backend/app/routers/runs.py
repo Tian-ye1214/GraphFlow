@@ -47,7 +47,7 @@ async def create_run(body: RunCreate, user: User = Depends(get_current_user),
             raise GraphError("工作流为空")
     except GraphError as e:
         raise HTTPException(status_code=422, detail=str(e))
-    try:  # 资源归属校验（会话隔离）——与 dry_run 共用单点，防校验漂移
+    try:  # 资源归属校验（会话隔离）——逐节点校验单点，防跨租户借草稿盗用他人模型/数据
         await validate_graph_resource_ownership(session, graph, user.id)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))

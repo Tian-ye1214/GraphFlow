@@ -142,57 +142,6 @@ def cmd_node_prompt(args):
     print(msg)
 
 
-def cmd_node_try(args):
-    cli = Cli()
-    wf = cli.get_wf()
-    find_node(wf["graph"], args.id)   # 本地校验节点存在，给清晰中文报错
-    body = {"call_model": not args.render, "limit": args.limit,
-            "allow_side_effects": args.allow_side_effects}
-    res = cli.req("POST", f"/api/workflows/{wf['id']}/nodes/{args.id}/dry-run", json=body)
-    if args.json:
-        print(json.dumps(res, ensure_ascii=False, indent=2))
-        return
-    _print_dry_run(res)
-
-
-def _print_dry_run(res: dict) -> None:
-    head = (f"试跑 {res['node_id']} ({res['node_type']}) — 样本来源 {res['sample_source']}"
-            + (f" run#{res['run_id']}" if res.get("run_id") else "") + f"，{res['sampled']} 行")
-    print(head)
-    if res.get("note"):
-        print(res["note"]); return
-    if res.get("needs_confirm"):
-        print(res.get("side_effect_note", "需确认副作用（加 --allow-side-effects 重试）")); return
-    if res.get("error"):
-        print(f"错误: {res['error']}")
-    if "output_rows" in res:                       # auto_process
-        for i, r in enumerate(res["output_rows"], 1):
-            print(f"  [{i}] {json.dumps(r, ensure_ascii=False)}")
-        print(f"产出列: {res.get('output_columns')}")
-        return
-    for i, row in enumerate(res.get("rows", []), 1):
-        print(f"── 第 {i} 行 ──")
-        if row.get("rendered_system"):
-            print(f"  system: {row['rendered_system']}")
-        if "rendered_url" in row:
-            print(f"  {row['method']} {row['rendered_url']}")
-        else:
-            print(f"  user: {row.get('rendered_user', '')}")
-        if row.get("missing_cols"):
-            print(f"  ⚠ 缺失列: {row['missing_cols']}")
-        if row.get("error"):
-            print(f"  ✗ 错误: {row['error']}")
-        elif "output" in row:
-            print(f"  产出: {json.dumps(row['output'], ensure_ascii=False)}")
-            if row.get("new_columns"):
-                print(f"  新增列: {row['new_columns']}")
-        elif row.get("passed") is not None:        # qc
-            print(f"  判定: {'通过' if row['passed'] else '不通过'} — {row.get('reason', '')}")
-    u = res.get("usage") or {}
-    if u.get("prompt_tokens") or u.get("completion_tokens"):
-        print(f"tokens: prompt={u['prompt_tokens']} completion={u['completion_tokens']}")
-
-
 def cmd_op_add(args):
     cli = Cli()
     wf, ops = _auto_node(cli, args.node_id)
@@ -223,15 +172,6 @@ def register(sub):
     node = node_actions(sub)
     s = node.add_parser("set"); s.add_argument("id"); s.add_argument("pairs", nargs="+"); s.set_defaults(func=cmd_node_set)
     s = node.add_parser("show"); s.add_argument("id"); s.set_defaults(func=cmd_node_show)
-
-    s = node.add_parser("try", help="试跑节点（零副作用，不落库）")
-    s.add_argument("id")
-    s.add_argument("--render", action="store_true", help="只渲染提示词，不调模型（免费）")
-    s.add_argument("--limit", type=int, default=3, help="试跑样本行数（模型节点上限 3）")
-    s.add_argument("--allow-side-effects", dest="allow_side_effects", action="store_true",
-                   help="http_fetch 允许非 GET/HEAD 方法")
-    s.add_argument("--json", action="store_true", help="输出原始 JSON")
-    s.set_defaults(func=cmd_node_try)
 
     s = node.add_parser("prompt")
     s.add_argument("id")
