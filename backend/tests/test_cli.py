@@ -728,3 +728,95 @@ def test_rmrun_requires_id_or_all(server, capsys):
     with pytest.raises(SystemExit) as e:
         gf("rmrun")
     assert e.value.code == 2   # 既无 run_id 也无 --all
+
+
+def test_agent_show_renders_tool_and_nontext(server, capsys):
+    """复核盲区：agent show 对 tool 消息(无 text 键 dict)与非 dict content 走 json.dumps 兜底。"""
+    import asyncio
+    import json as _json
+    from sqlalchemy import select
+    from app.db import get_session_factory
+    from app.models import AgentMessage, AgentSession, User
+
+    gf("login", "tester", "--server", server)
+
+    async def seed():
+        sf = get_session_factory()
+        async with sf() as s:
+            uid = (await s.execute(select(User).where(User.username == "tester"))).scalar_one().id
+            sess = AgentSession(user_id=uid, title="工具会话",
+                                models_json=_json.dumps({"coordinator": 1, "manager": 1, "worker": 1}),
+                                model_params_json="{}")
+            s.add(sess); await s.commit(); sid = sess.id
+            s.add(AgentMessage(session_id=sid, role="user",
+                               content_json=_json.dumps({"text": "开始"}, ensure_ascii=False)))
+            s.add(AgentMessage(session_id=sid, role="tool",   # 无 text 键的 dict
+                               content_json=_json.dumps({"tool": "preview_data", "args_brief": "node=gen",
+                                                         "status": "ok"}, ensure_ascii=False)))
+            s.add(AgentMessage(session_id=sid, role="assistant",   # 非 dict content
+                               content_json=_json.dumps("纯字符串内容", ensure_ascii=False)))
+            await s.commit()
+            return sid
+
+    sid = asyncio.new_event_loop().run_until_complete(seed())
+    capsys.readouterr()
+    gf("agent", "show", str(sid))
+    out = capsys.readouterr().out
+    assert "[tool]" in out and "preview_data" in out and "args_brief" in out   # tool 原样 JSON
+    assert "纯字符串内容" in out   # 非 dict content 不崩、原样打印
+
+
+def test_model_logs_none_node_run_fallback(server, capsys):
+    """复核盲区：_print_model_log with_run 头部 + node_id/run_id 为空时的 '-' 兜底。"""
+    gf("login", "tester", "--server", server)
+    _seed_model_log(run_id=None, node_id="", source="redlotus", response="无节点回复")
+    capsys.readouterr()
+    gf("model-logs")
+    out = capsys.readouterr().out
+    assert "无节点回复" in out and "run#-" in out and "[redlotus] -" in out
+
+
+def test_run_show_error_stats_and_failed_node(server, capsys):
+    """复核盲区：run-show 的 error / stats / 逐节点 failed 三个条件分支。"""
+    import asyncio
+    import json as _json
+    from sqlalchemy import select
+    from app.db import get_session_factory
+    from app.models import Run, RunNodeState, User, WorkflowVersion
+
+    gf("login", "tester", "--server", server)
+
+    async def seed():
+        sf = get_session_factory()
+        async with sf() as s:
+            uid = (await s.execute(select(User).where(User.username == "tester"))).scalar_one().id
+            ver = WorkflowVersion(workflow_id=0, version=1, graph_json='{"nodes": [], "edges": []}')
+            s.add(ver); await s.commit()
+            run = Run(user_id=uid, workflow_id=0, workflow_version_id=ver.id, status="failed",
+                      stats_json=_json.dumps({"prompt_tokens": 10, "completion_tokens": 20}),
+                      error="节点炸了")
+            s.add(run); await s.commit(); rid = run.id
+            s.add(RunNodeState(run_id=rid, node_id="gen", status="failed", total=5, done=3, failed=2))
+            await s.commit()
+            return rid
+
+    rid = asyncio.new_event_loop().run_until_complete(seed())
+    capsys.readouterr()
+    gf("run-show", str(rid))
+    out = capsys.readouterr().out
+    assert "失败" in out and "节点炸了" in out          # status + error 行
+    assert "统计" in out and "失败2" in out            # stats 行 + 逐节点 failed 计数
+
+
+def test_new_read_commands_tenant_isolated(server, capsys):
+    """红线锚点：新读命令(model-logs/agent ls)不得跨租户泄漏他人数据。"""
+    gf("login", "tester", "--server", server)
+    _seed_model_log(source="synth", response="甲的模型日志", username="tester")
+    _seed_agent_session(title="甲的会话", username="tester")
+    gf("login", "intruder", "--server", server)   # 切到另一用户
+    capsys.readouterr()
+    gf("model-logs")
+    assert "甲的模型日志" not in capsys.readouterr().out
+    capsys.readouterr()
+    gf("agent", "ls")
+    assert "甲的会话" not in capsys.readouterr().out
