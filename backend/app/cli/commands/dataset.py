@@ -8,7 +8,11 @@ from app.cli.client import Cli, die
 def cmd_data_ls(args):
     cli = Cli()
     for d in cli.req("GET", "/api/datasets"):
-        print(f"{d['id']:>4}  {d['name']}  {d['row_count']} 行  [{','.join(d['columns'])}]")
+        meta = d.get("source", "") or "-"
+        if d.get("original_filename"):
+            meta += f" {d['original_filename']}"
+        print(f"{d['id']:>4}  {d['name']}  {d['row_count']} 行  [{','.join(d['columns'])}]  "
+              f"{meta}  {(d.get('created_at') or '')[:19]}")
 
 
 def cmd_data_up(args):

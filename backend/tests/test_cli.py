@@ -291,6 +291,17 @@ def test_data_up_head_rm(server, capsys, tmp_path):
     assert "种子" not in capsys.readouterr().out
 
 
+def test_data_ls_shows_source_and_filename(server, capsys, tmp_path):
+    gf("login", "tester", "--server", server)
+    f = tmp_path / "源集.jsonl"
+    f.write_text('{"q": "a"}\n', encoding="utf-8")
+    gf("data", "up", str(f))
+    capsys.readouterr()
+    gf("data", "ls")
+    out = capsys.readouterr().out
+    assert "源集" in out and "upload" in out and "源集.jsonl" in out
+
+
 def test_data_up_missing_file_dies(server, capsys):
     gf("login", "tester", "--server", server)
     with pytest.raises(SystemExit):
