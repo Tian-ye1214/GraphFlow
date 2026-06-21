@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent import codegen as codegen_mod
 from app.agent.codegen import gather_upstream_columns, generate_code
+from app.agent.catalog import make_catalog_tools
 from app.agent.data_preview import make_preview_tools
 from app.agent.node_info import make_node_info_tools
 from app.agent.turns import session_dir, turn_manager
@@ -258,7 +259,8 @@ async def codegen(body: CodegenIn, user: User = Depends(get_current_user),
     preview_tools = (make_preview_tools(get_session_factory(), user.id,
                                         workflow_id=body.workflow_id, node_id=body.node_id)
                      + make_node_info_tools(get_session_factory(), user.id,
-                                            body.workflow_id, body.node_id))
+                                            body.workflow_id, body.node_id)
+                     + make_catalog_tools(get_session_factory(), user.id))
     try:
         with log_context(user_id=user.id, workflow_id=body.workflow_id,
                          node_id=body.node_id, source="codegen"):
@@ -300,7 +302,8 @@ async def node_assist(body: NodeAssistIn, user: User = Depends(get_current_user)
     preview_tools = (make_preview_tools(get_session_factory(), user.id,
                                         workflow_id=body.workflow_id, node_id=body.node_id)
                      + make_node_info_tools(get_session_factory(), user.id,
-                                            body.workflow_id, body.node_id))
+                                            body.workflow_id, body.node_id)
+                     + make_catalog_tools(get_session_factory(), user.id))
     try:
         with log_context(user_id=user.id, workflow_id=body.workflow_id,
                          node_id=body.node_id, source="assistant"):
