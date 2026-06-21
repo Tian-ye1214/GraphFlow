@@ -241,6 +241,43 @@ def test_op_on_non_auto_node_dies(server, capsys):
     assert "不是自动处理节点" in capsys.readouterr().err
 
 
+def test_node_try_auto_process(server, capsys, tmp_path):
+    login_and_wf(server)
+    f = tmp_path / "种子.jsonl"
+    f.write_text('{"q": "a"}\n{"q": "a"}\n{"q": "b"}\n', encoding="utf-8")
+    gf("data", "up", str(f))
+    gf("node", "add", "input"); gf("node", "set", "input_1", "dataset=种子")
+    gf("node", "add", "auto"); gf("link", "input_1", "auto_process_1")
+    gf("op", "add", "auto_process_1", "dedup")
+    capsys.readouterr()
+    gf("node", "try", "auto_process_1", "--limit", "10")
+    out = capsys.readouterr().out
+    assert "auto_process_1 (auto_process)" in out
+    assert '"q": "a"' in out and '"q": "b"' in out and "产出列" in out
+
+
+def test_node_try_llm_render_only(server, capsys, tmp_path):
+    login_and_wf(server)
+    f = tmp_path / "种子.jsonl"
+    f.write_text('{"q": "你好"}\n', encoding="utf-8")
+    gf("data", "up", str(f))
+    gf("model", "add", "m", "--url", "http://x/v1", "--model", "q", "--key", "k")
+    gf("node", "add", "input"); gf("node", "set", "input_1", "dataset=种子")
+    gf("node", "add", "llm"); gf("link", "input_1", "llm_synth_1")
+    gf("node", "set", "llm_synth_1", "model=m", "prompt=翻:{{q}}", "out=a")
+    capsys.readouterr()
+    gf("node", "try", "llm_synth_1", "--render")
+    out = capsys.readouterr().out
+    assert "翻:你好" in out and "产出" not in out   # 只渲染，不调模型
+
+
+def test_node_try_missing_node_dies(server, capsys):
+    login_and_wf(server)
+    with pytest.raises(SystemExit):
+        gf("node", "try", "nope")
+    assert "不存在" in capsys.readouterr().err
+
+
 def test_model_lifecycle(server, capsys):
     gf("login", "tester", "--server", server)
     gf("model", "add", "通义", "--url", "http://x/v1", "--model", "qwen", "--key", "k")
