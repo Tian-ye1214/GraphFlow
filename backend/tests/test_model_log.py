@@ -37,6 +37,16 @@ async def test_node_source_success_capped_failures_kept(session_factory):
     assert await _count(session_factory, source="synth", run_id=100) == model_log.NODE_LIMIT + 3
 
 
+def test_forget_run_clears_only_that_run():
+    """M1: run 到终态后清理其 (run_id,node_id) 计数键，防止长跑进程无界累积；不误清其它 run。"""
+    model_log._success_counts.clear()
+    model_log._success_counts.update({(1, "a"): 7, (1, "b"): 3, (2, "a"): 1})
+    model_log.forget_run(1)
+    assert not any(k[0] == 1 for k in model_log._success_counts)
+    assert model_log._success_counts[(2, "a")] == 1
+    model_log._success_counts.clear()
+
+
 async def test_redaction_no_secret(session_factory):
     with model_log.log_context(user_id=1, source="redlotus"):
         await model_log.log_model_call(

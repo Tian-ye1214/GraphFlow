@@ -28,6 +28,12 @@ def current_ctx() -> dict | None:
     return _ctx.get()
 
 
+def forget_run(run_id) -> None:
+    """run 到终态后清理其 (run_id, node_id) 计数键，防止长跑进程 _success_counts 无界累积。"""
+    for key in [k for k in _success_counts if k[0] == run_id]:
+        del _success_counts[key]
+
+
 def _should_log(ctx: dict, ok: bool) -> bool:
     if ctx.get("source") not in _NODE_SOURCES:
         return True                   # Agent 类全量

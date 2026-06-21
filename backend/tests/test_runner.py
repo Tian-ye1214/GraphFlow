@@ -271,6 +271,19 @@ async def test_happy_path(session_factory, monkeypatch):
     assert states["out"].status == "done"
 
 
+async def test_run_finish_clears_success_counts(session_factory, monkeypatch):
+    """M1: run 到终态后清理 model_log._success_counts 里属于该 run 的键(防长跑无界累积)，不误清其它 run。"""
+    from app.services import model_log
+    patch_chat(monkeypatch)
+    run_id = await make_run(session_factory)
+    model_log._success_counts[(run_id, "gen")] = 5          # 模拟该 run 期间累积的计数
+    model_log._success_counts[(run_id + 999999, "x")] = 1   # 其它 run 的键
+    await run_it(session_factory, run_id)
+    assert not any(k[0] == run_id for k in model_log._success_counts)   # 本 run 键已清
+    assert (run_id + 999999, "x") in model_log._success_counts          # 不误清其它 run
+    model_log._success_counts.pop((run_id + 999999, "x"), None)         # 清理测试残留
+
+
 async def test_row_failure_continues(session_factory, monkeypatch):
     def fn(user):
         if "问1" in user:

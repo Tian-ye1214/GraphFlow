@@ -13,7 +13,7 @@ from app.events import publish
 from app.models import (DatasetRow, ModelConfig, Prompt, PromptVersion, QcFailure, QcMetric, Run,
                         RunLog, RunNodeState, RunRow, WorkflowVersion)
 from app.routers.datasets import create_dataset
-from app.services.model_log import log_context
+from app.services.model_log import forget_run, log_context
 
 
 def _now() -> datetime:
@@ -97,6 +97,8 @@ async def execute_run(run_id: int, session_factory: async_sessionmaker,
             run.finished_at = _now()
             await s.commit()
         await _log(session_factory, run_id, "", f"运行失败：{e}", "error")
+    finally:
+        forget_run(run_id)   # run 到终态：清理 model_log 计数键，防长跑无界累积
 
 
 async def _execute(run_id, session_factory, user_sem, cancel_event):
