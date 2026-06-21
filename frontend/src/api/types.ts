@@ -65,6 +65,40 @@ export interface NodeAssistReply {
   sample_source: 'computed' | 'latest_run' | 'dataset' | 'none'
 }
 
+export interface DryRunRow {
+  input: Record<string, any>
+  rendered_system?: string
+  rendered_user?: string
+  rendered_url?: string
+  method?: string
+  missing_cols?: string[]
+  output?: Record<string, any>
+  new_columns?: string[]
+  passed?: boolean
+  reason?: string
+  per_model?: { model_config_id: number; status: string; reason: string }[]
+  error?: string
+}
+
+export interface DryRunOut {
+  node_id: string
+  node_type: string
+  sample_source: 'latest_run' | 'dataset' | 'none'
+  run_id: number | null
+  sampled: number
+  limit: number
+  input_columns: string[]
+  usage: { prompt_tokens: number; completion_tokens: number }
+  rows?: DryRunRow[]
+  output_rows?: Record<string, any>[]
+  output_columns?: string[]
+  pass_k?: number
+  note?: string
+  needs_confirm?: boolean
+  side_effect_note?: string
+  error?: string
+}
+
 export interface ModelLogEntry {
   id: number; source: string; node_id: string; run_id: number | null
   workflow_id: number | null; session_id: number | null

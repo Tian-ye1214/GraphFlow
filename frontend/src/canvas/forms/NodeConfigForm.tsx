@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Button, Collapse, Input, InputNumber, Popover, Radio, Select, Space, Spin, Switch, Table, Tag } from 'antd'
 import { api } from '../../api/client'
-import type { CodegenOut, ColumnsMap, Dataset, ModelConfig, PromptDetail, PromptSummary, RowsPage } from '../../api/types'
+import type { CodegenOut, ColumnsMap, Dataset, DryRunOut, ModelConfig, PromptDetail, PromptSummary, RowsPage } from '../../api/types'
 import { sendAssist, setDraft, useNodeAssist } from '../../agent/nodeAssistantStore'
 import { extractTplVars, renderCell } from '../../utils'
 
@@ -213,6 +213,92 @@ function ColumnsBar({ inputCols, outputCols, referenced = [], dropped = [], onCy
         <span style={{ color: '#cf1322' }}>红</span>=删除(下游不可见)；
         <span style={{ color: '#1677ff' }}>蓝</span>=本节点新增；灰=透传保存。
       </div>}
+    </div>
+  )
+}
+
+function DryPre({ label, text }: { label: string; text: string }) {
+  return (
+    <div style={{ margin: '2px 0' }}>
+      <span style={{ color: '#888' }}>{label}：</span>
+      <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{text}</span>
+    </div>
+  )
+}
+
+function DryRunResult({ res, onAllow }: { res: DryRunOut; onAllow: () => void }) {
+  if (res.error) return <div style={{ color: '#d4380d', fontSize: 12 }}>{res.error}</div>
+  if (res.note) return <div style={{ color: '#999', fontSize: 12 }}>{res.note}</div>
+  if (res.needs_confirm) {
+    return (
+      <div style={{ fontSize: 12 }}>
+        <div style={{ color: '#d46b08' }}>{res.side_effect_note}</div>
+        <Button size="small" danger style={{ marginTop: 4 }} onClick={onAllow}>允许副作用并试跑</Button>
+      </div>
+    )
+  }
+  const u = res.usage
+  const tok = (u.prompt_tokens || u.completion_tokens) ? ` · tokens ${u.prompt_tokens}/${u.completion_tokens}` : ''
+  return (
+    <div style={{ fontSize: 12, maxHeight: 320, overflowY: 'auto' }}>
+      <div style={{ color: '#999', marginBottom: 4 }}>
+        样本来源 {res.sample_source}{res.run_id ? ` #${res.run_id}` : ''} · {res.sampled} 行{tok}
+      </div>
+      {res.output_rows ? (
+        <Table size="small" rowKey={(_r, i) => String(i)} pagination={false} dataSource={res.output_rows}
+               scroll={{ x: 'max-content' }}
+               columns={(res.output_columns?.length ? res.output_columns : Object.keys(res.output_rows[0] ?? {}))
+                 .map((c) => ({ title: c, dataIndex: c, ellipsis: true, render: renderCell }))} />
+      ) : (res.rows ?? []).map((row, i) => (
+        <div key={i} style={{ borderTop: i ? '1px solid #f0f0f0' : undefined, padding: '4px 0' }}>
+          {row.rendered_system && <DryPre label="system" text={row.rendered_system} />}
+          {row.rendered_url
+            ? <DryPre label={row.method ?? 'GET'} text={row.rendered_url} />
+            : <DryPre label="user" text={row.rendered_user ?? ''} />}
+          {row.missing_cols && row.missing_cols.length > 0 && (
+            <div style={{ color: '#d4380d' }}>⚠ 缺失列：{row.missing_cols.map((c) => `{{${c}}}`).join('、')}</div>
+          )}
+          {row.error
+            ? <div style={{ color: '#d4380d' }}>✗ {row.error}</div>
+            : row.output
+              ? <DryPre label="产出" text={JSON.stringify(row.output, null, 0)} />
+              : row.passed !== undefined
+                ? <div style={{ color: row.passed ? '#52c41a' : '#cf1322' }}>
+                    判定：{row.passed ? '通过' : '不通过'} — {row.reason}</div>
+                : null}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function DryRunPanel({ workflowId, nodeId, config }: {
+  workflowId?: number; nodeId?: string; config: Record<string, any>
+}) {
+  const [busy, setBusy] = useState(false)
+  const [res, setRes] = useState<DryRunOut | null>(null)
+  const [err, setErr] = useState('')
+  const run = async (callModel: boolean, allowSide = false) => {
+    if (!workflowId || !nodeId) return
+    setBusy(true); setErr(''); setRes(null)
+    try {
+      setRes(await api.post<DryRunOut>(`/api/workflows/${workflowId}/nodes/${nodeId}/dry-run`,
+        { override_config: config, call_model: callModel, allow_side_effects: allowSide }))
+    } catch (e) {
+      setErr((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div style={{ border: '1px dashed #91caff', borderRadius: 6, padding: 8, marginBottom: 12 }}>
+      <Space style={{ marginBottom: res || err ? 8 : 0 }}>
+        <span style={{ color: '#1677ff', fontSize: 12 }}>试跑（小样本 · 不落库）</span>
+        <Button size="small" type="primary" ghost loading={busy} onClick={() => void run(true)}>试跑</Button>
+        <Button size="small" loading={busy} onClick={() => void run(false)}>仅渲染</Button>
+      </Space>
+      {err && <div style={{ color: '#d4380d', fontSize: 12 }}>{err}</div>}
+      {res && <DryRunResult res={res} onAllow={() => void run(true, true)} />}
     </div>
   )
 }
@@ -787,17 +873,21 @@ export default function NodeConfigForm({ type, config, onChange, workflowId, nod
     <ColumnsBar inputCols={inputCols} outputCols={outputCols} referenced={referenced}
                 dropped={dropped} onCycle={canInsert ? cycle : undefined} />
   )
+  // 试跑面板：可试跑的节点类型（调模型/调接口/本地变换），用当前草稿 config 试跑，零副作用
+  const dry = ['llm_synth', 'qc', 'http_fetch', 'auto_process'].includes(type)
+    ? <DryRunPanel workflowId={workflowId} nodeId={nodeId} config={config} />
+    : null
   switch (type) {
     case 'input':
       return <InputNodeForm config={config} onChange={onChange} />
     case 'llm_synth':
-      return <>{bar}<LlmSynthForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} inputCols={inputCols} /></>
+      return <>{bar}{dry}<LlmSynthForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} inputCols={inputCols} /></>
     case 'auto_process':
-      return <>{bar}<AutoProcessForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} /></>
+      return <>{bar}{dry}<AutoProcessForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} /></>
     case 'qc':
-      return <>{bar}<QcForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} inputCols={inputCols} /></>
+      return <>{bar}{dry}<QcForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} inputCols={inputCols} /></>
     case 'http_fetch':
-      return <>{bar}<HttpFetchForm config={config} onChange={onChange} inputCols={inputCols} /></>
+      return <>{bar}{dry}<HttpFetchForm config={config} onChange={onChange} inputCols={inputCols} /></>
     case 'output':
       return <>{bar}<OutputNodeForm config={config} onChange={onChange} /></>
     default:
