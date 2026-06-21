@@ -14,9 +14,10 @@ class HTTPFetchError(Exception):
 
 
 def _client() -> httpx.AsyncClient:
-    """复用单个 AsyncClient（连接池），避免每行重建。"""
+    """复用单个 AsyncClient（连接池），避免每行重建。开 HTTP/2（与 LLM 客户端一致；
+    服务端经 TLS/ALPN 支持则用 h2，否则自动回落 HTTP/1.1）。"""
     if "c" not in _client_cache:
-        _client_cache["c"] = httpx.AsyncClient()
+        _client_cache["c"] = httpx.AsyncClient(http2=True)
     return _client_cache["c"]
 
 
