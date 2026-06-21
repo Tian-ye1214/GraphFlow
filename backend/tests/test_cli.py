@@ -660,6 +660,15 @@ def test_qc_prints_metrics_and_failures(server, capsys, tmp_path):
     assert rec["_qc_model_1"] == "failed"
 
 
+def test_run_show_non_blocking(server, capsys, tmp_path, monkeypatch):
+    _build_and_run(server, tmp_path, monkeypatch)   # run #1 completed
+    capsys.readouterr()
+    gf("run-show", "1")
+    out = capsys.readouterr().out
+    assert "已完成" in out and "链" in out
+    assert "llm_synth_1" in out and "input_1" in out   # 逐节点汇总
+
+
 def test_rmrun_single_and_all(server, capsys, tmp_path, monkeypatch):
     _build_and_run(server, tmp_path, monkeypatch)   # 产生运行 #1
     capsys.readouterr()

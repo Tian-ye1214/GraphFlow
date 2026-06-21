@@ -31,6 +31,22 @@ def cmd_watch(args):
     watch_run(cli, run_id)
 
 
+def cmd_run_show(args):
+    cli = Cli()
+    d = cli.req("GET", f"/api/runs/{args.run_id}")
+    print(f"运行 #{d['id']}  {d['workflow_name']}  {STATUS_LABELS.get(d['status'], d['status'])}")
+    if d.get("error"):
+        print(f"  错误: {d['error']}")
+    if d.get("stats"):
+        print(f"  统计: {json.dumps(d['stats'], ensure_ascii=False)}")
+    for s in d["node_states"]:
+        line = (f"  {s['node_id']:<18} {STATUS_LABELS.get(s['status'], s['status']):<4} "
+                f"{s['done']}/{s['total']}")
+        if s["failed"]:
+            line += f" 失败{s['failed']}"
+        print(line)
+
+
 def cmd_cancel(args):
     cli = Cli()
     cli.req("POST", f"/api/runs/{args.run_id}/cancel")
@@ -148,6 +164,10 @@ def register(sub):
     s = sub.add_parser("watch", help="跟随运行进度")
     s.add_argument("run_id", nargs="?", type=int)
     s.set_defaults(func=cmd_watch)
+
+    s = sub.add_parser("run-show", help="看某次运行的状态/统计/逐节点汇总(非阻塞，一次性)")
+    s.add_argument("run_id", type=int)
+    s.set_defaults(func=cmd_run_show)
 
     s = sub.add_parser("cancel", help="取消运行")
     s.add_argument("run_id", type=int)
