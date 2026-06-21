@@ -59,6 +59,17 @@ async def test_nan_inf_output_not_silently_stored():
         await run_process_code(code, ROWS)
 
 
+async def test_subprocess_env_excludes_secrets(monkeypatch):
+    """被执行代码读不到父进程的密钥/凭证类环境变量(防 RCE 偷密钥)。"""
+    monkeypatch.setenv("GRAPHFLOW_SECRET_KEY", "TOPSECRET")
+    monkeypatch.setenv("SOME_API_KEY", "sk-leak")
+    code = ("import os\n"
+            "def process(rows):\n"
+            "    return [{'sk': os.environ.get('GRAPHFLOW_SECRET_KEY', ''), "
+            "'ak': os.environ.get('SOME_API_KEY', '')}]\n")
+    assert await run_process_code(code, ROWS) == [{"sk": "", "ak": ""}]
+
+
 async def test_pandas_grouped_dedup_runs_in_subprocess():
     rows = [
         {"session": "s1", "q": "a"}, {"session": "s1", "q": "a"},
