@@ -581,6 +581,52 @@ def test_logs_shows_timeline(server, capsys, tmp_path, monkeypatch):
     assert out.strip()   # 至少有日志行（含节点名/级别）
 
 
+def _seed_model_log(run_id=None, source="synth", node_id="llm_synth_1",
+                    request=None, response="模型回复正文", username="tester"):
+    import asyncio
+    import json as _json
+    from sqlalchemy import select
+    from app.db import get_session_factory
+    from app.models import ModelCallLog, User
+
+    async def seed():
+        sf = get_session_factory()
+        async with sf() as s:
+            uid = (await s.execute(select(User).where(User.username == username))).scalar_one().id
+            s.add(ModelCallLog(
+                user_id=uid, run_id=run_id, node_id=node_id, source=source,
+                model_name="qwen", provider="openai",
+                request_json=_json.dumps(request or [{"role": "user", "content": "问题X"}],
+                                         ensure_ascii=False),
+                response_json=response, prompt_tokens=3, completion_tokens=4))
+            await s.commit()
+
+    asyncio.new_event_loop().run_until_complete(seed())
+
+
+def test_logs_model_shows_request_response(server, capsys, tmp_path, monkeypatch):
+    _build_and_run(server, tmp_path, monkeypatch)   # run #1（fake_chat 不落 model log）
+    _seed_model_log(run_id=1, response="实际回复Z")
+    capsys.readouterr()
+    gf("logs", "1", "--model")
+    out = capsys.readouterr().out
+    assert "实际回复Z" in out and "问题X" in out and "qwen" in out and "tokens" in out
+
+
+def test_model_logs_top_level_and_source_filter(server, capsys):
+    gf("login", "tester", "--server", server)
+    _seed_model_log(source="synth", response="答案甲")
+    _seed_model_log(source="qc", response="判定乙", node_id="qc_1")
+    capsys.readouterr()
+    gf("model-logs")
+    out = capsys.readouterr().out
+    assert "答案甲" in out and "判定乙" in out and "问题X" in out
+    capsys.readouterr()
+    gf("model-logs", "--source", "qc")
+    out = capsys.readouterr().out
+    assert "判定乙" in out and "答案甲" not in out
+
+
 def test_qc_prints_metrics_and_failures(server, capsys, tmp_path):
     import json as _json
     from app.config import settings as _s

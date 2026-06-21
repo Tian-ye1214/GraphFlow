@@ -73,14 +73,37 @@ def cmd_rows(args):
         print(json.dumps(row, ensure_ascii=False))
 
 
+def _print_model_log(m: dict, with_run: bool = False) -> None:
+    head = f"[{m['source']}] {m['node_id'] or '-'}  {m['model_name']}"
+    if with_run:
+        head += f"  run#{m.get('run_id') or '-'}"
+    head += f"  ({m['prompt_tokens']}+{m['completion_tokens']} tokens)"
+    print(head)
+    print(f"  请求: {json.dumps(m['request'], ensure_ascii=False)}")
+    print(f"  回复: {m['response']}")
+
+
 def cmd_logs(args):
     cli = Cli()
     if args.model:
         for m in cli.req("GET", f"/api/runs/{args.run_id}/model-logs"):
-            print(f"[{m['source']}] {m['node_id'] or '-'}  {m['model_name']}")
+            _print_model_log(m)
     else:
         for l in cli.req("GET", f"/api/runs/{args.run_id}/logs"):
             print(f"[{l['created_at'][:19]}] {l['level'].upper()} {l['node_id'] or '-'}  {l['message']}")
+
+
+def cmd_model_logs(args):
+    cli = Cli()
+    params = {"limit": args.limit}
+    if args.source:
+        params["source"] = args.source
+    if args.run:
+        params["run_id"] = args.run
+    if args.node:
+        params["node_id"] = args.node
+    for m in cli.req("GET", "/api/model-logs", params=params):
+        _print_model_log(m, with_run=True)
 
 
 def cmd_qc(args):
@@ -150,6 +173,11 @@ def register(sub):
     s = sub.add_parser("logs", help="看运行日志（--model 看模型对话）")
     s.add_argument("run_id", type=int); s.add_argument("--model", action="store_true")
     s.set_defaults(func=cmd_logs)
+
+    s = sub.add_parser("model-logs", help="看模型调用日志(跨运行，含请求/回复/tokens)")
+    s.add_argument("--source"); s.add_argument("--run", type=int); s.add_argument("--node")
+    s.add_argument("--limit", type=int, default=50)
+    s.set_defaults(func=cmd_model_logs)
 
     s = sub.add_parser("qc", help="看质检指标+失败样本（--download 落 jsonl）")
     s.add_argument("run_id", type=int)
