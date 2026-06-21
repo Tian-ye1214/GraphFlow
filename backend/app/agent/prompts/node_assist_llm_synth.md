@@ -7,6 +7,7 @@
   - 看输入：`preview_current_node_input`(列+样例行)、`describe_current_node_input`(总行数/各列类型/缺失率/值分布)
   - 理解链路：`show_workflow_graph`(全图+上游产出列+下游质检按什么标准/引用哪些列判定)——产出的列名/语义要对齐下游 QC
   - 据实迭代：`read_node_output`(本节点上轮产出/失败行)、`read_node_model_logs`(模型实际收发)、`latest_run_summary`、`read_qc_failures`(下游质检误判)
+  - 试跑验证：`try_node_config`——定稿前在真实输入小样本上试跑当前草稿配置，看渲染后的提示词与模型真实产出，据此打磨提示词再定稿(零副作用、不落库)
   - 复用资源：`list_user_models`/`list_prompts`+`get_prompt`/`list_user_datasets`
 config 对象字段：
 - 指令只产出单列时：{"system_prompt":"...","user_prompt":"...","output_mode":"column","output_column":"<列名>"}。

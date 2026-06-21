@@ -12,8 +12,9 @@ from starlette.background import BackgroundTask
 
 from app.auth import get_current_user
 from app.config import settings
-from app.db import get_session
+from app.db import get_session, get_session_factory
 from app.engine.columns import propagate_columns, resolve_dataset_cols
+from app.engine.dry_run import DryRunNotFound, MODEL_SAMPLE_CAP, dry_run_node
 from app.engine.graph import GraphError, parse_graph, validate_graph
 from app.events import publish
 from app.models import ModelCallLog, Run, User, Workflow, WorkflowVersion
@@ -31,6 +32,13 @@ class WorkflowCreate(BaseModel):
 class WorkflowUpdate(BaseModel):
     name: str | None = None
     graph: dict | None = None
+
+
+class DryRunIn(BaseModel):
+    override_config: dict | None = None   # 前端未保存草稿 config；缺省用已保存的节点 config
+    limit: int = MODEL_SAMPLE_CAP
+    call_model: bool = True               # False=只渲染提示词不调模型（免费预览）
+    allow_side_effects: bool = False      # http_fetch 非 GET/HEAD 方法需显式允许
 
 
 def _out(wf: Workflow) -> dict:
@@ -87,6 +95,22 @@ async def workflow_columns(wf_id: int, user: User = Depends(get_current_user),
         raise HTTPException(status_code=422, detail=str(e))
     except (AttributeError, TypeError, KeyError) as e:
         raise HTTPException(status_code=422, detail=f"草稿态图结构非法，无法计算列血缘: {e}")
+
+
+@router.post("/{wf_id}/nodes/{node_id}/dry-run")
+async def dry_run_workflow_node(wf_id: int, node_id: str, body: DryRunIn,
+                                user: User = Depends(get_current_user),
+                                session: AsyncSession = Depends(get_session)):
+    """试跑单节点：真实输入小样本上跑该节点逻辑，看渲染后提示词/模型产出/产出列。零副作用(不落库)。"""
+    await get_owned_workflow(wf_id, user, session)
+    try:
+        return await dry_run_node(get_session_factory(), user.id, wf_id, node_id,
+                                  override_config=body.override_config, limit=body.limit,
+                                  call_model=body.call_model, allow_side_effects=body.allow_side_effects)
+    except DryRunNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
 
 @router.put("/{wf_id}")

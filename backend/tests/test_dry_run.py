@@ -4,7 +4,8 @@ import json
 import pytest
 from sqlalchemy import func, select
 
-from app.engine.dry_run import (LOCAL_SAMPLE_CAP, MODEL_SAMPLE_CAP, DryRunNotFound, dry_run_node)
+from app.engine.dry_run import (LOCAL_SAMPLE_CAP, MODEL_SAMPLE_CAP, DryRunNotFound, dry_run_node,
+                                make_codegen_dry_run_tools, make_dry_run_tools)
 from app.models import (Dataset, DatasetRow, ModelCallLog, ModelConfig, Prompt, PromptVersion,
                         RunRow, User, Workflow)
 from app.services import llm
@@ -238,6 +239,32 @@ async def test_dry_run_resolves_prompt_ref(session_factory, monkeypatch):
     assert out["rows"][0]["rendered_system"] == "你是专业译员"
     with pytest.raises(ValueError, match="不存在"):
         await dry_run_node(sf, uid, wf_id, "gen", override_config={"system_prompt_ref": 999999})
+
+
+async def test_make_dry_run_tools_uses_draft_config(session_factory, monkeypatch):
+    """节点助手工具：用草稿 current_config 试跑；产物为可解析 JSON 串。"""
+    sf = session_factory
+    uid, wf_id, _, _ = await _seed(sf, LLM_GRAPH, [{"q": "a"}])
+    _patch_chat(monkeypatch, lambda s, u: ("x", {"prompt_tokens": 0, "completion_tokens": 0}))
+    [tool] = make_dry_run_tools(sf, uid, wf_id, "gen", current_config={"user_prompt": "草:{{q}}"})
+    out = json.loads(await tool(call_model=False))
+    assert out["rows"][0]["rendered_user"] == "草:a"
+
+
+async def test_make_dry_run_tools_returns_error_json(session_factory):
+    sf = session_factory
+    uid, wf_id, _, _ = await _seed(sf, LLM_GRAPH, [{"q": "a"}])
+    [tool] = make_dry_run_tools(sf, uid, wf_id, "in")   # input 节点不支持
+    assert "error" in json.loads(await tool(call_model=False))
+
+
+async def test_make_codegen_dry_run_tools_runs_code(session_factory):
+    sf = session_factory
+    uid, wf_id, _, _ = await _seed(sf, AUTO_GRAPH, [{"q": "a"}, {"q": "b"}])
+    [tool] = make_codegen_dry_run_tools(sf, uid, wf_id, "proc")
+    code = "def process(rows):\n    return [{**r, 'n': len(r['q'])} for r in rows]\n"
+    out = json.loads(await tool(code=code))
+    assert out["output_rows"][0]["n"] == 1
 
 
 async def test_dry_run_empty_sample_notes(session_factory, monkeypatch):
