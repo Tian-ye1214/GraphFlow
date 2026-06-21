@@ -15,3 +15,15 @@ async def test_wait_fires_on_completion(monkeypatch):
 async def test_wait_unknown_run_returns_immediately():
     m = RunManager()
     await asyncio.wait_for(m.wait(999), timeout=1)
+
+
+async def test_user_sem_rebuilds_on_capacity_change():
+    """M2: 用户并发度配置变更后 user_sem 应重建生效(原实现首建即冻结→改 max_llm_concurrency 须重启)。
+    同容量仍复用同一信号量(保持单一并发上限)。"""
+    m = RunManager()
+    s1 = m.user_sem(1, 4)
+    assert m.user_sem(1, 4) is s1          # 同容量复用同一信号量
+    s2 = m.user_sem(1, 8)
+    assert s2 is not s1                      # 容量变了 → 重建
+    assert s2._value == 8                    # 新容量生效
+    assert m.user_sem(1, 8) is s2            # 再次同容量复用

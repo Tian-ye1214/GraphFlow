@@ -11,15 +11,18 @@ class RunManager:
     """运行任务的进程内登记处：取消事件、用户信号量、后台 asyncio.Task。"""
 
     def __init__(self):
-        self.user_sems: dict[int, asyncio.Semaphore] = {}
+        self.user_sems: dict[int, tuple[int, asyncio.Semaphore]] = {}
         self.cancel_events: dict[int, asyncio.Event] = {}
         self.done_events: dict[int, asyncio.Event] = {}
         self.tasks: dict[int, asyncio.Task] = {}
 
     def user_sem(self, user_id: int, capacity: int) -> asyncio.Semaphore:
-        if user_id not in self.user_sems:
-            self.user_sems[user_id] = asyncio.Semaphore(capacity)
-        return self.user_sems[user_id]
+        # 连同容量缓存：容量变化时重建信号量，使 max_llm_concurrency 配置变更下一次提交即生效
+        # （原实现首建即冻结，改并发度须重启进程才生效）；同容量复用，保持单一并发上限。
+        cached = self.user_sems.get(user_id)
+        if cached is None or cached[0] != capacity:
+            self.user_sems[user_id] = (capacity, asyncio.Semaphore(capacity))
+        return self.user_sems[user_id][1]
 
     def submit(self, run_id: int, user_id: int, capacity: int,
                session_factory: async_sessionmaker) -> None:
