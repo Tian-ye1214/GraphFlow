@@ -2,7 +2,7 @@
 import json
 
 from app.agent.data_preview import MAX_PREVIEW_CHARS, WorkflowDataPreview
-from app.models import Run, RunRow, User, Workflow, WorkflowVersion
+from app.models import Dataset, DatasetRow, Run, RunRow, User, Workflow, WorkflowVersion
 
 
 async def _seed_basic(sf):
@@ -54,3 +54,35 @@ async def test_wide_table_preview_stays_parseable_under_budget(session_factory):
     assert len(raw) <= MAX_PREVIEW_CHARS + 2000   # 受预算约束(留壳余量)
     assert payload["omitted_rows"] > 0 and "hint" in payload
     assert len(payload["rows"]) < 20     # 确实裁了行
+
+
+async def _seed_dataset_wf(sf, recs, columns):
+    """tester + 一个数据集(input 节点引用它)。返回 (uid, wf_id)。"""
+    async with sf() as s:
+        u = User(username="tester"); s.add(u); await s.flush()
+        ds = Dataset(user_id=u.id, name="集", source="upload", original_filename="集.jsonl",
+                     row_count=len(recs), columns_json=json.dumps(columns))
+        s.add(ds); await s.flush()
+        for i, r in enumerate(recs):
+            s.add(DatasetRow(dataset_id=ds.id, idx=i, data_json=json.dumps(r, ensure_ascii=False)))
+        graph = json.dumps({"nodes": [{"id": "in", "type": "input",
+                                       "config": {"dataset_ids": [ds.id]}}], "edges": []})
+        wf = Workflow(user_id=u.id, name="流", graph_json=graph); s.add(wf); await s.flush()
+        ids = (u.id, wf.id)
+        await s.commit()
+    return ids
+
+
+async def test_describe_reports_dtypes_missing_and_value_dist(session_factory):
+    """describe: 总行数(数据集精确) + 每列 dtype 分布/缺失率/低基数值分布。"""
+    sf = session_factory
+    uid, wf_id = await _seed_dataset_wf(sf, [
+        {"cat": "A", "score": 1, "q": "问1"}, {"cat": "B", "score": 2, "q": "问2"},
+        {"cat": "A", "score": None, "q": "问3"}, {"cat": "A", "score": 4, "q": "问4"}],
+        ["cat", "score", "q"])
+    out = json.loads(await WorkflowDataPreview(sf, uid).describe(wf_id, source="dataset"))
+    assert out["total_rows"] == 4 and out["sampled_rows"] == 4 and out["column_count"] == 3
+    cols = {c["name"]: c for c in out["columns"]}
+    assert cols["cat"]["value_counts"]['"A"'] == 3   # 低基数值分布
+    assert cols["score"]["missing_pct"] == 25         # None 计缺失
+    assert cols["score"]["dtypes"].get("int") == 3

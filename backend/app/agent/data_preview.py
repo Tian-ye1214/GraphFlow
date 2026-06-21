@@ -79,6 +79,37 @@ def _fit_budget(payload: dict) -> dict:
     return out
 
 
+def _describe_column(name: str, rows: list[dict]) -> dict:
+    """单列统计：dtype 分布 / 缺失率 / 低基数(≤15)值分布，否则报 distinct 估计。基于抽样行。"""
+    from collections import Counter
+    dt: Counter = Counter()
+    missing = 0
+    keys: list[str] = []
+    for r in rows:
+        v = r.get(name)
+        if v is None:
+            dt["null"] += 1
+            missing += 1
+        elif isinstance(v, bool):
+            dt["bool"] += 1
+        elif isinstance(v, int):
+            dt["int"] += 1
+        elif isinstance(v, float):
+            dt["float"] += 1
+        else:
+            dt["str"] += 1
+            if isinstance(v, str) and v.strip() == "":
+                missing += 1
+        keys.append(json.dumps(v, ensure_ascii=False, default=str))
+    out = {"name": name, "dtypes": dict(dt),
+           "missing_pct": round(missing / len(rows) * 100) if rows else 0}
+    if len(set(keys)) <= 15:
+        out["value_counts"] = dict(Counter(keys).most_common(15))
+    else:
+        out["distinct_estimate"] = len(set(keys))
+    return out
+
+
 class WorkflowDataPreview:
     def __init__(self, session_factory: async_sessionmaker, user_id: int,
                  cell_char_limit: int = DEFAULT_CELL_CHAR_LIMIT):
@@ -110,6 +141,58 @@ class WorkflowDataPreview:
                     return json.dumps(_fit_budget(latest), ensure_ascii=False)
             dataset = await self._dataset_preview(session, wf, row_limit)
             return json.dumps(_fit_budget(dataset), ensure_ascii=False)
+
+    async def describe(self, workflow_id: int, node_id: str | None = None,
+                       source: PreviewSource = "auto", sample_limit: int = MAX_LIMIT) -> str:
+        """列 schema 概览：总行数(数据集源精确) + 每列 dtype 分布/缺失率/低基数值分布。列统计基于抽样行。"""
+        if source not in ("auto", "dataset", "latest_run"):
+            return self._dump("none", [], [], error="invalid_source")
+        n = _coerce_limit(sample_limit)
+        async with self._session_factory() as session:
+            wf = await session.get(Workflow, workflow_id)
+            if wf is None or wf.user_id != self._user_id:
+                return self._dump("none", [], [], error="workflow_not_found")
+            info, total = None, None
+            if source in ("auto", "latest_run"):
+                info = await self._latest_run_preview(session, wf.id, node_id, n)
+                if not info["rows"] and source == "auto":
+                    info = None
+            if info is None:
+                info = await self._dataset_preview(session, wf, n)
+                total = await self._dataset_total_rows(session, wf)
+            rows = info["rows"]
+            cols = info["columns"] or _columns_from_rows(rows)
+            payload = {"source": info["source"], "run_id": info.get("run_id"),
+                       "total_rows": total, "sampled_rows": len(rows), "column_count": len(cols),
+                       "columns": [_describe_column(c, rows) for c in cols]}
+            kept, used = [], 0   # 列多时按预算裁剪 columns，保完整可解析
+            for c in payload["columns"]:
+                size = len(json.dumps(c, ensure_ascii=False))
+                if kept and used + size > MAX_PREVIEW_CHARS:
+                    break
+                kept.append(c)
+                used += size
+            if len(payload["columns"]) - len(kept):
+                payload["omitted_columns"] = len(payload["columns"]) - len(kept)
+                payload["columns"] = kept
+                payload["hint"] = "列过多按预算裁剪；可按需缩小范围"
+            return json.dumps(payload, ensure_ascii=False)
+
+    async def _dataset_total_rows(self, session, wf: Workflow) -> int | None:
+        """输入数据集总行数(精确，零扫行)；脏图无法解析则 None。"""
+        try:
+            graph = parse_graph(wf.graph_json)
+        except Exception:
+            return None
+        total = 0
+        for node in graph.nodes:
+            if node.type != "input":
+                continue
+            for ds_id in node.config.get("dataset_ids", []):
+                ds = await session.get(Dataset, ds_id)
+                if ds is not None and ds.user_id == self._user_id:
+                    total += ds.row_count
+        return total
 
     def _dump(self, source: str, columns: list[str], rows: list[dict], *,
               run_id: int | None = None, truncated: bool = False, error: str | None = None) -> str:
@@ -231,4 +314,14 @@ def make_preview_tools(session_factory: async_sessionmaker, user_id: int,
         return await previewer.preview_workflow_data(
             workflow_id, node_id=node_id, source=source, limit=limit)
 
-    return [preview_current_node_input]
+    async def describe_current_node_input(source: str = "auto", sample_limit: int = MAX_LIMIT) -> str:
+        """统计当前节点输入数据：总行数(数据集源)、各列类型分布/缺失率、低基数列的值分布。
+        配 cast/dedup/filter/质检阈值前先看它，判断列类型、是否大量缺失、是固定枚举还是自由文本。
+        Parameters:
+            source: auto / dataset / latest_run
+            sample_limit: 统计抽样行数，默认 20，系统上限 20
+        """
+        return await previewer.describe(
+            workflow_id, node_id=node_id, source=source, sample_limit=sample_limit)
+
+    return [preview_current_node_input, describe_current_node_input]
