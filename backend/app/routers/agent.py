@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent import codegen as codegen_mod
 from app.agent.codegen import gather_upstream_columns, generate_code
 from app.agent.data_preview import make_preview_tools
+from app.agent.node_info import make_node_info_tools
 from app.agent.turns import session_dir, turn_manager
 from app.auth import get_current_user, make_session_cookie
 from app.db import get_session, get_session_factory
@@ -254,8 +255,10 @@ async def codegen(body: CodegenIn, user: User = Depends(get_current_user),
     if not body.instruction.strip():
         raise HTTPException(status_code=422, detail="指令不能为空")
     columns, source = await gather_upstream_columns(session, body.workflow_id, body.node_id, user.id)
-    preview_tools = make_preview_tools(get_session_factory(), user.id,
-                                       workflow_id=body.workflow_id, node_id=body.node_id)
+    preview_tools = (make_preview_tools(get_session_factory(), user.id,
+                                        workflow_id=body.workflow_id, node_id=body.node_id)
+                     + make_node_info_tools(get_session_factory(), user.id,
+                                            body.workflow_id, body.node_id))
     try:
         with log_context(user_id=user.id, workflow_id=body.workflow_id,
                          node_id=body.node_id, source="codegen"):
@@ -294,8 +297,10 @@ async def node_assist(body: NodeAssistIn, user: User = Depends(get_current_user)
     if not body.instruction.strip():
         raise HTTPException(status_code=422, detail="指令不能为空")
     columns, source = await gather_upstream_columns(session, body.workflow_id, body.node_id, user.id)
-    preview_tools = make_preview_tools(get_session_factory(), user.id,
-                                       workflow_id=body.workflow_id, node_id=body.node_id)
+    preview_tools = (make_preview_tools(get_session_factory(), user.id,
+                                        workflow_id=body.workflow_id, node_id=body.node_id)
+                     + make_node_info_tools(get_session_factory(), user.id,
+                                            body.workflow_id, body.node_id))
     try:
         with log_context(user_id=user.id, workflow_id=body.workflow_id,
                          node_id=body.node_id, source="assistant"):

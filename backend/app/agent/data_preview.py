@@ -53,29 +53,29 @@ def _columns_from_rows(rows: list[dict]) -> list[str]:
     return ordered_union([list(r.keys()) for r in rows])
 
 
-def _fit_budget(payload: dict) -> dict:
-    """把 payload['rows'] 裁到序列化预算内，保证 json.dumps(payload) 完整可解析(不被 wrap_tools 20k 腰斩)。
-    先按行裁(报 omitted_rows)，单/少数超宽行仍超预算则逐级收紧单格上限再裁(cells_truncated_to)。"""
-    rows = payload.get("rows") or []
+def _fit_budget(payload: dict, key: str = "rows") -> dict:
+    """把 payload[key] 列表裁到序列化预算内，保证 json.dumps(payload) 完整可解析(不被 wrap_tools 20k 腰斩)。
+    先按条裁(报 omitted_<key>)，单/少数超宽条仍超预算则逐级收紧单格上限再裁(cells_truncated_to)。"""
+    items = payload.get(key) or []
     kept, used = [], 0
-    for r in rows:
+    for r in items:
         size = len(json.dumps(r, ensure_ascii=False))
         if kept and used + size > MAX_PREVIEW_CHARS:
             break
         kept.append(r)
         used += size
     out = dict(payload)
-    out["rows"] = kept
-    omitted = len(rows) - len(kept)
+    out[key] = kept
+    omitted = len(items) - len(kept)
     limit = DEFAULT_CELL_CHAR_LIMIT
-    while out["rows"] and limit > 50 and len(json.dumps(out, ensure_ascii=False)) > MAX_PREVIEW_CHARS:
+    while out[key] and limit > 50 and len(json.dumps(out, ensure_ascii=False)) > MAX_PREVIEW_CHARS:
         limit //= 2
-        out["rows"], _ = _safe_rows(out["rows"], limit)
+        out[key], _ = _safe_rows(out[key], limit)
         out["cells_truncated_to"] = limit
     if omitted:
-        out["omitted_rows"] = omitted
+        out[f"omitted_{key}"] = omitted
     if omitted or "cells_truncated_to" in out:
-        out["hint"] = "预览按大小预算裁剪：可调小 limit / 减少列，或用 describe 看全部列名与统计"
+        out["hint"] = "结果按大小预算裁剪：可调小 limit / 缩小范围，或用 describe 看统计"
     return out
 
 
