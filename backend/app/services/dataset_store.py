@@ -13,6 +13,7 @@ from app.models import Dataset, DatasetRow
 SHARD_SIZE = 100_000
 MAX_AGENT_ROWS = 500
 MAX_AGENT_CHARS = 60_000
+MAX_JSON_NESTING = 1000
 EXCEL_MAX_DATA_ROWS_PER_SHEET = 1_048_575
 
 
@@ -383,19 +384,40 @@ def _iter_jsonl_rows(path: Path):
     with path.open(encoding="utf-8-sig") as fh:
         for line in fh:
             if line.strip():
-                obj = json.loads(line, parse_constant=lambda _v: None)
+                obj = _loads_json(line)
                 if not isinstance(obj, dict):
                     raise ValueError("JSONL 每行必须是 JSON object")
                 yield obj
 
 
 def _iter_json_rows(path: Path):
-    data = json.loads(path.read_text(encoding="utf-8-sig"), parse_constant=lambda _v: None)
+    data = _loads_json(path.read_text(encoding="utf-8-sig"))
     rows = data if isinstance(data, list) else [data]
     for row in rows:
         if not isinstance(row, dict):
             raise ValueError("JSON 内容必须是 object 或 object 列表")
         yield row
+
+
+def _loads_json(text: str):
+    try:
+        obj = json.loads(text, parse_constant=lambda _v: None)
+    except RecursionError as exc:
+        raise ValueError(f"JSON nesting too deep: {exc}") from exc
+    _reject_deep_json(obj)
+    return obj
+
+
+def _reject_deep_json(obj) -> None:
+    stack = [(obj, 0)]
+    while stack:
+        current, depth = stack.pop()
+        if depth > MAX_JSON_NESTING:
+            raise ValueError("JSON nesting too deep")
+        if isinstance(current, dict):
+            stack.extend((value, depth + 1) for value in current.values())
+        elif isinstance(current, list):
+            stack.extend((value, depth + 1) for value in current)
 
 
 def _rows_from_values(headers: list[str], rows):

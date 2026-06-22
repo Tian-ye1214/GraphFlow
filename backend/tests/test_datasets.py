@@ -33,9 +33,9 @@ async def test_export_overlong_dataset_name_no_500(auth_client, session_factory)
 
 async def test_upload_oserror_degrades_422(auth_client, monkeypatch):
     """确定性锁住 OSError→422 兜底：写盘抛 OSError(如路径超 MAX_PATH)须 422 优雅降级，绝不 500。"""
-    def boom(self, data):
+    def boom(self, *args, **kwargs):
         raise OSError("path too long")
-    monkeypatch.setattr(Path, "write_bytes", boom)
+    monkeypatch.setattr(Path, "open", boom)
     r = await upload(auth_client, ("ok.jsonl", JSONL))
     assert r.status_code == 422
 
@@ -49,10 +49,10 @@ async def test_export_oserror_degrades_422(auth_client, session_factory, monkeyp
         await s.commit()
         ds_id = ds.id
 
-    def boom(*a, **k):
+    async def boom(*a, **k):
         raise OSError("path too long")
-    monkeypatch.setattr("app.routers.datasets.export_rows", boom)
-    e = await auth_client.get(f"/api/datasets/{ds_id}/export?format=jsonl")
+    monkeypatch.setattr("app.routers.datasets.write_csv_export", boom)
+    e = await auth_client.get(f"/api/datasets/{ds_id}/export?format=csv")
     assert e.status_code == 422
 
 
