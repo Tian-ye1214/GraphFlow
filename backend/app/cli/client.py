@@ -45,10 +45,19 @@ class Cli:
         return self.check(self.http.request(method, path, **kw)).json()
 
     def download(self, path: str, out: Path, *, params=None) -> int:
-        """GET 二进制落盘到 out，返回写入字节数。"""
-        r = self.check(self.http.get(path, params=params))
-        out.write_bytes(r.content)
-        return len(r.content)
+        """GET 二进制流式落盘到 out，返回写入字节数。内存恒定 ~1MB，对 1-10G 导出友好
+        （旧实现 r.content 把整个响应体读进内存，大文件必 OOM）。读超时关闭，避免大文件被砍断。"""
+        written = 0
+        with self.http.stream("GET", path, params=params,
+                              timeout=httpx.Timeout(30.0, read=None)) as r:
+            if r.status_code >= 400:
+                r.read()
+                self.check(r)        # 统一错误处理（die）
+            with out.open("wb") as f:
+                for chunk in r.iter_bytes(1 << 20):
+                    f.write(chunk)
+                    written += len(chunk)
+        return written
 
     def resolve(self, kind: str, ref: str) -> int:
         """纯数字按 ID，否则按名字精确匹配。kind: workflows/datasets/models。"""
