@@ -10,6 +10,7 @@
 import datetime
 import io
 import sys
+import time
 import zipfile
 
 import httpx
@@ -245,8 +246,14 @@ def main():
     before = set(exports.glob("*")) if exports.exists() else set()
     alice.get(f"/datasets/{ds['id']}/export?format=csv")
     alice.get(f"/datasets/{ds['id']}/export?format=xlsx")
-    after = set(exports.glob("*")) if exports.exists() else set()
-    check(after == before, f"csv+xlsx 导出后 exports/ 零残留 (新增 {len(after - before)})")
+    # BackgroundTask 在响应送达后才异步删文件，轮询等回收完成（最多 ~3s）再判，避免快照过急的竞态
+    new = before
+    for _ in range(30):
+        new = (set(exports.glob("*")) if exports.exists() else set()) - before
+        if not new:
+            break
+        time.sleep(0.1)
+    check(not new, f"csv+xlsx 导出后 exports/ 零残留 (残留 {len(new)})")
 
     # Gap D: csv 导出嵌套 dict/list → 合法 JSON（与 xlsx 一致）
     print("\n[GapD] csv 嵌套单元格串成合法 JSON")
