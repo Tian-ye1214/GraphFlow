@@ -3,6 +3,7 @@ import json
 import math
 import zlib
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from zipfile import BadZipFile
 
@@ -66,6 +67,124 @@ def visible_total(row_count: int, header_row: int | None) -> int:
     return row_count + (1 if header_row is not None else 0)
 
 
+@dataclass
+class ParseUnit:
+    """一个待建数据集的解析规格：结构探测阶段产出，后台批量写分片阶段消费。"""
+    name: str
+    columns: list[str]               # 已知表头(jsonl/json 无表头→[]，写分片时由 seen_columns 补全)
+    header_row: int | None
+    data_start_row: int
+    original_format: str             # 存储/导出用的格式标识：csv / jsonl / xlsx
+    reader: str                      # 源读取方式：csv / jsonl / json / xlsx
+    sheet_index: int | None = None   # xlsx 专用：源工作簿里第几个 sheet
+
+
+def detect_upload_structure(filename: str, source_path: Path) -> list[ParseUnit]:
+    """廉价结构探测：只读表头/枚举 sheet，不读全量数据。供上传端点同步建占位数据集。"""
+    suffix = Path(filename).suffix.lower()
+    stem = Path(filename).stem
+    if suffix == ".csv":
+        return [ParseUnit(stem, _csv_header(source_path), 1, 2, "csv", "csv")]
+    if suffix == ".jsonl":
+        return [ParseUnit(stem, [], None, 1, "jsonl", "jsonl")]
+    if suffix == ".json":
+        return [ParseUnit(stem, [], None, 1, "jsonl", "json")]
+    if suffix in (".xlsx", ".xls"):
+        return _detect_excel_units(stem, source_path)
+    raise ValueError(f"不支持的文件格式: {suffix}")
+
+
+def _csv_header(path: Path) -> list[str]:
+    csv.field_size_limit(CSV_FIELD_LIMIT)
+    encoding = _detect_text_encoding(path)
+    with path.open(encoding=encoding, newline="") as fh:
+        reader = csv.reader((line.replace("\x00", "") for line in fh))
+        try:
+            return _disambiguate_columns(next(reader))
+        except StopIteration:
+            return []
+        except csv.Error as exc:
+            raise ValueError(f"CSV 解析失败: {exc}") from exc
+
+
+def _detect_excel_units(stem: str, source_path: Path) -> list[ParseUnit]:
+    """枚举 sheet + 读每 sheet 表头与首数据行；无表头或无数据行的 sheet 不建数据集(与原行为一致)。"""
+    wb = None
+    try:
+        wb = load_workbook(source_path, read_only=True, data_only=True)
+        found: list[tuple[int, str, list[str]]] = []
+        for idx, ws in enumerate(wb.worksheets):
+            rows = ws.iter_rows(values_only=True)
+            try:
+                raw_header = next(rows)
+            except StopIteration:
+                continue
+            headers = _disambiguate_columns([_cell_to_str(v) for v in raw_header])
+            if next(_rows_from_values(headers, rows), None) is None:
+                continue                       # 仅表头无数据行 → 跳过
+            found.append((idx, ws.title, headers))
+        single = len(found) == 1
+        return [ParseUnit(
+            name=stem if single else f"{stem}-{title}",
+            columns=headers, header_row=1, data_start_row=2,
+            original_format="xlsx", reader="xlsx", sheet_index=idx,
+        ) for idx, title, headers in found]
+    except _EXCEL_PARSE_ERRORS as exc:
+        raise ValueError(f"无法解析 Excel: {exc}") from exc
+    finally:
+        if wb is not None:
+            wb.close()
+
+
+def rows_for_unit(unit: ParseUnit, source_path: Path) -> Iterable[dict]:
+    """按 ParseUnit 从源文件取数据行迭代器。纯文件 IO，宜在 to_thread 内消费。"""
+    if unit.reader == "csv":
+        return _iter_csv_rows(source_path)
+    if unit.reader == "jsonl":
+        return _iter_jsonl_rows(source_path)
+    if unit.reader == "json":
+        return _iter_json_rows(source_path)
+    if unit.reader == "xlsx":
+        return _iter_excel_sheet_rows(source_path, unit.sheet_index, unit.columns)
+    raise ValueError(f"未知 reader: {unit.reader}")
+
+
+def _iter_excel_sheet_rows(source_path: Path, sheet_index: int, headers: list[str]):
+    wb = None
+    try:
+        wb = load_workbook(source_path, read_only=True, data_only=True)
+        rows = wb.worksheets[sheet_index].iter_rows(values_only=True)
+        next(rows, None)                       # 跳过表头行
+        yield from _rows_from_values(headers, rows)
+    except _EXCEL_PARSE_ERRORS as exc:
+        raise ValueError(f"无法解析 Excel: {exc}") from exc
+    finally:
+        if wb is not None:
+            wb.close()
+
+
+def parse_and_write_shards(
+    *,
+    source_path: Path,
+    unit: ParseUnit,
+    data_dir: Path,
+    user_id: int,
+    dataset_id: int,
+    version: int,
+    shard_size: int = SHARD_SIZE,
+    progress_cb=None,
+) -> tuple[dict, list[str], int]:
+    """批量：按 unit 读源文件行并写分片。纯同步、纯文件 IO，供后台 to_thread 调用。"""
+    manifest, columns, row_count = _write_shards(
+        rows_for_unit(unit, source_path),
+        data_dir=data_dir, user_id=user_id, dataset_id=dataset_id, version=version,
+        shard_size=shard_size, columns=(unit.columns or None),
+        header_row=unit.header_row, data_start_row=unit.data_start_row,
+        progress_cb=progress_cb)
+    manifest["original_format"] = unit.original_format
+    return manifest, columns, row_count
+
+
 async def create_dataset_from_upload(
     session: AsyncSession,
     *,
@@ -75,112 +194,31 @@ async def create_dataset_from_upload(
     data_dir: Path,
     shard_size: int = SHARD_SIZE,
 ) -> list[Dataset]:
-    suffix = Path(filename).suffix.lower()
-    if suffix == ".csv":
-        return [await _create_one_dataset(
-            session, user_id=user_id, name=Path(filename).stem, original_filename=filename,
-            original_format="csv", rows=_iter_csv_rows(source_path), columns=None,
-            header_row=1, data_start_row=2, data_dir=data_dir, shard_size=shard_size,
-            file_path=str(source_path))]
-    if suffix == ".jsonl":
-        return [await _create_one_dataset(
-            session, user_id=user_id, name=Path(filename).stem, original_filename=filename,
-            original_format="jsonl", rows=_iter_jsonl_rows(source_path), columns=None,
-            header_row=None, data_start_row=1, data_dir=data_dir, shard_size=shard_size,
-            file_path=str(source_path))]
-    if suffix == ".json":
-        return [await _create_one_dataset(
-            session, user_id=user_id, name=Path(filename).stem, original_filename=filename,
-            original_format="jsonl", rows=_iter_json_rows(source_path), columns=None,
-            header_row=None, data_start_row=1, data_dir=data_dir, shard_size=shard_size,
-            file_path=str(source_path))]
-    if suffix in (".xlsx", ".xls"):
-        return await _create_excel_datasets(
-            session, user_id=user_id, filename=filename, source_path=source_path,
-            data_dir=data_dir, shard_size=shard_size)
-    raise ValueError(f"不支持的文件格式: {suffix}")
-
-
-async def _create_excel_datasets(
-    session: AsyncSession,
-    *,
-    user_id: int,
-    filename: str,
-    source_path: Path,
-    data_dir: Path,
-    shard_size: int,
-) -> list[Dataset]:
-    stem = Path(filename).stem
-    wb = None
-    # 整个解析+写分片包在一个 try：sheet XML 截断既可能在表头 peek 抛、也可能在惰性 iter_rows(写分片时)
-    # 才抛，统一归一 ValueError(→422)；finally 必关 read_only 工作簿，否则它占着源文件句柄，
-    # 失败路径上传层 unlink 会 WinError 32(文件被占用)→500。
-    try:
-        wb = load_workbook(source_path, read_only=True, data_only=True)
-        items: list[tuple[str, list[str], dict, Iterable[dict]]] = []
-        for ws in wb.worksheets:
-            rows = ws.iter_rows(values_only=True)
-            try:
-                raw_header = next(rows)
-            except StopIteration:
-                continue
-            headers = _disambiguate_columns([_cell_to_str(v) for v in raw_header])
-            records = _rows_from_values(headers, rows)
-            first = next(records, None)
-            if first is not None:
-                items.append((ws.title, headers, first, records))
-        datasets: list[Dataset] = []
-        for sheet_name, headers, first, records in items:
-            name = stem if len(items) == 1 else f"{stem}-{sheet_name}"
-            datasets.append(await _create_one_dataset(
-                session, user_id=user_id, name=name, original_filename=filename,
-                original_format="xlsx", rows=_prepend(first, records), columns=headers,
-                header_row=1, data_start_row=2, data_dir=data_dir, shard_size=shard_size,
-                file_path=str(source_path)))
-        return datasets
-    except _EXCEL_PARSE_ERRORS as exc:
-        raise ValueError(f"无法解析 Excel: {exc}") from exc
-    finally:
-        if wb is not None:
-            wb.close()
-
-
-async def _create_one_dataset(
-    session: AsyncSession,
-    *,
-    user_id: int,
-    name: str,
-    original_filename: str,
-    original_format: str,
-    rows: Iterable[dict],
-    columns: list[str] | None,
-    header_row: int | None,
-    data_start_row: int,
-    data_dir: Path,
-    shard_size: int,
-    file_path: str,
-) -> Dataset:
-    ds = Dataset(
-        user_id=user_id, name=name, source="upload", original_filename=original_filename,
-        original_format=original_format, file_path=file_path, row_count=0,
-        columns_json=json.dumps(columns or [], ensure_ascii=False), status="importing",
-        header_row=header_row, data_start_row=data_start_row, total_rows_including_header=0,
-    )
-    session.add(ds)
-    await session.flush()
-    manifest, final_columns, row_count = _write_shards(
-        rows, data_dir=data_dir, user_id=user_id, dataset_id=ds.id, version=ds.version,
-        shard_size=shard_size, columns=columns, header_row=header_row,
-        data_start_row=data_start_row)
-    manifest["original_format"] = original_format
-    ds.manifest_json = dump_manifest(manifest)
-    ds.columns_json = json.dumps(final_columns, ensure_ascii=False)
-    ds.row_count = row_count
-    ds.imported_rows = row_count
-    ds.total_rows_including_header = visible_total(row_count, header_row)
-    ds.status = "ready"
-    await session.commit()
-    return ds
+    """同步路径(旧调用方/兼容)：探测结构→建库→批量写分片→ready。后台异步摄入见 ingest_manager。"""
+    units = detect_upload_structure(filename, source_path)
+    datasets: list[Dataset] = []
+    for unit in units:
+        ds = Dataset(
+            user_id=user_id, name=unit.name, source="upload", original_filename=filename,
+            original_format=unit.original_format, file_path=str(source_path), row_count=0,
+            columns_json=json.dumps(unit.columns, ensure_ascii=False), status="importing",
+            header_row=unit.header_row, data_start_row=unit.data_start_row,
+            total_rows_including_header=0,
+        )
+        session.add(ds)
+        await session.flush()
+        manifest, final_columns, row_count = parse_and_write_shards(
+            source_path=source_path, unit=unit, data_dir=data_dir, user_id=user_id,
+            dataset_id=ds.id, version=ds.version, shard_size=shard_size)
+        ds.manifest_json = dump_manifest(manifest)
+        ds.columns_json = json.dumps(final_columns, ensure_ascii=False)
+        ds.row_count = row_count
+        ds.imported_rows = row_count
+        ds.total_rows_including_header = visible_total(row_count, unit.header_row)
+        ds.status = "ready"
+        await session.commit()
+        datasets.append(ds)
+    return datasets
 
 
 def _write_shards(
@@ -194,6 +232,7 @@ def _write_shards(
     columns: list[str] | None,
     header_row: int | None,
     data_start_row: int,
+    progress_cb=None,
 ) -> tuple[dict, list[str], int]:
     root = dataset_root(data_dir, user_id, dataset_id, version)
     root.mkdir(parents=True, exist_ok=True)
@@ -226,6 +265,8 @@ def _write_shards(
             shards[-1]["row_count"] = shard_rows
             shards[-1]["columns"] = list(seen_columns)
             current = None
+            if progress_cb is not None:
+                progress_cb(row_count)
 
     try:
         for row in rows:
@@ -523,11 +564,6 @@ def _rows_from_values(headers: list[str], rows):
                for i in range(len(headers))}
         if any(v != "" for v in row.values()):
             yield row
-
-
-def _prepend(first: dict, rows: Iterable[dict]):
-    yield first
-    yield from rows
 
 
 def _cell_to_str(value) -> str:
