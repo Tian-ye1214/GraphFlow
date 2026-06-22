@@ -24,9 +24,9 @@ from app.services.dataset_store import (
     dataset_root,
     detect_upload_structure,
     ensure_dataset_materialized,
+    iter_csv_lines,
     iter_jsonl_lines,
     read_dataset_range,
-    write_csv_export,
     write_xlsx_export,
 )
 from app.services.file_parse import union_columns
@@ -333,9 +333,11 @@ async def export_dataset(
             )
 
         if export_format == "csv":
-            path = await write_csv_export(session, ds, settings.data_dir, path)
-            return FileResponse(path, filename=filename, media_type="text/csv; charset=utf-8",
-                                background=BackgroundTask(os.unlink, path))  # 响应送达后回收，不永久占盘
+            return StreamingResponse(           # 真流式：不落临时盘、无首字节延迟、对 1-10G 友好
+                iter_csv_lines(session, ds, settings.data_dir),
+                media_type="text/csv; charset=utf-8",
+                headers=_attachment_headers(filename),
+            )
 
         path = await write_xlsx_export(session, ds, settings.data_dir, path)
         return FileResponse(

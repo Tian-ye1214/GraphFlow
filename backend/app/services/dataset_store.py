@@ -1,4 +1,6 @@
+import asyncio
 import csv
+import io
 import json
 import math
 import zlib
@@ -380,6 +382,23 @@ async def iter_jsonl_lines(session: AsyncSession, ds: Dataset, data_dir: Path):
         yield json.dumps(row, ensure_ascii=False) + "\n"
 
 
+async def iter_csv_lines(session: AsyncSession, ds: Dataset, data_dir: Path):
+    """流式 CSV 导出：边读分片边 yield，~64KB 一批，不落临时盘、首字节即时(对 1-10G 友好)。"""
+    ds = await ensure_dataset_materialized(session, ds, data_dir)
+    columns = json.loads(ds.columns_json or "[]")
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(columns)
+    for _, row in _iter_dataset_rows(ds, data_dir):
+        writer.writerow([_jsonify_nested(row.get(col, "")) for col in columns])
+        if buf.tell() >= 64 * 1024:
+            yield buf.getvalue()
+            buf.seek(0)
+            buf.truncate(0)
+    if buf.tell():
+        yield buf.getvalue()
+
+
 async def write_jsonl_export(session: AsyncSession, ds: Dataset, data_dir: Path, path: Path) -> Path:
     ds = await ensure_dataset_materialized(session, ds, data_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -403,6 +422,11 @@ async def write_csv_export(session: AsyncSession, ds: Dataset, data_dir: Path, p
 
 async def write_xlsx_export(session: AsyncSession, ds: Dataset, data_dir: Path, path: Path) -> Path:
     ds = await ensure_dataset_materialized(session, ds, data_dir)
+    await asyncio.to_thread(_write_xlsx_sync, ds, data_dir, path)   # 写盘+openpyxl 重活移出事件循环
+    return path
+
+
+def _write_xlsx_sync(ds: Dataset, data_dir: Path, path: Path) -> None:
     columns = json.loads(ds.columns_json or "[]")
     path.parent.mkdir(parents=True, exist_ok=True)
     header = [_xlsx_cell(col) for col in columns]   # 列名也可能带控制字符，同样剔除
@@ -422,7 +446,6 @@ async def write_xlsx_export(session: AsyncSession, ds: Dataset, data_dir: Path, 
         ws = wb.create_sheet("data")
         ws.append(header)
     wb.save(path)
-    return path
 
 
 def _range_payload(ds: Dataset, start_row: int, end_row: int, columns: list[str],

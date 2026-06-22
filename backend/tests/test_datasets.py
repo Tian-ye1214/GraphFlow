@@ -42,7 +42,7 @@ async def test_upload_oserror_degrades_422(auth_client, monkeypatch):
 
 
 async def test_export_oserror_degrades_422(auth_client, session_factory, monkeypatch):
-    """确定性锁住 export OSError→422 兜底。"""
+    """确定性锁住 export OSError→422 兜底（csv 已改流式无落盘，用 xlsx 这条落盘路径验证）。"""
     async with session_factory() as s:
         uid = (await s.execute(select(User.id).where(User.username == "tester"))).scalar_one()
         ds = Dataset(user_id=uid, name="d", source="run", row_count=0, columns_json="[]")
@@ -52,8 +52,8 @@ async def test_export_oserror_degrades_422(auth_client, session_factory, monkeyp
 
     async def boom(*a, **k):
         raise OSError("path too long")
-    monkeypatch.setattr("app.routers.datasets.write_csv_export", boom)
-    e = await auth_client.get(f"/api/datasets/{ds_id}/export?format=csv")
+    monkeypatch.setattr("app.routers.datasets.write_xlsx_export", boom)
+    e = await auth_client.get(f"/api/datasets/{ds_id}/export?format=xlsx")
     assert e.status_code == 422
 
 
