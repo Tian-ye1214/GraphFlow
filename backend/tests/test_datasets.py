@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from conftest import wait_ready, wait_status
 from sqlalchemy import select
 
 from app.models import Dataset, User
@@ -59,7 +60,8 @@ async def test_export_oserror_degrades_422(auth_client, session_factory, monkeyp
 async def test_upload_single(auth_client):
     r = await upload(auth_client, ("种子.jsonl", JSONL))
     assert r.status_code == 200
-    ds = r.json()[0]
+    assert r.json()[0]["status"] == "importing"          # 端点秒回占位
+    ds = await wait_ready(auth_client, r.json()[0]["id"])
     assert ds["name"] == "种子"
     assert ds["row_count"] == 3
     assert ds["columns"] == ["q"]
@@ -67,7 +69,8 @@ async def test_upload_single(auth_client):
 
 async def test_upload_multiple_files(auth_client):
     r = await upload(auth_client, ("a.jsonl", JSONL), ("b.csv", "q\nx\n".encode()))
-    assert [d["row_count"] for d in r.json()] == [3, 1]
+    rc = [(await wait_ready(auth_client, d["id"]))["row_count"] for d in r.json()]
+    assert rc == [3, 1]
 
 
 async def test_upload_bad_file_422(auth_client):
@@ -87,21 +90,23 @@ async def test_upload_multi_sheet_excel_one_dataset_per_sheet(auth_client):
         pd.DataFrame().to_excel(w, sheet_name="空", index=False)
     r = await upload(auth_client, ("多表.xlsx", buf.getvalue()))
     assert r.status_code == 200
-    by = {d["name"]: d for d in r.json()}
+    by = {d["name"]: await wait_ready(auth_client, d["id"]) for d in r.json()}
     assert set(by) == {"多表-表一", "多表-表二"}
     assert by["多表-表一"]["row_count"] == 2 and by["多表-表二"]["row_count"] == 1
 
 
-async def test_upload_non_object_records_422(auth_client):
-    """非对象记录（标量/null/数组/混入裸值）应 422，而非 500 或静默生成损坏数据集。"""
+async def test_upload_non_object_records_become_failed(auth_client):
+    """非对象记录（标量/null/数组/混入裸值）：后台摄入失败 → status=failed，绝不静默生成损坏数据集。"""
     for name, content in [("s.json", b"42"), ("n.json", b"null"), ("arr.json", b"[1,2,3]"),
                           ("str.json", b'"hi"'), ("bare.jsonl", b'{"q":1}\n99\n')]:
         r = await upload(auth_client, (name, content))
-        assert r.status_code == 422, f"{name} 应 422，实得 {r.status_code}"
+        assert r.status_code == 200, f"{name} 端点应 200 importing"
+        body = await wait_status(auth_client, r.json()[0]["id"])
+        assert body["status"] == "failed" and body["import_error"], f"{name} 应 failed"
 
 
 async def test_rows_pagination(auth_client):
-    ds = (await upload(auth_client, ("a.jsonl", JSONL))).json()[0]
+    ds = await wait_ready(auth_client, (await upload(auth_client, ("a.jsonl", JSONL))).json()[0]["id"])
     r = (await auth_client.get(f"/api/datasets/{ds['id']}/rows?page=2&page_size=2")).json()
     assert r["total"] == 3
     assert r["rows"] == [{"q": "第三"}]
@@ -127,14 +132,13 @@ async def test_traversal_filename_sanitized(auth_client, session_factory):
     ds_id = r.json()[0]["id"]
     async with session_factory() as s:
         ds = await s.get(Dataset, ds_id)
-    p = Path(ds.file_path)
-    assert p.exists()
+    p = Path(ds.file_path)               # 源文件解析后会被回收，只校验路径未被穿越(在 uploads/<uid>/ 下)
     assert p.parent.name == str(ds.user_id) and p.parent.parent.name == "uploads"
 
 
 async def test_export_dataset_jsonl(auth_client):
     import json as _json
-    ds = (await upload(auth_client, ("导出集.jsonl", JSONL))).json()[0]
+    ds = await wait_ready(auth_client, (await upload(auth_client, ("导出集.jsonl", JSONL))).json()[0]["id"])
     r = await auth_client.get(f"/api/datasets/{ds['id']}/export", params={"format": "jsonl"})
     assert r.status_code == 200
     lines = [l for l in r.text.splitlines() if l]
@@ -142,7 +146,7 @@ async def test_export_dataset_jsonl(auth_client):
 
 
 async def test_export_dataset_csv(auth_client):
-    ds = (await upload(auth_client, ("c.jsonl", JSONL))).json()[0]
+    ds = await wait_ready(auth_client, (await upload(auth_client, ("c.jsonl", JSONL))).json()[0]["id"])
     r = await auth_client.get(f"/api/datasets/{ds['id']}/export", params={"format": "csv"})
     assert r.status_code == 200 and "q" in r.text and "你好" in r.text
 
@@ -188,17 +192,19 @@ async def test_upload_nan_json_rows_renderable(auth_client):
     """上传含 NaN/Infinity 的 JSON：归一为 null，上传 200 且 /rows 不再永久 500。"""
     r = await upload(auth_client, ("nan.json", b'[{"x": NaN, "y": Infinity, "ok": "v"}]'))
     assert r.status_code == 200
-    ds = r.json()[0]
+    ds = await wait_ready(auth_client, r.json()[0]["id"])
     rr = await auth_client.get(f"/api/datasets/{ds['id']}/rows")
     assert rr.status_code == 200
     assert rr.json()["rows"] == [{"x": None, "y": None, "ok": "v"}]
 
 
-async def test_upload_deep_nested_json_422(auth_client):
-    """深层嵌套 JSON 上传 → 422，不逃逸 500（RecursionError）。"""
+async def test_upload_deep_nested_json_becomes_failed(auth_client):
+    """深层嵌套 JSON：后台摄入失败 → status=failed，不逃逸 500（RecursionError/嵌套过深）。"""
     deep = ('[{"x":' + '[' * 6000 + '1' + ']' * 6000 + '}]').encode()
     r = await upload(auth_client, ("deep.json", deep))
-    assert r.status_code == 422
+    assert r.status_code == 200
+    body = await wait_status(auth_client, r.json()[0]["id"])
+    assert body["status"] == "failed" and body["import_error"]
 
 
 async def test_export_control_char_name_no_500(auth_client, session_factory):

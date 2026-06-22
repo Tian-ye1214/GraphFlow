@@ -1,6 +1,8 @@
 import asyncio
 import json
 
+from conftest import wait_ready
+
 from app.engine import nodes
 from app.services import llm
 
@@ -82,7 +84,7 @@ async def test_qc_multi_model_metric_and_failures(auth_client, monkeypatch, sess
 
     JSONL = ('{"q": "r0"}\n{"q": "r1"}\n{"q": "r2"}\n').encode("utf-8")
     files = [("files", ("data.jsonl", JSONL, "application/octet-stream"))]
-    ds = (await auth_client.post("/api/datasets/upload", files=files)).json()[0]
+    ds = await wait_ready(auth_client, (await auth_client.post("/api/datasets/upload", files=files)).json()[0]["id"])
     mc1 = (await auth_client.post("/api/models", json={
         "name": "judge1", "model_name": "qwen", "base_url": "http://x/v1",
         "api_key": "k1", "default_params": {}})).json()

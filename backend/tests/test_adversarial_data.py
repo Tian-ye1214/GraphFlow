@@ -12,6 +12,8 @@
 import asyncio
 import json
 
+from conftest import wait_ready
+
 from app.engine import runner
 from app.services import llm
 
@@ -26,7 +28,8 @@ async def _upload(auth_client, content: bytes, name: str):
 
 async def _upload_jsonl(auth_client, rows, name="数据.jsonl"):
     body = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows).encode("utf-8")
-    return (await _upload(auth_client, body, name)).json()[0]
+    ph = (await _upload(auth_client, body, name)).json()[0]
+    return await wait_ready(auth_client, ph["id"])      # 等后台摄入完成再跑工作流
 
 
 async def _make_model(auth_client, name="m1", key="k1"):
@@ -95,7 +98,7 @@ async def _build_run(auth_client, monkeypatch, session_factory, ds_id, graph, na
 async def test_csv_missing_value_renders_empty_not_none(auth_client, monkeypatch, session_factory):
     """CSV 空单元格 → None；模板 {{note}} 必须渲染成空串，而不是字面量 "None" 进提示词。"""
     csv = "q,note\n甲,\n乙,有备注\n".encode("utf-8")  # 第一行 note 为空
-    ds = (await _upload(auth_client, csv, "缺失.csv")).json()[0]
+    ds = await wait_ready(auth_client, (await _upload(auth_client, csv, "缺失.csv")).json()[0]["id"])
     mc = await _make_model(auth_client)
     graph = _linear_graph(ds["id"], mc["id"], user_prompt="备注:{{note}}")
     out = await _build_run(auth_client, monkeypatch, session_factory, ds["id"], graph, "缺失值")
@@ -109,7 +112,7 @@ async def test_csv_missing_value_renders_empty_not_none(auth_client, monkeypatch
 async def test_csv_utf8_bom_first_column_not_polluted(auth_client, monkeypatch, session_factory):
     """带 UTF-8 BOM 的 CSV：首列名不应被 \\ufeff 污染，模板 {{q}} 应能正常取值。"""
     csv = ("﻿" + "q,v\n问,1\n").encode("utf-8")  # 前缀 BOM
-    ds = (await _upload(auth_client, csv, "bom.csv")).json()[0]
+    ds = await wait_ready(auth_client, (await _upload(auth_client, csv, "bom.csv")).json()[0]["id"])
     assert ds["columns"] == ["q", "v"], f"BOM 污染了列名：{ds['columns']}"
 
     mc = await _make_model(auth_client)
@@ -123,7 +126,8 @@ async def test_jsonl_utf8_bom_parses(auth_client):
     body = ("﻿" + json.dumps({"q": "你好"}, ensure_ascii=False) + "\n").encode("utf-8")
     r = await _upload(auth_client, body, "bom.jsonl")
     assert r.status_code == 200, r.text
-    assert r.json()[0]["columns"] == ["q"]
+    ds = await wait_ready(auth_client, r.json()[0]["id"])
+    assert ds["columns"] == ["q"]
 
 
 async def test_gbk_csv_uploads(auth_client):
@@ -131,7 +135,7 @@ async def test_gbk_csv_uploads(auth_client):
     csv = "问题,答案\n你好,世界\n".encode("gbk")
     r = await _upload(auth_client, csv, "gbk.csv")
     assert r.status_code == 200, r.text
-    ds = r.json()[0]
+    ds = await wait_ready(auth_client, r.json()[0]["id"])
     assert ds["columns"] == ["问题", "答案"]
     assert ds["row_count"] == 1
 
@@ -170,7 +174,7 @@ async def test_csv_duplicate_columns_disambiguated_no_data_loss(auth_client):
     """CSV 重复表头 a,a：pandas 自动消歧为 a / a.1，两列数据都在（非 bug，作护栏）。
     值按 dtype=str 保真为字符串（不再静默推断为数字）。"""
     csv = "a,a\n1,2\n".encode("utf-8")
-    ds = (await _upload(auth_client, csv, "dup.csv")).json()[0]
+    ds = await wait_ready(auth_client, (await _upload(auth_client, csv, "dup.csv")).json()[0]["id"])
     assert ds["columns"] == ["a", "a.1"]
     rows = (await auth_client.get(f"/api/datasets/{ds['id']}/rows")).json()["rows"]
     assert rows[0] == {"a": "1", "a.1": "2"}

@@ -2,6 +2,8 @@
 import asyncio
 import json
 
+from conftest import wait_ready
+
 from app.engine import runner
 from app.services import llm as llm_mod
 
@@ -9,7 +11,7 @@ from app.services import llm as llm_mod
 async def _run(auth_client, monkeypatch, session_factory, *, pass_status):
     JSONL = ('{"q": "r0"}\n{"q": "r1"}\n').encode("utf-8")
     files = [("files", ("d.jsonl", JSONL, "application/octet-stream"))]
-    ds = (await auth_client.post("/api/datasets/upload", files=files)).json()[0]
+    ds = await wait_ready(auth_client, (await auth_client.post("/api/datasets/upload", files=files)).json()[0]["id"])
     mc = (await auth_client.post("/api/models", json={
         "name": "j", "model_name": "qwen", "base_url": "http://x/v1",
         "api_key": "k", "default_params": {}})).json()

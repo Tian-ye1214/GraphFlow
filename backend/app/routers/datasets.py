@@ -16,13 +16,13 @@ from starlette.background import BackgroundTask
 
 from app.auth import get_current_user
 from app.config import settings
-from app.db import get_session
+from app.db import get_session, get_session_factory
 from app.events import publish
 from app.models import Dataset, DatasetRow, User
 from app.services.dataset_crud import DatasetCrudError, apply_dataset_operations
 from app.services.dataset_store import (
-    create_dataset_from_upload,
     dataset_root,
+    detect_upload_structure,
     ensure_dataset_materialized,
     iter_jsonl_lines,
     read_dataset_range,
@@ -30,11 +30,14 @@ from app.services.dataset_store import (
     write_xlsx_export,
 )
 from app.services.file_parse import union_columns
+from app.services.ingest_manager import ingest_manager
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
 
 # /rows 单请求行数硬上限：人类分页/范围读取已关字符预算，须有行数顶防超大 page_size/范围把整库读进内存。
 MAX_ROWS_PER_REQUEST = 5000
+
+SUPPORTED_SUFFIXES = {".csv", ".jsonl", ".json", ".xlsx", ".xls"}
 
 _ILLEGAL_FN = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
@@ -173,10 +176,18 @@ async def upload(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
+    # 单一路径不分大小文件：同步落盘+廉价校验+结构探测建占位行(importing)，逐行写分片交后台摄入。
+    # 端点秒级返回 importing 占位，前端轮询/SSE 看 status→ready/failed（深层解析错落 failed，不再同步 422）。
     results = []
+    factory = get_session_factory()
     for upload_file in files:
         original_name = upload_file.filename or "upload"
         safe_name = _safe_filename(Path(original_name).name)
+        suffix = Path(original_name).suffix.lower()
+        if suffix not in SUPPORTED_SUFFIXES:
+            raise HTTPException(status_code=422,
+                                detail=f"{original_name}: 不支持的文件格式 {suffix or '(无扩展名)'}")
+
         upload_dir = settings.data_dir / "uploads" / str(user.id)
         upload_dir.mkdir(parents=True, exist_ok=True)
         upload_id = uuid4().hex[:8]
@@ -190,28 +201,47 @@ async def upload(
             tmp_path.replace(file_path)
         except OSError as exc:
             tmp_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=422, detail=f"{original_name} save failed") from exc
+
+        size = file_path.stat().st_size
+        if suffix in (".xlsx", ".xls") and size > settings.max_excel_upload_bytes:
+            file_path.unlink(missing_ok=True)
+            limit_mb = settings.max_excel_upload_bytes // (1024 * 1024)
             raise HTTPException(
                 status_code=422,
-                detail=f"{original_name} save failed",
-            ) from exc
+                detail=f"{original_name} 过大（Excel 上限 {limit_mb}MB），请导出为 CSV 上传")
+        if shutil.disk_usage(settings.data_dir).free < size * 2:
+            file_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=422, detail="磁盘空间不足，无法导入该文件")
 
         try:
-            datasets = await create_dataset_from_upload(
-                session,
-                user_id=user.id,
-                filename=original_name,
-                source_path=file_path,
-                data_dir=settings.data_dir,
-            )
+            units = detect_upload_structure(original_name, file_path)
         except (ValueError, UnicodeDecodeError, RecursionError) as exc:
-            await session.rollback()
             file_path.unlink(missing_ok=True)
             raise HTTPException(
-                status_code=422,
-                detail=f"{original_name} parse failed: {exc}",
-            ) from exc
+                status_code=422, detail=f"{original_name} parse failed: {exc}") from exc
 
-        for ds in datasets:
+        if not units:                       # Excel 无可用数据 sheet：无占位行则源文件无人回收，直接清掉
+            file_path.unlink(missing_ok=True)
+            continue
+
+        created = []
+        for unit in units:
+            ds = Dataset(
+                user_id=user.id, name=unit.name, source="upload",
+                original_filename=original_name, original_format=unit.original_format,
+                file_path=str(file_path), row_count=0,
+                columns_json=json.dumps(unit.columns, ensure_ascii=False),
+                status="importing", header_row=unit.header_row,
+                data_start_row=unit.data_start_row, total_rows_including_header=0,
+            )
+            session.add(ds)
+            created.append((ds, unit))
+        await session.commit()              # 短事务：占位行立即可见
+
+        for ds, unit in created:
+            ingest_manager.submit(ds.id, source_path=file_path, unit=unit,
+                                  version=ds.version, user_id=user.id, session_factory=factory)
             results.append(_out(ds))
             publish(user.id, "dataset", ds.id)
     return results
@@ -226,6 +256,16 @@ async def list_datasets(
         select(Dataset).where(Dataset.user_id == user.id).order_by(Dataset.id.desc())
     )).scalars().all()
     return [_out(ds) for ds in rows]
+
+
+@router.get("/{ds_id}")
+async def get_dataset(
+    ds_id: int,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    # 摄入状态轮询入口：importing→ready/failed（前端/CLI 据此显示进度/失败）
+    return _out(await _get_owned(ds_id, user, session))
 
 
 @router.get("/{ds_id}/rows")

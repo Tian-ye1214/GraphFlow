@@ -13,12 +13,15 @@ from io import BytesIO, StringIO
 
 from openpyxl import Workbook, load_workbook
 
+from conftest import upload_ready
+
 from app.config import settings
 from app.models import User
 from app.services.dataset_store import create_dataset_from_upload, read_dataset_range
 
 
 async def _upload(client, name: str, content: bytes):
+    # 原始上传响应（importing 占位或 422）；需 ready 数据的用例改用 conftest.upload_ready。
     return await client.post(
         "/api/datasets/upload",
         files=[("files", (name, content, "application/octet-stream"))],
@@ -36,7 +39,7 @@ async def _user(session_factory, username="followup_user") -> int:
 # --- Fix 1: delete reclaims shard disk -------------------------------------
 
 async def test_delete_dataset_reclaims_shard_files(auth_client):
-    ds = (await _upload(auth_client, "p.csv", b"q,a\nq1,a1\nq2,a2\n")).json()[0]
+    ds = (await upload_ready(auth_client, "p.csv", b"q,a\nq1,a1\nq2,a2\n"))[0]
     assert list((settings.data_dir / "datasets").rglob("part-*.jsonl"))
     r = await auth_client.delete(f"/api/datasets/{ds['id']}")
     assert r.status_code == 200
@@ -93,9 +96,8 @@ async def test_truncated_sheet_xml_xlsx_returns_422(auth_client):
 async def test_large_csv_cell_uploads(auth_client):
     big = "x" * 200_000
     content = f"q,a\nq1,{big}\n".encode("utf-8")
-    r = await _upload(auth_client, "big.csv", content)
-    assert r.status_code == 200
-    assert r.json()[0]["row_count"] == 1
+    ds = (await upload_ready(auth_client, "big.csv", content))[0]
+    assert ds["row_count"] == 1
 
 
 # --- Fix 4: CRUD non-finite values are neutralized to null in canonical shards
@@ -124,7 +126,7 @@ async def test_crud_constant_non_finite_neutralized(tmp_path, session_factory):
 # --- Fix 5: xlsx export of nested (dict/list) cells stringifies, not 500 ----
 
 async def test_export_xlsx_stringifies_nested_cells(auth_client):
-    ds = (await _upload(auth_client, "n.jsonl", b'{"a": {"x": 1}}\n')).json()[0]
+    ds = (await upload_ready(auth_client, "n.jsonl", b'{"a": {"x": 1}}\n'))[0]
     r = await auth_client.get(f"/api/datasets/{ds['id']}/export?format=xlsx")
     assert r.status_code == 200
     wb = load_workbook(BytesIO(r.content), read_only=True, data_only=True)
@@ -138,7 +140,7 @@ async def test_export_xlsx_stringifies_nested_cells(auth_client):
 async def test_rows_page_not_truncated_by_agent_budget(auth_client):
     big = "y" * 4000
     content = ("q\n" + "\n".join(big for _ in range(20)) + "\n").encode("utf-8")
-    ds = (await _upload(auth_client, "wide.csv", content)).json()[0]
+    ds = (await upload_ready(auth_client, "wide.csv", content))[0]
     assert ds["row_count"] == 20
     r = await auth_client.get(f"/api/datasets/{ds['id']}/rows?page=1&page_size=20")
     assert r.status_code == 200
@@ -152,7 +154,7 @@ async def test_rows_page_size_is_row_capped(auth_client, monkeypatch):
 
     monkeypatch.setattr(datasets_router, "MAX_ROWS_PER_REQUEST", 3)
     content = ("q\n" + "\n".join(f"v{i}" for i in range(10)) + "\n").encode("utf-8")
-    ds = (await _upload(auth_client, "many.csv", content)).json()[0]
+    ds = (await upload_ready(auth_client, "many.csv", content))[0]
     assert ds["row_count"] == 10
     r = await auth_client.get(f"/api/datasets/{ds['id']}/rows?page=1&page_size=1000000")
     assert r.status_code == 200
@@ -166,7 +168,7 @@ async def test_rows_range_is_row_capped(auth_client, monkeypatch):
 
     monkeypatch.setattr(datasets_router, "MAX_ROWS_PER_REQUEST", 3)
     content = ("q\n" + "\n".join(f"v{i}" for i in range(10)) + "\n").encode("utf-8")
-    ds = (await _upload(auth_client, "many2.csv", content)).json()[0]
+    ds = (await upload_ready(auth_client, "many2.csv", content))[0]
     r = await auth_client.get(f"/api/datasets/{ds['id']}/rows?start_row=2&end_row=1000000")
     assert r.status_code == 200
     body = r.json()
@@ -177,7 +179,7 @@ async def test_rows_range_is_row_capped(auth_client, monkeypatch):
 # --- Gap A: xlsx 导出含 XML 控制字符 / 超大整数 → 200(剔字符/串化)，不 500 ----
 
 async def test_export_xlsx_strips_illegal_control_chars(auth_client):
-    ds = (await _upload(auth_client, "ctrl.csv", b"q,a\nq1,he\x07llo\n")).json()[0]
+    ds = (await upload_ready(auth_client, "ctrl.csv", b"q,a\nq1,he\x07llo\n"))[0]
     r = await auth_client.get(f"/api/datasets/{ds['id']}/export?format=xlsx")
     assert r.status_code == 200
     wb = load_workbook(BytesIO(r.content), read_only=True, data_only=True)
@@ -187,14 +189,14 @@ async def test_export_xlsx_strips_illegal_control_chars(auth_client):
 
 
 async def test_export_xlsx_illegal_char_in_column_name(auth_client):
-    ds = (await _upload(auth_client, "ctrlcol.csv", b"q\x07,a\nv,w\n")).json()[0]
+    ds = (await upload_ready(auth_client, "ctrlcol.csv", b"q\x07,a\nv,w\n"))[0]
     r = await auth_client.get(f"/api/datasets/{ds['id']}/export?format=xlsx")
     assert r.status_code == 200                 # 列名带控制符也不 500
 
 
 async def test_export_xlsx_huge_int_stringified(auth_client):
     big = "9" * 400
-    ds = (await _upload(auth_client, "big.jsonl", ('{"n": ' + big + "}\n").encode())).json()[0]
+    ds = (await upload_ready(auth_client, "big.jsonl", ('{"n": ' + big + "}\n").encode()))[0]
     r = await auth_client.get(f"/api/datasets/{ds['id']}/export?format=xlsx")
     assert r.status_code == 200
     wb = load_workbook(BytesIO(r.content), read_only=True, data_only=True)
@@ -217,9 +219,7 @@ def _datetime_xlsx() -> bytes:
 
 
 async def test_upload_xlsx_with_datetime_cells(auth_client):
-    r = await _upload(auth_client, "dates.xlsx", _datetime_xlsx())
-    assert r.status_code == 200                 # 修复前: datetime 经 _dumps_row 抛 TypeError → 500
-    ds = r.json()[0]
+    ds = (await upload_ready(auth_client, "dates.xlsx", _datetime_xlsx()))[0]  # 修复前 datetime→500
     body = await auth_client.get(f"/api/datasets/{ds['id']}/rows?page=1&page_size=10")
     row = body.json()["rows"][0]
     assert isinstance(row["dt"], str) and "2024-03-15" in row["dt"]   # 串化为字面量
@@ -238,7 +238,7 @@ def test_dumps_row_serializes_datetime_and_keeps_nan_null():
 # --- Gap C: 数据集 csv/xlsx 导出文件用后即焚（BackgroundTask 回收）----------
 
 async def test_export_csv_file_is_reclaimed(auth_client):
-    ds = (await _upload(auth_client, "leak.csv", b"a,b\n1,2\n")).json()[0]
+    ds = (await upload_ready(auth_client, "leak.csv", b"a,b\n1,2\n"))[0]
     exports = settings.data_dir / "exports"
     before = set(exports.glob("*")) if exports.exists() else set()
     r = await auth_client.get(f"/api/datasets/{ds['id']}/export?format=csv")
@@ -248,7 +248,7 @@ async def test_export_csv_file_is_reclaimed(auth_client):
 
 
 async def test_export_xlsx_file_is_reclaimed(auth_client):
-    ds = (await _upload(auth_client, "leak2.csv", b"a,b\n1,2\n")).json()[0]
+    ds = (await upload_ready(auth_client, "leak2.csv", b"a,b\n1,2\n"))[0]
     exports = settings.data_dir / "exports"
     before = set(exports.glob("*")) if exports.exists() else set()
     r = await auth_client.get(f"/api/datasets/{ds['id']}/export?format=xlsx")
@@ -260,7 +260,7 @@ async def test_export_xlsx_file_is_reclaimed(auth_client):
 # --- Gap D: csv 导出嵌套 dict/list → 合法 JSON（与 xlsx 一致、可往返）--------
 
 async def test_export_csv_stringifies_nested_cells(auth_client):
-    ds = (await _upload(auth_client, "nested.jsonl", b'{"a": {"x": 1}, "b": [1,2,3]}\n')).json()[0]
+    ds = (await upload_ready(auth_client, "nested.jsonl", b'{"a": {"x": 1}, "b": [1,2,3]}\n'))[0]
     r = await auth_client.get(f"/api/datasets/{ds['id']}/export?format=csv")
     assert r.status_code == 200
     rows = list(_csv.reader(StringIO(r.text)))

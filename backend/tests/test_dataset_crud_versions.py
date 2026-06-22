@@ -1,3 +1,4 @@
+from conftest import wait_ready
 from sqlalchemy import select
 
 from app.models import Dataset, User
@@ -9,7 +10,7 @@ async def _upload_csv(client, content: bytes = b"name,age\nAda,36\nLinus,55\nGra
         files=[("files", ("people.csv", content, "text/csv"))],
     )
     assert r.status_code == 200
-    return r.json()[0]
+    return await wait_ready(client, r.json()[0]["id"])      # 等后台摄入完成再做版本操作
 
 
 async def _range(client, dataset_id: int, start: int, end: int):

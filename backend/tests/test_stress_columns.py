@@ -11,6 +11,8 @@
 import asyncio
 import json
 
+from conftest import wait_ready
+
 from app.engine import runner
 from app.services import llm
 
@@ -20,7 +22,8 @@ USAGE = {"prompt_tokens": 1, "completion_tokens": 1}
 async def _upload_jsonl(auth_client, rows, name="刁钻列.jsonl"):
     jsonl = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows).encode("utf-8")
     files = [("files", (name, jsonl, "application/octet-stream"))]
-    return (await auth_client.post("/api/datasets/upload", files=files)).json()[0]
+    ph = (await auth_client.post("/api/datasets/upload", files=files)).json()[0]
+    return await wait_ready(auth_client, ph["id"])
 
 
 async def _make_model(auth_client, name="m1", key="k1"):

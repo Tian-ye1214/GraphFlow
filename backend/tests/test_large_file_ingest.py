@@ -1,7 +1,9 @@
 """Spec 1（大文件统一摄入/导出）回归测试。
 Task 1: 基础设施（紧凑序列化 / import_error 列）。后续任务陆续追加。
 """
+import asyncio
 import datetime
+import io
 import json
 
 from openpyxl import Workbook
@@ -217,3 +219,56 @@ async def test_resume_unfinished_fails_stale_importing(session_factory):
         got = await s.get(Dataset, ds_id)
     assert got.status == "failed" and "重启" in got.import_error
     assert not root.parent.exists() and not src.exists()
+
+
+# --- Task 4: /upload 端点 后台摄入 ----------------------------------------
+
+from conftest import upload_ready, wait_ready  # noqa: E402
+
+
+async def test_upload_endpoint_returns_importing_then_ready(auth_client):
+    r = await auth_client.post(
+        "/api/datasets/upload",
+        files=[("files", ("u.csv", b"q,a\n1,2\n3,4\n", "application/octet-stream"))])
+    assert r.status_code == 200
+    ph = r.json()[0]
+    assert ph["status"] == "importing" and ph["row_count"] == 0   # 端点秒回占位
+    ds = await wait_ready(auth_client, ph["id"])
+    assert ds["status"] == "ready" and ds["row_count"] == 2
+    # 源文件解析后回收
+    assert not list((settings.data_dir / "uploads").rglob("*.csv"))
+
+
+async def test_upload_endpoint_deep_parse_error_becomes_failed(auth_client):
+    # jsonl 首行合法(探测通过 importing)，第二行畸形 → 后台摄入失败 → status=failed
+    r = await auth_client.post(
+        "/api/datasets/upload",
+        files=[("files", ("bad.jsonl", b'{"a":1}\n{bad}\n', "application/octet-stream"))])
+    assert r.status_code == 200
+    ds_id = r.json()[0]["id"]
+    for _ in range(400):
+        body = (await auth_client.get(f"/api/datasets/{ds_id}")).json()
+        if body["status"] != "importing":
+            break
+        await asyncio.sleep(0.01)
+    assert body["status"] == "failed" and body["import_error"]
+
+
+async def test_upload_endpoint_excel_size_gate(auth_client, monkeypatch):
+    monkeypatch.setattr(settings, "max_excel_upload_bytes", 10)
+    buf = io.BytesIO()
+    wb = Workbook()
+    wb.active.append(["a", "b"])
+    wb.active.append([1, 2])
+    wb.save(buf)
+    r = await auth_client.post(
+        "/api/datasets/upload",
+        files=[("files", ("big.xlsx", buf.getvalue(), "application/octet-stream"))])
+    assert r.status_code == 422 and "Excel" in r.json()["detail"]
+
+
+async def test_upload_endpoint_unsupported_extension(auth_client):
+    r = await auth_client.post(
+        "/api/datasets/upload",
+        files=[("files", ("x.pdf", b"%PDF-1.4", "application/octet-stream"))])
+    assert r.status_code == 422

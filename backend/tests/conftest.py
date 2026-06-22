@@ -36,3 +36,32 @@ async def client(tmp_path, monkeypatch):
 async def auth_client(client):
     await client.post("/api/auth/login", json={"username": "tester"})
     return client
+
+
+# --- 大文件后台摄入：上传端点改为返回 importing 占位 + 后台写分片。测试需轮询到 ready。----
+
+async def wait_status(client, ds_id, tries=400):
+    """轮询某数据集摄入到终态(ready/failed)，返回其 dict。"""
+    import asyncio
+    for _ in range(tries):
+        body = (await client.get(f"/api/datasets/{ds_id}")).json()
+        if body.get("status") != "importing":
+            return body
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"dataset {ds_id} 摄入未在限时内完成")
+
+
+async def wait_ready(client, ds_id, tries=400):
+    """轮询某数据集摄入到 ready 返回其 dict；failed/超时报错。"""
+    body = await wait_status(client, ds_id, tries)
+    assert body.get("status") == "ready", body
+    return body
+
+
+async def upload_ready(client, name, content):
+    """上传单文件并等待全部产出数据集 ready，返回 ready 后的 dict 列表（与旧端点同形）。"""
+    r = await client.post(
+        "/api/datasets/upload",
+        files=[("files", (name, content, "application/octet-stream"))])
+    assert r.status_code == 200, r.text
+    return [await wait_ready(client, ph["id"]) for ph in r.json()]

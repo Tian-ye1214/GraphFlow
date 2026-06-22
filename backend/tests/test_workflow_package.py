@@ -3,6 +3,7 @@ import json
 import zipfile
 
 import pytest
+from conftest import wait_ready
 
 import app.services.workflow_package as wp
 from app.config import settings
@@ -296,7 +297,7 @@ async def test_import_workflow_name_suffix_increments(session_factory, tmp_path)
 async def test_export_import_endpoints_roundtrip(auth_client):
     up = await auth_client.post("/api/datasets/upload",
         files={"files": ("d.jsonl", b'{"q": "007"}\n{"q": "x"}\n', "application/x-ndjson")})
-    did = up.json()[0]["id"]
+    did = (await wait_ready(auth_client, up.json()[0]["id"]))["id"]
     wf = (await auth_client.post("/api/workflows", json={"name": "导链"})).json()
     graph = {"nodes": [{"id": "in", "type": "input", "config": {"dataset_ids": [did]}}], "edges": []}
     await auth_client.put(f"/api/workflows/{wf['id']}", json={"graph": graph})

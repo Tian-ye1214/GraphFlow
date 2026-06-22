@@ -15,6 +15,8 @@ import json
 
 import pytest
 
+from conftest import wait_ready
+
 from app.engine import nodes, runner
 from app.services import llm
 
@@ -37,7 +39,7 @@ async def test_adversarial_dual_model_qc_one_bad_judge_must_not_nuke_run(
 
     jsonl = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in ROWS).encode("utf-8")
     files = [("files", ("刁钻数据.jsonl", jsonl, "application/octet-stream"))]
-    ds = (await auth_client.post("/api/datasets/upload", files=files)).json()[0]
+    ds = await wait_ready(auth_client, (await auth_client.post("/api/datasets/upload", files=files)).json()[0]["id"])
     assert ds["row_count"] == 4  # 乱码/超长均成功入库（上传链路本身健壮）
 
     mc1 = (await auth_client.post("/api/models", json={
