@@ -19,6 +19,7 @@ from app.models import (Dataset, ModelCallLog, ModelConfig, QcFailure, QcMetric,
                         RunNodeState, RunRow, User, Workflow, WorkflowVersion)
 from app.routers.workflows import get_owned_workflow
 from app.services.export import export_rows
+from app.services.run_artifacts import read_output_ref_rows
 from app.services.run_service import (purge_run_rows, unlink_run_exports,
                                       validate_graph_resource_ownership)
 
@@ -260,10 +261,13 @@ async def rerun_failed(run_id: int, user: User = Depends(get_current_user),
     return {"ok": True}
 
 
-def _flatten(recs: list[RunRow]) -> list[dict]:
+def _flatten(recs: list[RunRow], data_dir: Path) -> list[dict]:
     rows: list[dict] = []
     for r in recs:
-        rows.extend(json.loads(r.data_json))
+        if r.output_ref:
+            rows.extend(read_output_ref_rows(r.output_ref, data_dir))
+        else:
+            rows.extend(json.loads(r.data_json))
     return rows
 
 
@@ -282,7 +286,7 @@ async def run_rows(run_id: int, node_id: str, status: str = "done",
     if status == "failed":
         return {"total": total, "rows": [
             {"row_idx": r.row_idx, "error": r.error, "attempt": r.attempt} for r in recs]}
-    return {"total": total, "rows": _flatten(recs)}
+    return {"total": total, "rows": _flatten(recs, settings.data_dir)}
 
 
 @router.get("/{run_id}/export")
@@ -303,5 +307,6 @@ async def export_run(run_id: int, node_id: str | None = None,
                              RunRow.status == "done").order_by(RunRow.row_idx))).scalars().all()
     filename = f"run{run.id}_{Path(node_id).name}.{format}"
     path = await asyncio.to_thread(
-        export_rows, _flatten(recs), format, settings.data_dir / "exports" / filename)
+        export_rows, _flatten(recs, settings.data_dir), format,
+        settings.data_dir / "exports" / filename)
     return FileResponse(path, filename=filename)

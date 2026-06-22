@@ -521,6 +521,8 @@ async def test_rerun_output_upserts_dataset_no_duplicate(session_factory, monkey
 
 async def test_output_drop_columns_applied_to_saved_dataset(session_factory, monkeypatch):
     """output 节点 drop_columns 须同样作用于 save_as_dataset 落库数据集（被删列不泄漏进训练集）。"""
+    from app.config import settings
+    from app.services.dataset_store import read_dataset_range
     patch_chat(monkeypatch)
     graph = json.loads(json.dumps(GRAPH))
     graph["nodes"][2]["config"] = {"save_as_dataset": True, "dataset_name": "去列集", "drop_columns": ["q"]}
@@ -528,8 +530,8 @@ async def test_output_drop_columns_applied_to_saved_dataset(session_factory, mon
     await run_it(session_factory, run_id)
     async with session_factory() as s:
         ds = (await s.execute(select(Dataset).where(Dataset.name == "去列集"))).scalar_one()
-        rows = (await s.execute(select(DatasetRow).where(DatasetRow.dataset_id == ds.id))).scalars().all()
-    saved = [json.loads(r.data_json) for r in rows]
+        saved = (await read_dataset_range(
+            s, ds, data_dir=settings.data_dir, start_row=1, end_row=ds.row_count))["rows"]
     assert saved and all("q" not in r and "a" in r for r in saved)   # 被删列 q 不进落库集，产出列 a 保留
     assert json.loads(ds.columns_json) == ["a"]
 

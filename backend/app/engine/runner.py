@@ -6,14 +6,17 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select, update as sa_update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.config import settings
 from app.engine import nodes
+from app.engine.columns import ordered_union
 from app.engine.graph import (Graph, Node, ancestors, parse_graph, topo_order, upstream_ids,
                               validate_graph)
 from app.events import publish
-from app.models import (DatasetRow, ModelConfig, Prompt, PromptVersion, QcFailure, QcMetric, Run,
+from app.models import (Dataset, ModelConfig, Prompt, PromptVersion, QcFailure, QcMetric, Run,
                         RunLog, RunNodeState, RunRow, WorkflowVersion)
-from app.routers.datasets import create_dataset
+from app.services.dataset_store import _iter_dataset_rows, ensure_dataset_materialized
 from app.services.model_log import forget_run, log_context
+from app.services.run_artifacts import ArtifactWriter, register_artifact_as_dataset
 
 
 def _now() -> datetime:
@@ -276,9 +279,11 @@ async def _barrier_output(session_factory, user_id, node: Node, inputs, run_id: 
         rows: list[dict] = []
         async with session_factory() as s:
             for ds_id in cfg.get("dataset_ids", []):
-                recs = (await s.execute(select(DatasetRow).where(DatasetRow.dataset_id == ds_id)
-                                        .order_by(DatasetRow.idx))).scalars().all()
-                rows.extend(json.loads(r.data_json) for r in recs)
+                ds = await s.get(Dataset, ds_id)
+                if ds is None or ds.user_id != user_id:
+                    continue
+                ds = await ensure_dataset_materialized(s, ds, settings.data_dir)
+                rows.extend(row for _, row in _iter_dataset_rows(ds, settings.data_dir))
         return rows
     if node.type == "auto_process":
         return await nodes.apply_operations_with_agent(
@@ -289,9 +294,17 @@ async def _barrier_output(session_factory, user_id, node: Node, inputs, run_id: 
         drop = set(cfg.get("drop_columns") or [])
         out = [{k: v for k, v in r.items() if k not in drop} for r in inputs] if drop else inputs
         if cfg.get("save_as_dataset"):
+            columns = ordered_union([list(row) for row in out])
+            writer = ArtifactWriter(settings.data_dir, run_id=run_id or 0, node_id=node.id,
+                                    columns=columns)
+            for idx, row in enumerate(out, start=1):
+                writer.append(idx, [row])
+            artifact = writer.close()
             async with session_factory() as s:
-                await create_dataset(s, user_id, cfg.get("dataset_name", "运行结果"),
-                                     out, source="run", run_id=run_id, node_id=node.id)
+                await register_artifact_as_dataset(
+                    s, user_id=user_id, name=cfg.get("dataset_name", "运行结果"),
+                    source_artifact=artifact, data_dir=settings.data_dir,
+                    run_id=run_id, node_id=node.id)
         return out
     raise ValueError(f"未知节点类型: {node.type}")
 
