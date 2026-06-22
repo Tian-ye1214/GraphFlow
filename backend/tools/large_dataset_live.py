@@ -36,9 +36,35 @@ def client(username: str) -> httpx.Client:
     return c
 
 
-def upload(c: httpx.Client, name: str, content: bytes) -> httpx.Response:
-    return c.post("/datasets/upload",
-                  files=[("files", (name, content, "application/octet-stream"))])
+class _Ready:
+    """上传响应外壳：后台摄入已转 ready 后，.json() 返回 ready 数据集列表、.status_code=200。
+    保持旧调用点 upload(...).json()[0] / .status_code 不变。"""
+    def __init__(self, status_code, payload):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+def _wait_ready(c: httpx.Client, ds_id: int, tries: int = 1200):
+    for _ in range(tries):
+        body = c.get(f"/datasets/{ds_id}").json()
+        if body.get("status") != "importing":
+            if body.get("status") != "ready":
+                raise RuntimeError(f"数据集 {ds_id} 摄入失败: {body.get('import_error')}")
+            return body
+        time.sleep(0.05)
+    raise RuntimeError(f"数据集 {ds_id} 摄入超时")
+
+
+def upload(c: httpx.Client, name: str, content: bytes):
+    # 后台异步摄入：上传秒回 importing 占位，这里轮询到 ready 再返回(失败/不支持仍返回原始响应判 422)
+    r = c.post("/datasets/upload",
+               files=[("files", (name, content, "application/octet-stream"))])
+    if r.status_code != 200:
+        return r
+    return _Ready(200, [_wait_ready(c, ph["id"]) for ph in r.json()])
 
 
 def shard_dirs_for(ds_id: int) -> list:
@@ -86,6 +112,37 @@ def main():
 
     alice = client("smoke_ld_alice")
     bob = client("smoke_ld_bob")
+
+    # ==== Spec1 后台异步摄入(单一路径) ===================================
+    print("\n[Spec1] 后台异步摄入 importing→ready / failed / Excel 门禁")
+    raw = alice.post("/datasets/upload",
+                     files=[("files", ("ingest.csv", b"q,a\n1,2\n3,4\n", "application/octet-stream"))])
+    ph = raw.json()[0]
+    check(raw.status_code == 200 and ph["status"] == "importing" and ph["row_count"] == 0,
+          f"上传秒回 importing 占位 (实际 {ph.get('status')}/{ph.get('row_count')})")
+    rd = _wait_ready(alice, ph["id"])
+    track(alice, rd)
+    check(rd["status"] == "ready" and rd["row_count"] == 2, f"轮询转 ready 行数正确 (实际 {rd['row_count']})")
+
+    raw = alice.post("/datasets/upload",
+                     files=[("files", ("bad.jsonl", b'{"a":1}\n{bad}\n', "application/octet-stream"))])
+    bad_id = raw.json()[0]["id"]
+    track(alice, {"id": bad_id})
+    fb = None
+    for _ in range(1200):
+        fb = alice.get(f"/datasets/{bad_id}").json()
+        if fb["status"] != "importing":
+            break
+        time.sleep(0.05)
+    check(fb and fb["status"] == "failed" and fb["import_error"], "深层解析错 → status=failed+import_error")
+
+    buf = io.BytesIO()
+    wbx = Workbook(); wbx.active.append(["a"]); wbx.active.append([1]); wbx.save(buf)
+    big_xlsx = buf.getvalue() + b"\x00" * (210 * 1024 * 1024)   # 撑过 200MB 门禁(尾随字节不影响 zip 头)
+    gate = alice.post("/datasets/upload",
+                      files=[("files", ("huge.xlsx", big_xlsx, "application/octet-stream"))])
+    check(gate.status_code == 422 and "Excel" in gate.json().get("detail", ""),
+          f"超大 Excel 体积门禁 → 422 (实际 {gate.status_code})")
 
     # ---- Fix 1: 删数据集回收分片磁盘 -------------------------------------
     print("\n[Fix1] 删数据集回收分片磁盘")
