@@ -15,6 +15,7 @@ from app.config import settings
 from app.db import get_session
 from app.events import publish
 from app.models import Dataset, DatasetRow, User
+from app.services.dataset_crud import DatasetCrudError, apply_dataset_operations
 from app.services.dataset_store import (
     create_dataset_from_upload,
     ensure_dataset_materialized,
@@ -290,6 +291,32 @@ async def export_dataset(
         )
     except OSError as exc:
         raise HTTPException(status_code=422, detail="Export failed") from exc
+
+
+@router.post("/{ds_id}/versions")
+async def create_dataset_version(
+    ds_id: int,
+    body: dict,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    ds = await _get_owned(ds_id, user, session)
+    operations = body.get("operations")
+    if not isinstance(operations, list):
+        raise HTTPException(status_code=422, detail="operations must be a list")
+    try:
+        new_ds = await apply_dataset_operations(
+            session,
+            source=ds,
+            user_id=user.id,
+            data_dir=settings.data_dir,
+            operations=operations,
+        )
+    except DatasetCrudError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    publish(user.id, "dataset", new_ds.id)
+    return _out(new_ds)
 
 
 @router.delete("/{ds_id}")
