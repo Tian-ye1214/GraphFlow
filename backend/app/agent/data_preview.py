@@ -5,9 +5,11 @@ from typing import Literal
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.config import settings
 from app.engine.columns import ordered_union
 from app.engine.graph import parse_graph, upstream_ids
-from app.models import Dataset, DatasetRow, Run, RunRow, Workflow, WorkflowVersion
+from app.models import Dataset, Run, RunRow, Workflow, WorkflowVersion
+from app.services.dataset_store import MAX_AGENT_ROWS, read_dataset_range
 
 PreviewSource = Literal["auto", "dataset", "latest_run"]
 
@@ -167,6 +169,39 @@ class WorkflowDataPreview:
                        "columns": [_describe_column(c, rows) for c in cols]}
             return json.dumps(_fit_budget(payload, key="columns"), ensure_ascii=False)
 
+    async def read_dataset_rows(
+        self,
+        dataset_id: int,
+        start_row: int,
+        end_row: int,
+        columns: list[str] | None = None,
+    ) -> str:
+        """Read a visible file-row range from one dataset with optional column projection."""
+        if not isinstance(start_row, int) or not isinstance(end_row, int):
+            return self._dump("dataset_rows", [], [], error="invalid_row_range")
+        if start_row < 1 or end_row < start_row:
+            return self._dump("dataset_rows", [], [], error="invalid_row_range")
+        if columns is not None and not (
+            isinstance(columns, list) and all(isinstance(col, str) for col in columns)
+        ):
+            return self._dump("dataset_rows", [], [], error="invalid_columns")
+        async with self._session_factory() as session:
+            ds = await session.get(Dataset, dataset_id)
+            if ds is None or ds.user_id != self._user_id:
+                return json.dumps({"dataset_id": dataset_id, "rows": [], "error": "dataset_not_found"},
+                                  ensure_ascii=False)
+            payload = await read_dataset_range(
+                session,
+                ds,
+                data_dir=settings.data_dir,
+                start_row=start_row,
+                end_row=end_row,
+                columns=columns,
+                max_rows=MAX_AGENT_ROWS,
+                max_chars=MAX_PREVIEW_CHARS,
+            )
+            return json.dumps(_fit_budget(payload), ensure_ascii=False)
+
     async def _dataset_total_rows(self, session, wf: Workflow) -> int | None:
         """输入数据集总行数(精确，零扫行)；脏图无法解析则 None。"""
         try:
@@ -208,11 +243,11 @@ class WorkflowDataPreview:
             remaining = limit - len(rows)
             if remaining <= 0:
                 break
-            recs = (await session.execute(
-                select(DatasetRow).where(DatasetRow.dataset_id == ds.id)
-                .order_by(DatasetRow.idx).limit(remaining)
-            )).scalars().all()
-            rows.extend(json.loads(r.data_json) for r in recs)
+            start = ds.data_start_row or 1
+            page = await read_dataset_range(
+                session, ds, data_dir=settings.data_dir,
+                start_row=start, end_row=start + remaining - 1)
+            rows.extend(row for row in page["rows"] if row.get("__row_type") != "header")
         safe_rows, truncated = _safe_rows(rows[:limit], self._cell_char_limit)
         columns = ordered_union(columns_by_dataset) or _columns_from_rows(safe_rows)
         return {"source": "dataset", "run_id": None, "columns": columns,
@@ -310,7 +345,7 @@ def make_preview_tools(session_factory: async_sessionmaker, user_id: int,
                        workflow_id: int | None = None, node_id: str | None = None) -> list:
     previewer = WorkflowDataPreview(session_factory, user_id)
     if workflow_id is None:
-        return [previewer.preview_workflow_data]
+        return [previewer.preview_workflow_data, previewer.read_dataset_rows]
 
     async def preview_current_node_input(source: str = "auto", limit: int = DEFAULT_LIMIT) -> str:
         """预览当前正在配置节点的输入数据，默认返回列名和前 5 行。
@@ -331,4 +366,4 @@ def make_preview_tools(session_factory: async_sessionmaker, user_id: int,
         return await previewer.describe(
             workflow_id, node_id=node_id, source=source, sample_limit=sample_limit)
 
-    return [preview_current_node_input, describe_current_node_input]
+    return [preview_current_node_input, describe_current_node_input, previewer.read_dataset_rows]
