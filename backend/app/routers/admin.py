@@ -114,8 +114,10 @@ async def delete_user(user_id: int, admin: User = Depends(require_admin),
     await session.execute(sa_delete(Prompt).where(Prompt.user_id == user_id))
     await session.execute(sa_delete(User).where(User.id == user_id))
     await session.commit()
-    # 该用户上传的数据集文件都在 uploads/<user_id>/，整目录删除即可（运行结果数据集 file_path 为空）
+    # 该用户的原始上传件在 uploads/<user_id>/，canonical 分片(上传/CRUD 版本/运行结果)全在
+    # datasets/<user_id>/，节点输出 artifact 在 runs/<run_id>/(由 unlink_run_exports 删)，整树清掉。
     shutil.rmtree(settings.data_dir / "uploads" / str(user_id), ignore_errors=True)
+    shutil.rmtree(settings.data_dir / "datasets" / str(user_id), ignore_errors=True)
     shutil.rmtree(settings.data_dir / "agent" / _safe(username), ignore_errors=True)
     unlink_run_exports(run_ids, settings.data_dir)
     return {"ok": True}

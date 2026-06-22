@@ -1,5 +1,6 @@
 import json
 import re
+import shutil
 from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
@@ -18,6 +19,7 @@ from app.models import Dataset, DatasetRow, User
 from app.services.dataset_crud import DatasetCrudError, apply_dataset_operations
 from app.services.dataset_store import (
     create_dataset_from_upload,
+    dataset_root,
     ensure_dataset_materialized,
     iter_jsonl_lines,
     read_dataset_range,
@@ -241,6 +243,7 @@ async def dataset_rows(
             start_row=start_row,
             end_row=end_row,
             columns=_columns_arg(columns),
+            max_chars=0,                 # 人类范围读取：关 agent 字符预算，足额返回所请求的行
         )
 
     if page < 1 or page_size < 1:
@@ -253,6 +256,7 @@ async def dataset_rows(
         data_dir=settings.data_dir,
         start_row=start,
         end_row=end,
+        max_chars=0,                     # 人类分页：关 agent 字符预算，否则整页被腰斩且尾行翻页不可达
     )
     return {"total": payload["total"], "rows": payload["rows"]}
 
@@ -269,6 +273,7 @@ async def export_dataset(
     safe = _safe_filename(ds.name)
     filename = f"{safe}.{export_format}"
 
+    path = settings.data_dir / "exports" / f"{uuid4().hex[:8]}_{filename}"
     try:
         ds = await ensure_dataset_materialized(session, ds, settings.data_dir)
         if export_format == "jsonl":
@@ -278,7 +283,6 @@ async def export_dataset(
                 headers=_attachment_headers(filename),
             )
 
-        path = settings.data_dir / "exports" / f"{uuid4().hex[:8]}_{filename}"
         if export_format == "csv":
             path = await write_csv_export(session, ds, settings.data_dir, path)
             return FileResponse(path, filename=filename, media_type="text/csv; charset=utf-8")
@@ -289,7 +293,8 @@ async def export_dataset(
             filename=filename,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-    except OSError as exc:
+    except (OSError, ValueError) as exc:               # 非法单元格/写盘失败 → 清半成品文件后 422，不 500
+        path.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail="Export failed") from exc
 
 
@@ -326,10 +331,14 @@ async def delete_dataset(
     session: AsyncSession = Depends(get_session),
 ):
     ds = await _get_owned(ds_id, user, session)
+    # 迁移后真实数据全在分片目录 datasets/<uid>/<id>/v*/，删库行不回收磁盘 → 提交成功后整 id 目录删掉。
+    shard_dir = dataset_root(settings.data_dir, ds.user_id, ds.id, ds.version).parent
+    file_path = ds.file_path
     await session.execute(sa_delete(DatasetRow).where(DatasetRow.dataset_id == ds.id))
-    if ds.file_path:
-        Path(ds.file_path).unlink(missing_ok=True)
     await session.delete(ds)
     await session.commit()
+    shutil.rmtree(shard_dir, ignore_errors=True)
+    if file_path:
+        Path(file_path).unlink(missing_ok=True)
     publish(user.id, "dataset", ds_id)
     return {"ok": True}

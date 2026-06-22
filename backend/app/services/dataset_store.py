@@ -1,9 +1,13 @@
 import csv
 import json
+import math
+import zlib
 from collections.abc import Iterable
 from pathlib import Path
+from zipfile import BadZipFile
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.utils.exceptions import InvalidFileException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +19,9 @@ MAX_AGENT_ROWS = 500
 MAX_AGENT_CHARS = 60_000
 MAX_JSON_NESTING = 1000
 EXCEL_MAX_DATA_ROWS_PER_SHEET = 1_048_575
+CSV_FIELD_LIMIT = 16 * 1024 * 1024     # 单元格上限放宽到 16MB(默认 128KB 会让长文档行误抛 csv.Error→500)
+# 解析不可信 Excel 二进制可能抛的异常族(损坏/伪造/老 .xls)，统一归一为 ValueError → 上传边界转 422 而非 500。
+_EXCEL_PARSE_ERRORS = (BadZipFile, InvalidFileException, KeyError, OSError, zlib.error)
 
 
 def dataset_root(data_dir: Path, user_id: int, dataset_id: int, version: int) -> Path:
@@ -27,6 +34,26 @@ def load_manifest(ds: Dataset) -> dict:
 
 def dump_manifest(manifest: dict) -> str:
     return json.dumps(manifest, ensure_ascii=False, separators=(",", ":"))
+
+
+def _dumps_row(row: dict) -> str:
+    """canonical 分片行序列化单切口：allow_nan=False 禁止非标准 JSON token；
+    若行内含 NaN/Infinity(CRUD 经 Starlette json.loads 可放进来)，中和为 null 再序列化
+    (与读侧 parse_constant 一致)，保证落盘永不含 NaN/Infinity，任何入口都读得回。"""
+    try:
+        return json.dumps(row, ensure_ascii=False, allow_nan=False)
+    except ValueError:
+        return json.dumps(_finite_only(row), ensure_ascii=False, allow_nan=False)
+
+
+def _finite_only(obj):
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
+    if isinstance(obj, dict):
+        return {k: _finite_only(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_finite_only(v) for v in obj]
+    return obj
 
 
 def visible_total(row_count: int, header_row: int | None) -> int:
@@ -78,28 +105,39 @@ async def _create_excel_datasets(
     shard_size: int,
 ) -> list[Dataset]:
     stem = Path(filename).stem
-    wb = load_workbook(source_path, read_only=True, data_only=True)
-    items: list[tuple[str, list[str], dict, Iterable[dict]]] = []
-    for ws in wb.worksheets:
-        rows = ws.iter_rows(values_only=True)
-        try:
-            raw_header = next(rows)
-        except StopIteration:
-            continue
-        headers = _disambiguate_columns([_cell_to_str(v) for v in raw_header])
-        records = _rows_from_values(headers, rows)
-        first = next(records, None)
-        if first is not None:
-            items.append((ws.title, headers, first, records))
+    try:
+        wb = load_workbook(source_path, read_only=True, data_only=True)
+        items: list[tuple[str, list[str], dict, Iterable[dict]]] = []
+        for ws in wb.worksheets:
+            rows = ws.iter_rows(values_only=True)
+            try:
+                raw_header = next(rows)
+            except StopIteration:
+                continue
+            headers = _disambiguate_columns([_cell_to_str(v) for v in raw_header])
+            records = _rows_from_values(headers, rows)
+            first = next(records, None)
+            if first is not None:
+                items.append((ws.title, headers, first, records))
+    except _EXCEL_PARSE_ERRORS as exc:
+        raise ValueError(f"无法解析 Excel: {exc}") from exc
     datasets: list[Dataset] = []
     for sheet_name, headers, first, records in items:
         name = stem if len(items) == 1 else f"{stem}-{sheet_name}"
         datasets.append(await _create_one_dataset(
             session, user_id=user_id, name=name, original_filename=filename,
-            original_format="xlsx", rows=_prepend(first, records), columns=headers,
+            original_format="xlsx", rows=_prepend(first, _guard_excel(records)), columns=headers,
             header_row=1, data_start_row=2, data_dir=data_dir, shard_size=shard_size,
             file_path=str(source_path)))
     return datasets
+
+
+def _guard_excel(rows: Iterable[dict]):
+    """包住 openpyxl 惰性行迭代：流式写分片时若深处单元格触发解析异常，归一为 ValueError(→422)。"""
+    try:
+        yield from rows
+    except _EXCEL_PARSE_ERRORS as exc:
+        raise ValueError(f"无法解析 Excel: {exc}") from exc
 
 
 async def _create_one_dataset(
@@ -186,7 +224,7 @@ def _write_shards(
             for key in row:
                 if key not in seen_columns:
                     seen_columns.append(key)
-            current.write(json.dumps(row, ensure_ascii=False) + "\n")
+            current.write(_dumps_row(row) + "\n")
             shard_rows += 1
             row_count += 1
             shards[-1]["row_count"] = shard_rows
@@ -253,7 +291,8 @@ async def read_dataset_range(
     selected = _select_columns(ds, columns)
     rows: list[dict] = []
     truncated = False
-    char_budget = max_chars if max_chars is not None else MAX_AGENT_CHARS
+    # max_chars=None → 默认 agent 预算；max_chars=0 → 关预算(人类分页/范围读取要足额返回)；其余按值。
+    char_budget = MAX_AGENT_CHARS if max_chars is None else (max_chars or None)
     used_chars = 0
 
     def append_row(row: dict) -> bool:
@@ -322,7 +361,7 @@ async def write_xlsx_export(session: AsyncSession, ds: Dataset, data_dir: Path, 
             ws = wb.create_sheet("data" if sheet_no == 1 else f"data_{sheet_no}")
             ws.append(columns)
             sheet_rows = 0
-        ws.append([row.get(col, "") for col in columns])
+        ws.append([_xlsx_cell(row.get(col, "")) for col in columns])
         sheet_rows += 1
     if ws is None:
         ws = wb.create_sheet("data")
@@ -374,19 +413,23 @@ def _iter_dataset_rows(ds: Dataset, data_dir: Path, *,
 
 
 def _iter_csv_rows(path: Path):
+    csv.field_size_limit(CSV_FIELD_LIMIT)
     encoding = _detect_text_encoding(path)
     with path.open(encoding=encoding, newline="") as fh:
         reader = csv.reader((line.replace("\x00", "") for line in fh))
         try:
-            raw_headers = next(reader)
-        except StopIteration:
-            return
-        headers = _disambiguate_columns(raw_headers)
-        for values in reader:
-            yield {
-                header: values[i] if i < len(values) and values[i] is not None else ""
-                for i, header in enumerate(headers)
-            }
+            try:
+                raw_headers = next(reader)
+            except StopIteration:
+                return
+            headers = _disambiguate_columns(raw_headers)
+            for values in reader:
+                yield {
+                    header: values[i] if i < len(values) and values[i] is not None else ""
+                    for i, header in enumerate(headers)
+                }
+        except csv.Error as exc:                       # 超长字段/畸形引号 → ValueError → 422 而非 500
+            raise ValueError(f"CSV 解析失败: {exc}") from exc
 
 
 def _detect_text_encoding(path: Path) -> str:
@@ -479,6 +522,13 @@ def _cell_to_str(value) -> str:
 
 def _cell_to_value(value):
     return "" if value is None else value
+
+
+def _xlsx_cell(value):
+    """openpyxl write_only 写不了 dict/list 单元格(抛 ValueError)：嵌套值序列化成 JSON 串(对齐 CSV 行为)。"""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return value
 
 
 def _select_columns(ds: Dataset, columns: list[str] | None) -> list[str]:

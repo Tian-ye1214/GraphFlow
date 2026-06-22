@@ -1,6 +1,7 @@
 """目标循环用的跑数服务：入队一次运行、读首轮指标、抽样失败样本、解析文本阈值。"""
 import json
 import re
+import shutil
 
 from sqlalchemy import delete as sa_delete, func, select
 
@@ -31,11 +32,12 @@ async def purge_run_rows(session, run_ids, *, version_ids=None) -> None:
 
 
 def unlink_run_exports(run_ids, data_dir) -> None:
-    """删除一批 run 的落盘导出文件（commit 成功后调用）。"""
+    """删除一批 run 的落盘文件（commit 成功后调用）：导出文件 + 节点输出 artifact 分片目录 runs/<rid>/。"""
     exports = data_dir / "exports"
     for rid in run_ids:
         for p in exports.glob(f"run{rid}_*"):
             p.unlink(missing_ok=True)
+        shutil.rmtree(data_dir / "runs" / str(rid), ignore_errors=True)
 
 
 def parse_threshold(text: str) -> float | None:
