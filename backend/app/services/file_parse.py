@@ -6,6 +6,8 @@ import pandas as pd
 
 from app.engine.columns import ordered_union
 
+MAX_JSON_NESTING = 1000
+
 
 def _decode(content: bytes) -> str:
     """容错解码文本类文件：优先 UTF-8（连带剥除 BOM），失败回退 GBK（Windows 中文 Excel/记事本常见）。"""
@@ -26,9 +28,23 @@ def _loads(s: str):
     - 深层嵌套触发的 RecursionError（非 ValueError）归一为 ValueError，让上传边界转 422 而非 500。
     （json.JSONDecodeError 本就是 ValueError 子类，照常向上传递→422。）"""
     try:
-        return json.loads(s, parse_constant=lambda _v: None)
+        obj = json.loads(s, parse_constant=lambda _v: None)
     except RecursionError as e:
         raise ValueError(f"JSON 嵌套过深: {e}") from e
+    _reject_deep_json(obj)
+    return obj
+
+
+def _reject_deep_json(obj) -> None:
+    stack = [(obj, 0)]
+    while stack:
+        current, depth = stack.pop()
+        if depth > MAX_JSON_NESTING:
+            raise ValueError("JSON 嵌套过深")
+        if isinstance(current, dict):
+            stack.extend((v, depth + 1) for v in current.values())
+        elif isinstance(current, list):
+            stack.extend((v, depth + 1) for v in current)
 
 
 def parse_file(filename: str, content: bytes) -> list[dict]:

@@ -54,10 +54,44 @@ async def _migrate_sqlite_schema(conn) -> None:
 
     rows = (await conn.exec_driver_sql("PRAGMA table_info(datasets)")).all()
     cols = {row[1] for row in rows}
+    dataset_adds = {
+        "manifest_json": "TEXT NOT NULL DEFAULT '{}'",
+        "status": "VARCHAR NOT NULL DEFAULT 'ready'",
+        "imported_rows": "INTEGER NOT NULL DEFAULT 0",
+        "original_format": "VARCHAR NOT NULL DEFAULT ''",
+        "version": "INTEGER NOT NULL DEFAULT 1",
+        "version_of_dataset_id": "INTEGER",
+        "header_row": "INTEGER",
+        "data_start_row": "INTEGER NOT NULL DEFAULT 1",
+        "total_rows_including_header": "INTEGER NOT NULL DEFAULT 0",
+    }
+    for name, ddl in dataset_adds.items():
+        if rows and name not in cols:
+            await conn.exec_driver_sql(f"ALTER TABLE datasets ADD COLUMN {name} {ddl}")
     if rows and "run_id" not in cols:
         await conn.exec_driver_sql("ALTER TABLE datasets ADD COLUMN run_id INTEGER")
     if rows and "node_id" not in cols:
         await conn.exec_driver_sql("ALTER TABLE datasets ADD COLUMN node_id VARCHAR")
+    if rows:
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_datasets_version_parent "
+            "ON datasets (version_of_dataset_id, version)"
+        )
+
+    rows = (await conn.exec_driver_sql("PRAGMA table_info(run_rows)")).all()
+    cols = {row[1] for row in rows}
+    run_row_adds = {
+        "file_row": "INTEGER",
+        "output_ref": "TEXT NOT NULL DEFAULT ''",
+    }
+    for name, ddl in run_row_adds.items():
+        if rows and name not in cols:
+            await conn.exec_driver_sql(f"ALTER TABLE run_rows ADD COLUMN {name} {ddl}")
+    if rows:
+        await conn.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_run_row_file_row "
+            "ON run_rows (run_id, node_id, file_row)"
+        )
 
 
 def get_session_factory() -> async_sessionmaker:

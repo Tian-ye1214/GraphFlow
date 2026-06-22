@@ -48,11 +48,21 @@ class Dataset(Base):
     file_path: Mapped[str] = mapped_column(default="")
     row_count: Mapped[int] = mapped_column(default=0)
     columns_json: Mapped[str] = mapped_column(Text, default="[]")
+    manifest_json: Mapped[str] = mapped_column(Text, default="{}")
+    status: Mapped[str] = mapped_column(default="ready")
+    imported_rows: Mapped[int] = mapped_column(default=0)
+    original_format: Mapped[str] = mapped_column(default="")
+    version: Mapped[int] = mapped_column(default=1)
+    version_of_dataset_id: Mapped[int | None] = mapped_column(ForeignKey("datasets.id"), default=None)
+    header_row: Mapped[int | None] = mapped_column(default=None)
+    data_start_row: Mapped[int] = mapped_column(default=1)
+    total_rows_including_header: Mapped[int] = mapped_column(default=0)
     # 来源 run + 节点（save_as_dataset）；上传为 None。按 (run_id,node_id) upsert：同节点 rerun 幂等覆盖，
     # 不同 output 节点即使同名也各自独立（不互相覆盖丢数据）。
     run_id: Mapped[int | None] = mapped_column(default=None)
     node_id: Mapped[str | None] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    __table_args__ = (Index("ix_datasets_version_parent", "version_of_dataset_id", "version"),)
 
 
 class DatasetRow(Base):
@@ -117,15 +127,20 @@ class RunRow(Base):
     run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"))
     node_id: Mapped[str]
     row_idx: Mapped[int]
+    file_row: Mapped[int | None] = mapped_column(default=None)
     attempt: Mapped[int] = mapped_column(default=0)
     qc_round: Mapped[int] = mapped_column(default=0)
     prompt_tokens: Mapped[int] = mapped_column(default=0)
     completion_tokens: Mapped[int] = mapped_column(default=0)
     status: Mapped[str] = mapped_column(default="pending")  # pending/running/done/failed
     data_json: Mapped[str] = mapped_column(Text, default="[]")
+    output_ref: Mapped[str] = mapped_column(Text, default="")
     error: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
-    __table_args__ = (Index("ix_run_row_unit", "run_id", "node_id", "row_idx", unique=True),)
+    __table_args__ = (
+        Index("ix_run_row_unit", "run_id", "node_id", "row_idx", unique=True),
+        Index("ix_run_row_file_row", "run_id", "node_id", "file_row", unique=True),
+    )
 
 
 class RunLog(Base):
