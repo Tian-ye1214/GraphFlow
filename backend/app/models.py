@@ -49,8 +49,9 @@ class Dataset(Base):
     row_count: Mapped[int] = mapped_column(default=0)
     columns_json: Mapped[str] = mapped_column(Text, default="[]")
     manifest_json: Mapped[str] = mapped_column(Text, default="{}")
-    status: Mapped[str] = mapped_column(default="ready")
+    status: Mapped[str] = mapped_column(default="ready")  # importing / ready / failed
     imported_rows: Mapped[int] = mapped_column(default=0)
+    import_error: Mapped[str] = mapped_column(Text, default="")  # status=failed 时的错误文案
     original_format: Mapped[str] = mapped_column(default="")
     version: Mapped[int] = mapped_column(default=1)
     version_of_dataset_id: Mapped[int | None] = mapped_column(ForeignKey("datasets.id"), default=None)

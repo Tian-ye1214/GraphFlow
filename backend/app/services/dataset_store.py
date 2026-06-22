@@ -46,9 +46,10 @@ def _dumps_row(row: dict) -> str:
       - datetime/date/time/timedelta(openpyxl read_only 读 Excel 日期/时间格返回原生对象) → default=str 串化 ISO 字面量。
     json.dumps 对前者抛 ValueError、后者抛 TypeError，故两类都接；保证落盘永远是合法可读回的 JSON。"""
     try:
-        return json.dumps(row, ensure_ascii=False, allow_nan=False)
+        return json.dumps(row, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
     except (ValueError, TypeError):
-        return json.dumps(_finite_only(row), ensure_ascii=False, allow_nan=False, default=str)
+        return json.dumps(_finite_only(row), ensure_ascii=False, allow_nan=False,
+                          separators=(",", ":"), default=str)
 
 
 def _finite_only(obj):
@@ -214,16 +215,24 @@ def _write_shards(
             "start_data_idx": row_count,
             "start_file_row": data_start_row + row_count,
             "row_count": 0,
-            "columns": seen_columns,
+            "columns": [],
         })
+
+    def close_shard():
+        # 在分片关闭时一次性定稿 row_count/columns，避免逐行 list(seen_columns) 复制(宽表 O(行×列))
+        nonlocal current
+        if current is not None:
+            current.close()
+            shards[-1]["row_count"] = shard_rows
+            shards[-1]["columns"] = list(seen_columns)
+            current = None
 
     try:
         for row in rows:
             if not isinstance(row, dict):
                 raise ValueError("数据行必须是 JSON object")
             if current is None or shard_rows >= shard_size:
-                if current is not None:
-                    current.close()
+                close_shard()
                 open_shard()
             for key in row:
                 if key not in seen_columns:
@@ -231,11 +240,8 @@ def _write_shards(
             current.write(_dumps_row(row) + "\n")
             shard_rows += 1
             row_count += 1
-            shards[-1]["row_count"] = shard_rows
-            shards[-1]["columns"] = list(seen_columns)
     finally:
-        if current is not None:
-            current.close()
+        close_shard()
     manifest = {
         "original_format": "",
         "canonical_format": "jsonl",

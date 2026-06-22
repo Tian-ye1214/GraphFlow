@@ -13,7 +13,7 @@ session_factory: async_sessionmaker | None = None
 def _set_sqlite_pragma(dbapi_conn, _):
     cur = dbapi_conn.cursor()
     cur.execute("PRAGMA journal_mode=WAL")
-    cur.execute("PRAGMA busy_timeout=5000")
+    cur.execute("PRAGMA busy_timeout=30000")  # 大文件摄入期短事务可能与并发写短暂争锁，留足缓冲
     cur.close()
 
 
@@ -64,6 +64,7 @@ async def _migrate_sqlite_schema(conn) -> None:
         "header_row": "INTEGER",
         "data_start_row": "INTEGER NOT NULL DEFAULT 1",
         "total_rows_including_header": "INTEGER NOT NULL DEFAULT 0",
+        "import_error": "TEXT NOT NULL DEFAULT ''",
     }
     for name, ddl in dataset_adds.items():
         if rows and name not in cols:

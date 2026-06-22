@@ -59,6 +59,7 @@ def _out(ds: Dataset) -> dict:
         "created_at": ds.created_at.isoformat(),
         "status": ds.status,
         "imported_rows": ds.imported_rows,
+        "import_error": ds.import_error,
         "original_format": ds.original_format,
         "version": ds.version,
         "version_of_dataset_id": ds.version_of_dataset_id,
