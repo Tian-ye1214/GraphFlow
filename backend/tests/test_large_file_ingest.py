@@ -20,6 +20,14 @@ def _xlsx(path, sheets):
     wb.save(path)
 
 
+async def _user(session_factory, username) -> int:
+    async with session_factory() as s:
+        u = User(username=username, display_name="x")
+        s.add(u)
+        await s.commit()
+        return u.id
+
+
 # --- Task 1: _dumps_row 紧凑分隔符 -----------------------------------------
 
 def test_dumps_row_uses_compact_separators():
@@ -123,3 +131,89 @@ def test_parse_and_write_shards_with_progress(tmp_path):
     assert n == 5 and cols == ["q"]
     assert len(manifest["shards"]) == 3          # 2+2+1
     assert seen == [2, 4, 5]                      # 每分片关闭回调一次累计行数
+
+
+# --- Task 3: IngestManager 后台摄入 + resume ------------------------------
+
+from app.config import settings  # noqa: E402
+from app.services.dataset_store import ParseUnit, dataset_root, detect_upload_structure  # noqa: E402
+from app.services.ingest_manager import ingest_manager, resume_unfinished  # noqa: E402
+
+
+async def _placeholder(session_factory, uid, name, src, unit) -> int:
+    async with session_factory() as s:
+        ds = Dataset(
+            user_id=uid, name=name, source="upload", original_filename=src.name,
+            original_format=unit.original_format, file_path=str(src), status="importing",
+            header_row=unit.header_row, data_start_row=unit.data_start_row,
+            columns_json=json.dumps(unit.columns, ensure_ascii=False))
+        s.add(ds)
+        await s.commit()
+        return ds.id
+
+
+async def test_ingest_success_marks_ready_and_reclaims_source(session_factory):
+    uid = await _user(session_factory, "ingest_ok")
+    src = settings.data_dir / "uploads" / "ingest_ok.csv"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("q,a\n1,2\n3,4\n", encoding="utf-8")
+    unit = detect_upload_structure("ingest_ok.csv", src)[0]
+    ds_id = await _placeholder(session_factory, uid, "ingest_ok", src, unit)
+    await ingest_manager._run_ingest(ds_id, src, unit, 1, uid, session_factory)
+    async with session_factory() as s:
+        got = await s.get(Dataset, ds_id)
+    assert got.status == "ready" and got.row_count == 2 and got.import_error == ""
+    assert list(dataset_root(settings.data_dir, uid, ds_id, 1).glob("part-*.jsonl"))
+    assert not src.exists()                       # 源文件解析后回收
+
+
+async def test_ingest_failure_marks_failed_and_cleans_orphans(session_factory):
+    uid = await _user(session_factory, "ingest_fail")
+    src = settings.data_dir / "uploads" / "bad.xlsx"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(b"not a real workbook")
+    unit = ParseUnit(name="bad", columns=["x"], header_row=1, data_start_row=2,
+                     original_format="xlsx", reader="xlsx", sheet_index=0)
+    ds_id = await _placeholder(session_factory, uid, "bad", src, unit)
+    await ingest_manager._run_ingest(ds_id, src, unit, 1, uid, session_factory)
+    async with session_factory() as s:
+        got = await s.get(Dataset, ds_id)
+    assert got.status == "failed" and got.import_error
+    assert not dataset_root(settings.data_dir, uid, ds_id, 1).parent.exists()  # 孤儿分片清理
+
+
+async def test_ingest_submit_runs_to_ready(session_factory):
+    uid = await _user(session_factory, "ingest_submit")
+    src = settings.data_dir / "uploads" / "sub.csv"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("q\n1\n2\n", encoding="utf-8")
+    unit = detect_upload_structure("sub.csv", src)[0]
+    ds_id = await _placeholder(session_factory, uid, "sub", src, unit)
+    ingest_manager.submit(ds_id, source_path=src, unit=unit, version=1,
+                          user_id=uid, session_factory=session_factory)
+    await ingest_manager._running[ds_id]          # 等后台任务完成
+    async with session_factory() as s:
+        got = await s.get(Dataset, ds_id)
+    assert got.status == "ready" and got.row_count == 2
+
+
+async def test_resume_unfinished_fails_stale_importing(session_factory):
+    uid = await _user(session_factory, "resume_u")
+    src = settings.data_dir / "uploads" / "stale.csv"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("q\n1\n", encoding="utf-8")
+    async with session_factory() as s:
+        ds = Dataset(user_id=uid, name="stale", status="importing", file_path=str(src),
+                     original_filename="stale.csv", original_format="csv")
+        s.add(ds)
+        await s.commit()
+        ds_id = ds.id
+    root = dataset_root(settings.data_dir, uid, ds_id, 1)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "part-000001.jsonl").write_text("{}\n", encoding="utf-8")
+    n = await resume_unfinished(session_factory)
+    assert n >= 1
+    async with session_factory() as s:
+        got = await s.get(Dataset, ds_id)
+    assert got.status == "failed" and "重启" in got.import_error
+    assert not root.parent.exists() and not src.exists()

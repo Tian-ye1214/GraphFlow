@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from app.agent.turns import resume_interrupted
 from app.db import get_session_factory, init_db
 from app.engine.manager import resume_unfinished
+from app.services.ingest_manager import resume_unfinished as resume_ingest
 from app.routers import (admin, agent, auth, datasets, events, model_configs, model_logs,
                          prompts, runs, workflows)
 
@@ -19,6 +20,7 @@ async def lifespan(app: FastAPI):
     await init_db()
     await resume_unfinished(get_session_factory())
     await resume_interrupted(get_session_factory())
+    await resume_ingest(get_session_factory())
     yield
 
 
