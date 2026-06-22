@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import shutil
 from pathlib import Path
@@ -8,8 +9,10 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
+from openpyxl.utils.exceptions import IllegalCharacterError
 from sqlalchemy import delete as sa_delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.background import BackgroundTask
 
 from app.auth import get_current_user
 from app.config import settings
@@ -290,15 +293,19 @@ async def export_dataset(
 
         if export_format == "csv":
             path = await write_csv_export(session, ds, settings.data_dir, path)
-            return FileResponse(path, filename=filename, media_type="text/csv; charset=utf-8")
+            return FileResponse(path, filename=filename, media_type="text/csv; charset=utf-8",
+                                background=BackgroundTask(os.unlink, path))  # 响应送达后回收，不永久占盘
 
         path = await write_xlsx_export(session, ds, settings.data_dir, path)
         return FileResponse(
             path,
             filename=filename,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            background=BackgroundTask(os.unlink, path),
         )
-    except (OSError, ValueError) as exc:               # 非法单元格/写盘失败 → 清半成品文件后 422，不 500
+    # 非法单元格/写盘失败 → 清半成品文件后 422，不 500。IllegalCharacterError/OverflowError 非 ValueError 子类，
+    # 单元格已在 _xlsx_cell 中和；此处兜底任何未枚举的 openpyxl 非法值，避免逃逸成 500。
+    except (OSError, ValueError, IllegalCharacterError, OverflowError) as exc:
         path.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail="Export failed") from exc
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from zipfile import BadZipFile
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.utils.exceptions import InvalidFileException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,12 +41,14 @@ def dump_manifest(manifest: dict) -> str:
 
 def _dumps_row(row: dict) -> str:
     """canonical 分片行序列化单切口：allow_nan=False 禁止非标准 JSON token；
-    若行内含 NaN/Infinity(CRUD 经 Starlette json.loads 可放进来)，中和为 null 再序列化
-    (与读侧 parse_constant 一致)，保证落盘永不含 NaN/Infinity，任何入口都读得回。"""
+    回退分支同时处理两类非 JSON 原生值：
+      - NaN/Infinity(CRUD 经 Starlette json.loads 放进来) → _finite_only 中和 null(与读侧 parse_constant 一致)；
+      - datetime/date/time/timedelta(openpyxl read_only 读 Excel 日期/时间格返回原生对象) → default=str 串化 ISO 字面量。
+    json.dumps 对前者抛 ValueError、后者抛 TypeError，故两类都接；保证落盘永远是合法可读回的 JSON。"""
     try:
         return json.dumps(row, ensure_ascii=False, allow_nan=False)
-    except ValueError:
-        return json.dumps(_finite_only(row), ensure_ascii=False, allow_nan=False)
+    except (ValueError, TypeError):
+        return json.dumps(_finite_only(row), ensure_ascii=False, allow_nan=False, default=str)
 
 
 def _finite_only(obj):
@@ -295,23 +298,26 @@ async def read_dataset_range(
     # max_chars=None → 默认 agent 预算；max_chars=0 → 关预算(人类分页/范围读取要足额返回)；其余按值。
     char_budget = MAX_AGENT_CHARS if max_chars is None else (max_chars or None)
     used_chars = 0
+    data_count = 0   # 只统计数据行：表头伪行不占 max_rows/字符预算名额
 
     def append_row(row: dict) -> bool:
-        nonlocal used_chars, truncated
-        if max_rows is not None and len(rows) >= max_rows:
+        nonlocal used_chars, truncated, data_count
+        if max_rows is not None and data_count >= max_rows:
             truncated = True
             return False
         size = len(json.dumps(row, ensure_ascii=False))
-        if char_budget is not None and rows and used_chars + size > char_budget:
+        if char_budget is not None and data_count and used_chars + size > char_budget:
             truncated = True
             return False
         rows.append(row)
         used_chars += size
+        data_count += 1
         return True
 
+    # 表头伪行直接入列、不走 append_row：它极小且非数据行，不应占用 max_rows/字符预算名额
+    # (否则范围读恰从表头起、数据行数=行数顶时会静默挤掉最后一条数据行)。
     if ds.header_row is not None and start_row <= ds.header_row <= end_row:
-        if not append_row({"__row_type": "header", "columns": selected}):
-            return _range_payload(ds, start_row, end_row, selected, rows, truncated)
+        rows.append({"__row_type": "header", "columns": selected})
 
     for file_row, row in _iter_dataset_rows(ds, data_dir, start_row=start_row, end_row=end_row):
         if file_row < ds.data_start_row:
@@ -344,7 +350,7 @@ async def write_csv_export(session: AsyncSession, ds: Dataset, data_dir: Path, p
         writer = csv.DictWriter(fh, fieldnames=columns, extrasaction="ignore", lineterminator="\n")
         writer.writeheader()
         for _, row in _iter_dataset_rows(ds, data_dir):
-            writer.writerow(row)
+            writer.writerow({col: _jsonify_nested(row.get(col, "")) for col in columns})
     return path
 
 
@@ -352,6 +358,7 @@ async def write_xlsx_export(session: AsyncSession, ds: Dataset, data_dir: Path, 
     ds = await ensure_dataset_materialized(session, ds, data_dir)
     columns = json.loads(ds.columns_json or "[]")
     path.parent.mkdir(parents=True, exist_ok=True)
+    header = [_xlsx_cell(col) for col in columns]   # 列名也可能带控制字符，同样剔除
     wb = Workbook(write_only=True)
     ws = None
     sheet_no = 0
@@ -360,13 +367,13 @@ async def write_xlsx_export(session: AsyncSession, ds: Dataset, data_dir: Path, 
         if ws is None or sheet_rows >= EXCEL_MAX_DATA_ROWS_PER_SHEET:
             sheet_no += 1
             ws = wb.create_sheet("data" if sheet_no == 1 else f"data_{sheet_no}")
-            ws.append(columns)
+            ws.append(header)
             sheet_rows = 0
         ws.append([_xlsx_cell(row.get(col, "")) for col in columns])
         sheet_rows += 1
     if ws is None:
         ws = wb.create_sheet("data")
-        ws.append(columns)
+        ws.append(header)
     wb.save(path)
     return path
 
@@ -525,10 +532,23 @@ def _cell_to_value(value):
     return "" if value is None else value
 
 
-def _xlsx_cell(value):
-    """openpyxl write_only 写不了 dict/list 单元格(抛 ValueError)：嵌套值序列化成 JSON 串(可往返解析)。"""
+def _jsonify_nested(value):
+    """dict/list 单元格串成 JSON 文本(可往返解析)；其余原样。csv/xlsx 导出共用，保证嵌套单元格两格式一致。"""
     if isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False)
+    return value
+
+
+def _xlsx_cell(value):
+    """xlsx(write_only)单元格容错，避免 openpyxl 在 ws.append 抛错逃逸成 500：
+      - 嵌套 dict/list → JSON 文本；
+      - 字符串里的 XML 非法控制字符(\\x00-\\x08 等) → 剔除(否则抛 IllegalCharacterError)；
+      - 超出 float 表示范围的大整数(>2**1023) → 串化(否则 openpyxl 的 isnan 检查对其 float() 溢出抛 OverflowError)。"""
+    value = _jsonify_nested(value)
+    if isinstance(value, str):
+        return ILLEGAL_CHARACTERS_RE.sub("", value)
+    if isinstance(value, int) and not isinstance(value, bool) and value.bit_length() > 1023:
+        return str(value)
     return value
 
 
