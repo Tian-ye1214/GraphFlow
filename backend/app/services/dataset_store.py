@@ -21,7 +21,9 @@ MAX_JSON_NESTING = 1000
 EXCEL_MAX_DATA_ROWS_PER_SHEET = 1_048_575
 CSV_FIELD_LIMIT = 16 * 1024 * 1024     # 单元格上限放宽到 16MB(默认 128KB 会让长文档行误抛 csv.Error→500)
 # 解析不可信 Excel 二进制可能抛的异常族(损坏/伪造/老 .xls)，统一归一为 ValueError → 上传边界转 422 而非 500。
-_EXCEL_PARSE_ERRORS = (BadZipFile, InvalidFileException, KeyError, OSError, zlib.error)
+# SyntaxError 覆盖「合法 zip 但 sheet XML 截断/畸形」在惰性行迭代时抛的 xml.etree ParseError 与
+# lxml XMLSyntaxError(二者都是 SyntaxError 子类)；此路径无 eval/compile，不会误吞真实语法错误。
+_EXCEL_PARSE_ERRORS = (BadZipFile, InvalidFileException, KeyError, OSError, zlib.error, SyntaxError)
 
 
 def dataset_root(data_dir: Path, user_id: int, dataset_id: int, version: int) -> Path:
@@ -105,6 +107,10 @@ async def _create_excel_datasets(
     shard_size: int,
 ) -> list[Dataset]:
     stem = Path(filename).stem
+    wb = None
+    # 整个解析+写分片包在一个 try：sheet XML 截断既可能在表头 peek 抛、也可能在惰性 iter_rows(写分片时)
+    # 才抛，统一归一 ValueError(→422)；finally 必关 read_only 工作簿，否则它占着源文件句柄，
+    # 失败路径上传层 unlink 会 WinError 32(文件被占用)→500。
     try:
         wb = load_workbook(source_path, read_only=True, data_only=True)
         items: list[tuple[str, list[str], dict, Iterable[dict]]] = []
@@ -119,25 +125,20 @@ async def _create_excel_datasets(
             first = next(records, None)
             if first is not None:
                 items.append((ws.title, headers, first, records))
+        datasets: list[Dataset] = []
+        for sheet_name, headers, first, records in items:
+            name = stem if len(items) == 1 else f"{stem}-{sheet_name}"
+            datasets.append(await _create_one_dataset(
+                session, user_id=user_id, name=name, original_filename=filename,
+                original_format="xlsx", rows=_prepend(first, records), columns=headers,
+                header_row=1, data_start_row=2, data_dir=data_dir, shard_size=shard_size,
+                file_path=str(source_path)))
+        return datasets
     except _EXCEL_PARSE_ERRORS as exc:
         raise ValueError(f"无法解析 Excel: {exc}") from exc
-    datasets: list[Dataset] = []
-    for sheet_name, headers, first, records in items:
-        name = stem if len(items) == 1 else f"{stem}-{sheet_name}"
-        datasets.append(await _create_one_dataset(
-            session, user_id=user_id, name=name, original_filename=filename,
-            original_format="xlsx", rows=_prepend(first, _guard_excel(records)), columns=headers,
-            header_row=1, data_start_row=2, data_dir=data_dir, shard_size=shard_size,
-            file_path=str(source_path)))
-    return datasets
-
-
-def _guard_excel(rows: Iterable[dict]):
-    """包住 openpyxl 惰性行迭代：流式写分片时若深处单元格触发解析异常，归一为 ValueError(→422)。"""
-    try:
-        yield from rows
-    except _EXCEL_PARSE_ERRORS as exc:
-        raise ValueError(f"无法解析 Excel: {exc}") from exc
+    finally:
+        if wb is not None:
+            wb.close()
 
 
 async def _create_one_dataset(
@@ -525,7 +526,7 @@ def _cell_to_value(value):
 
 
 def _xlsx_cell(value):
-    """openpyxl write_only 写不了 dict/list 单元格(抛 ValueError)：嵌套值序列化成 JSON 串(对齐 CSV 行为)。"""
+    """openpyxl write_only 写不了 dict/list 单元格(抛 ValueError)：嵌套值序列化成 JSON 串(可往返解析)。"""
     if isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False)
     return value

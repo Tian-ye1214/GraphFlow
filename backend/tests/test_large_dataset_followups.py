@@ -53,6 +53,34 @@ async def test_corrupt_xlsx_upload_returns_422(auth_client):
     assert r.status_code == 422
 
 
+def _truncated_sheet_xlsx() -> bytes:
+    """合法 zip、但 sheet XML 截断：load_workbook 过得了，惰性 iter_rows 抛 XML ParseError。"""
+    import zipfile
+
+    from openpyxl import Workbook
+
+    buf = BytesIO()
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["a", "b"])
+    ws.append([1, 2])
+    wb.save(buf)
+    src = zipfile.ZipFile(BytesIO(buf.getvalue()))
+    out = BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        for item in src.infolist():
+            data = src.read(item.filename)
+            if item.filename.endswith("sheet1.xml"):
+                data = data[: len(data) // 2]      # 截一半 → 未闭合标签
+            z.writestr(item, data)
+    return out.getvalue()
+
+
+async def test_truncated_sheet_xml_xlsx_returns_422(auth_client):
+    r = await _upload(auth_client, "broken.xlsx", _truncated_sheet_xlsx())
+    assert r.status_code == 422
+
+
 # --- Fix 3: a single >128KB CSV cell is accepted (legit large-text row) -----
 
 async def test_large_csv_cell_uploads(auth_client):
@@ -108,3 +136,32 @@ async def test_rows_page_not_truncated_by_agent_budget(auth_client):
     r = await auth_client.get(f"/api/datasets/{ds['id']}/rows?page=1&page_size=20")
     assert r.status_code == 200
     assert len(r.json()["rows"]) == 20
+
+
+# --- Fix 6 (cont.): an oversized page_size/range is row-capped, not unbounded -
+
+async def test_rows_page_size_is_row_capped(auth_client, monkeypatch):
+    from app.routers import datasets as datasets_router
+
+    monkeypatch.setattr(datasets_router, "MAX_ROWS_PER_REQUEST", 3)
+    content = ("q\n" + "\n".join(f"v{i}" for i in range(10)) + "\n").encode("utf-8")
+    ds = (await _upload(auth_client, "many.csv", content)).json()[0]
+    assert ds["row_count"] == 10
+    r = await auth_client.get(f"/api/datasets/{ds['id']}/rows?page=1&page_size=1000000")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["rows"]) == 3
+    assert body["truncated"] is True
+
+
+async def test_rows_range_is_row_capped(auth_client, monkeypatch):
+    from app.routers import datasets as datasets_router
+
+    monkeypatch.setattr(datasets_router, "MAX_ROWS_PER_REQUEST", 3)
+    content = ("q\n" + "\n".join(f"v{i}" for i in range(10)) + "\n").encode("utf-8")
+    ds = (await _upload(auth_client, "many2.csv", content)).json()[0]
+    r = await auth_client.get(f"/api/datasets/{ds['id']}/rows?start_row=2&end_row=1000000")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["rows"]) == 3
+    assert body["truncated"] is True

@@ -30,6 +30,9 @@ from app.services.file_parse import union_columns
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
 
+# /rows 单请求行数硬上限：人类分页/范围读取已关字符预算，须有行数顶防超大 page_size/范围把整库读进内存。
+MAX_ROWS_PER_REQUEST = 5000
+
 _ILLEGAL_FN = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 
@@ -243,7 +246,8 @@ async def dataset_rows(
             start_row=start_row,
             end_row=end_row,
             columns=_columns_arg(columns),
-            max_chars=0,                 # 人类范围读取：关 agent 字符预算，足额返回所请求的行
+            max_rows=MAX_ROWS_PER_REQUEST,   # 行数顶：超大范围只读上限行并 truncated=True，防整库进内存
+            max_chars=0,                     # 关 agent 字符预算：整页足额，不被 60KB 腰斩
         )
 
     if page < 1 or page_size < 1:
@@ -256,9 +260,10 @@ async def dataset_rows(
         data_dir=settings.data_dir,
         start_row=start,
         end_row=end,
-        max_chars=0,                     # 人类分页：关 agent 字符预算，否则整页被腰斩且尾行翻页不可达
+        max_rows=MAX_ROWS_PER_REQUEST,       # 行数顶：超大 page_size 只读上限行，防整库进内存
+        max_chars=0,                         # 关 agent 字符预算：整页足额，不被 60KB 腰斩且尾行可达
     )
-    return {"total": payload["total"], "rows": payload["rows"]}
+    return {"total": payload["total"], "rows": payload["rows"], "truncated": payload["truncated"]}
 
 
 @router.get("/{ds_id}/export")
