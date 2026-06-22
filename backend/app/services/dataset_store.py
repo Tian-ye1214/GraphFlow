@@ -86,7 +86,7 @@ async def _create_excel_datasets(
             raw_header = next(rows)
         except StopIteration:
             continue
-        headers = [_cell_to_str(v) for v in raw_header]
+        headers = _disambiguate_columns([_cell_to_str(v) for v in raw_header])
         records = _rows_from_values(headers, rows)
         first = next(records, None)
         if first is not None:
@@ -374,10 +374,48 @@ def _iter_dataset_rows(ds: Dataset, data_dir: Path, *,
 
 
 def _iter_csv_rows(path: Path):
-    with path.open(encoding="utf-8-sig", newline="") as fh:
-        reader = csv.DictReader(fh)
-        for row in reader:
-            yield {k: "" if v is None else v for k, v in row.items()}
+    encoding = _detect_text_encoding(path)
+    with path.open(encoding=encoding, newline="") as fh:
+        reader = csv.reader((line.replace("\x00", "") for line in fh))
+        try:
+            raw_headers = next(reader)
+        except StopIteration:
+            return
+        headers = _disambiguate_columns(raw_headers)
+        for values in reader:
+            yield {
+                header: values[i] if i < len(values) and values[i] is not None else ""
+                for i, header in enumerate(headers)
+            }
+
+
+def _detect_text_encoding(path: Path) -> str:
+    with path.open("rb") as fh:
+        head = fh.read(64 * 1024)
+    try:
+        head.decode("utf-8-sig")
+        return "utf-8-sig"
+    except UnicodeDecodeError:
+        return "gbk"
+
+
+def _disambiguate_columns(headers: list[str]) -> list[str]:
+    counts: dict[str, int] = {}
+    out: list[str] = []
+    for header in headers:
+        base = "" if header is None else str(header)
+        if base not in counts:
+            counts[base] = 0
+            out.append(base)
+            continue
+        counts[base] += 1
+        candidate = f"{base}.{counts[base]}"
+        while candidate in counts:
+            counts[base] += 1
+            candidate = f"{base}.{counts[base]}"
+        counts[candidate] = 0
+        out.append(candidate)
+    return out
 
 
 def _iter_jsonl_rows(path: Path):

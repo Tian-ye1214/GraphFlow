@@ -7,10 +7,18 @@ import urllib.parse as urlparse
 import zipfile
 import zlib
 
-from sqlalchemy import insert, select
+from sqlalchemy import select
 
+from app.config import settings
 from app.engine.graph import GraphError, parse_graph, validate_graph
-from app.models import Dataset, DatasetRow, ModelConfig, Prompt, PromptVersion, Workflow, now
+from app.models import Dataset, ModelConfig, Prompt, PromptVersion, Workflow, now
+from app.services.dataset_store import (
+    SHARD_SIZE,
+    _write_shards,
+    dump_manifest,
+    iter_jsonl_lines,
+    visible_total,
+)
 
 PACKAGE_KIND = "graphflow.workflow.package"
 SCHEMA_VERSION = 1
@@ -32,6 +40,7 @@ _SENSITIVE = re.compile(
     r"authorization|cookie|token|secret|key|password|auth|sign|hmac|credential|bearer", re.I)
 # 递归脱敏深度上限：远超任何真实配置嵌套，超出即判脏（防 RecursionError 在导出端逃逸成 500）。
 _MAX_REDACT_DEPTH = 64
+_MAX_MANIFEST_DEPTH = 1000
 
 
 def _is_secret_value(v):
@@ -220,10 +229,9 @@ async def export_package(session, workflow, dest_path):
         zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
         for did in valid_ds:
             with zf.open(f"datasets/{did}.jsonl", "w") as fh:
-                result = await session.stream(select(DatasetRow.data_json).where(
-                    DatasetRow.dataset_id == did).order_by(DatasetRow.idx))
-                async for (data_json,) in result:
-                    fh.write((data_json + "\n").encode("utf-8"))
+                d = await session.get(Dataset, did)
+                async for line in iter_jsonl_lines(session, d, settings.data_dir):
+                    fh.write(line.encode("utf-8"))
 
 
 def _unsafe_name(name):
@@ -277,6 +285,7 @@ def _parse_manifest(zf):
         raise PackageError(f"manifest.json 不是合法 JSON: {e}")
     except RecursionError:
         raise PackageError("manifest 嵌套过深")
+    _reject_deep_manifest(m)
     if not isinstance(m, dict) or m.get("kind") != PACKAGE_KIND:
         raise PackageError("不是 GraphFlow 链路包")
     ver = m.get("schema_version")
@@ -302,6 +311,18 @@ def _parse_manifest(zf):
         if not isinstance(m.get(key, []), list):
             raise PackageError(f"manifest.{key} 必须是数组")
     return m
+
+
+def _reject_deep_manifest(obj) -> None:
+    stack = [(obj, 0)]
+    while stack:
+        current, depth = stack.pop()
+        if depth > _MAX_MANIFEST_DEPTH:
+            raise PackageError("manifest nesting too deep")
+        if isinstance(current, dict):
+            stack.extend((value, depth + 1) for value in current.values())
+        elif isinstance(current, list):
+            stack.extend((value, depth + 1) for value in current)
 
 
 def _loads_row(line):
@@ -336,48 +357,73 @@ def _require_id(item, kind):
 
 
 async def _create_dataset_streaming(session, zf, dmeta, user_id):
-    """从 zip 内 jsonl 流式建数据集（批量插入，bound 内存）；行类型保真。返回新 id。"""
-    ds = Dataset(user_id=user_id, name=str(dmeta.get("name", "")), source="upload",
-                 original_filename=str(dmeta.get("original_filename", "")),
-                 columns_json=json.dumps(dmeta.get("columns") or [], ensure_ascii=False), row_count=0)
+    """从 zip 内 jsonl 流式建数据集（分片落盘，SQLite 仅存元数据）。返回新 id。"""
+    ds = Dataset(
+        user_id=user_id,
+        name=str(dmeta.get("name", "")),
+        source="upload",
+        original_filename=str(dmeta.get("original_filename", "")),
+        original_format="jsonl",
+        columns_json=json.dumps(dmeta.get("columns") or [], ensure_ascii=False),
+        row_count=0,
+        status="importing",
+        header_row=None,
+        data_start_row=1,
+        total_rows_including_header=0,
+    )
     session.add(ds)
     await session.flush()
-    fname = dmeta.get("file")
-    count, read_bytes, batch = 0, 0, []
-    if isinstance(fname, str) and fname:
-        if _unsafe_name(fname):
-            raise PackageError(f"非法数据集路径: {fname}")
-        try:
-            handle = zf.open(fname)
-        except KeyError:
-            raise PackageError(f"包内缺少数据集文件 {fname}")
-        except _READ_ERRORS as e:
-            raise PackageError(f"读取数据集 {fname} 失败: {e}")
-        try:
-            # utf-8-sig 容 BOM；非 UTF-8/损坏流在迭代时抛 _READ_ERRORS → 422（不可信包不得 500）
-            with handle:
-                for raw in io.TextIOWrapper(handle, encoding="utf-8-sig"):
-                    read_bytes += len(raw.encode("utf-8"))     # 按字节计，多字节内容不绕过上限
-                    if read_bytes > MAX_TOTAL_UNCOMPRESSED:
-                        raise PackageError("数据集解压超限")
-                    line = raw.strip()
-                    if not line:
-                        continue
-                    obj = _loads_row(line)
-                    if not isinstance(obj, dict):
-                        raise PackageError(f"数据集 {fname} 第 {count + 1} 行不是 JSON 对象")
-                    batch.append({"dataset_id": ds.id, "idx": count,
-                                  "data_json": json.dumps(obj, ensure_ascii=False)})
-                    count += 1
-                    if len(batch) >= 1000:
-                        await session.execute(insert(DatasetRow), batch)
-                        batch = []
-        except _READ_ERRORS as e:
-            raise PackageError(f"读取数据集 {fname} 失败: {e}")
-        if batch:
-            await session.execute(insert(DatasetRow), batch)
+    rows = _iter_package_dataset_rows(zf, dmeta.get("file"))
+    manifest, columns, count = _write_shards(
+        rows,
+        data_dir=settings.data_dir,
+        user_id=user_id,
+        dataset_id=ds.id,
+        version=ds.version,
+        shard_size=SHARD_SIZE,
+        columns=dmeta.get("columns") or [],
+        header_row=None,
+        data_start_row=1,
+    )
+    manifest["original_format"] = "jsonl"
+    ds.manifest_json = dump_manifest(manifest)
+    ds.columns_json = json.dumps(columns, ensure_ascii=False)
     ds.row_count = count
+    ds.imported_rows = count
+    ds.total_rows_including_header = visible_total(count, None)
+    ds.status = "ready"
     return ds.id
+
+
+def _iter_package_dataset_rows(zf, fname):
+    if not isinstance(fname, str) or not fname:
+        return
+    if _unsafe_name(fname):
+        raise PackageError(f"非法数据集路径: {fname}")
+    try:
+        handle = zf.open(fname)
+    except KeyError:
+        raise PackageError(f"包内缺少数据集文件 {fname}")
+    except _READ_ERRORS as e:
+        raise PackageError(f"读取数据集 {fname} 失败: {e}")
+    count, read_bytes = 0, 0
+    try:
+        # utf-8-sig 容 BOM；非 UTF-8/损坏流在迭代时抛 _READ_ERRORS → 422（不可信包不得 500）。
+        with handle:
+            for raw in io.TextIOWrapper(handle, encoding="utf-8-sig"):
+                read_bytes += len(raw.encode("utf-8"))     # 按字节计，多字节内容不绕过上限。
+                if read_bytes > MAX_TOTAL_UNCOMPRESSED:
+                    raise PackageError("数据集解压超限")
+                line = raw.strip()
+                if not line:
+                    continue
+                obj = _loads_row(line)
+                if not isinstance(obj, dict):
+                    raise PackageError(f"数据集 {fname} 第 {count + 1} 行不是 JSON 对象")
+                count += 1
+                yield obj
+    except _READ_ERRORS as e:
+        raise PackageError(f"读取数据集 {fname} 失败: {e}")
 
 
 def _remap(old, mapping, node_id, kind, report):

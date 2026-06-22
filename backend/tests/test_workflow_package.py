@@ -5,8 +5,10 @@ import zipfile
 import pytest
 
 import app.services.workflow_package as wp
+from app.config import settings
 from app.engine.graph import parse_graph
 from app.models import (Dataset, DatasetRow, ModelConfig, Prompt, PromptVersion, User, Workflow)
+from app.services.dataset_store import iter_jsonl_lines
 
 
 # ---------------- Task 1: 纯函数 ----------------
@@ -89,6 +91,10 @@ async def _seed_workflow(session_factory):
         wf = Workflow(user_id=u.id, name="链路A", graph_json=json.dumps(graph, ensure_ascii=False))
         s.add(wf); await s.commit()
         return u.id, wf.id
+
+
+async def _read_dataset_rows(session, dataset):
+    return [json.loads(line) async for line in iter_jsonl_lines(session, dataset, settings.data_dir)]
 
 
 async def test_export_package_self_contained_no_key_redacted(session_factory, tmp_path):
@@ -210,9 +216,7 @@ async def test_import_roundtrip_cross_tenant_reuse_and_create(session_factory, t
         inn = next(n for n in g["nodes"] if n["id"] == "in")
         did = inn["config"]["dataset_ids"][0]
         nd = await s.get(Dataset, did); assert nd.user_id == uid_b and nd.row_count == 2
-        rows = (await s.execute(select(DatasetRow.data_json).where(
-            DatasetRow.dataset_id == did).order_by(DatasetRow.idx))).all()
-        assert [json.loads(r[0]) for r in rows] == [{"q": "007"}, {"q": "你好"}]   # 行保真
+        assert await _read_dataset_rows(s, nd) == [{"q": "007"}, {"q": "你好"}]   # 行保真
     assert report["models_reused"] and report["datasets_created"] and report["prompts_created"]
     assert report["secrets_need_refill"] == [{"node_id": "h", "field": "Authorization"}]
 
@@ -389,9 +393,8 @@ async def test_import_bom_dataset_ok(session_factory, tmp_path):
     async with session_factory() as s:
         from sqlalchemy import select
         d = (await s.execute(select(Dataset).where(Dataset.user_id == uid))).scalars().first()
-        rows = (await s.execute(select(DatasetRow.data_json).where(
-            DatasetRow.dataset_id == d.id))).all()
-    assert [json.loads(r[0]) for r in rows] == [{"q": "甲"}]   # BOM 被容错剥除
+        rows = await _read_dataset_rows(s, d)
+    assert rows == [{"q": "甲"}]   # BOM 被容错剥除
 
 
 async def test_import_dirty_graph_shape_is_422(session_factory, tmp_path):
@@ -598,8 +601,6 @@ async def test_import_same_name_distinct_resources_not_folded(session_factory, t
         assert d1 != d2          # 两节点指向不同数据集（未折叠）
         rows = {}
         for did in (d1, d2):
-            r = (await s.execute(select(DatasetRow.data_json).where(
-                DatasetRow.dataset_id == did))).all()
-            rows[did] = [json.loads(x[0]) for x in r]
+            rows[did] = await _read_dataset_rows(s, await s.get(Dataset, did))
         assert sorted(v[0]["q"] for v in rows.values()) == ["a", "b"]   # 两份数据都在，无吞
 
