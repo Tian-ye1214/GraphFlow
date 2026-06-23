@@ -57,6 +57,39 @@ async def test_export_oserror_degrades_422(auth_client, session_factory, monkeyp
     assert e.status_code == 422
 
 
+async def test_create_sample_datasets(auth_client):
+    """一键样本：返回与 /upload 同形列表、均为 ready，且 /rows、/export 可正常读取。"""
+    r = await auth_client.post("/api/datasets/sample")
+    assert r.status_code == 200
+    samples = r.json()
+    assert len(samples) == 2
+    by = {s["name"]: s for s in samples}
+    assert set(by) == {"示例-中文短句", "示例-待分类评论"}
+    for s in samples:
+        assert s["status"] == "ready" and s["row_count"] == 20
+        assert {"id", "name", "row_count", "columns", "status"} <= set(s)
+    assert by["示例-中文短句"]["columns"] == ["q"]
+    assert by["示例-待分类评论"]["columns"] == ["text"]
+    # /rows 读得到内容
+    sid = by["示例-中文短句"]["id"]
+    rows = (await auth_client.get(f"/api/datasets/{sid}/rows?page=1&page_size=5")).json()
+    assert rows["total"] == 20 and len(rows["rows"]) == 5 and "q" in rows["rows"][0]
+    # /export 读得到内容
+    import json as _json
+    exp = await auth_client.get(f"/api/datasets/{sid}/export", params={"format": "jsonl"})
+    assert exp.status_code == 200
+    lines = [l for l in exp.text.splitlines() if l]
+    assert len(lines) == 20 and "q" in _json.loads(lines[0])
+    # 列在自己账号下，列表能看到
+    assert len((await auth_client.get("/api/datasets")).json()) == 2
+
+
+async def test_sample_datasets_isolated_per_user(auth_client):
+    await auth_client.post("/api/datasets/sample")
+    await auth_client.post("/api/auth/login", json={"username": "other_sample"})
+    assert (await auth_client.get("/api/datasets")).json() == []
+
+
 async def test_upload_single(auth_client):
     r = await upload(auth_client, ("种子.jsonl", JSONL))
     assert r.status_code == 200

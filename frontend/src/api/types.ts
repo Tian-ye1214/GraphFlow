@@ -15,6 +15,8 @@ export interface ModelConfig {
 export interface Dataset {
   id: number; name: string; source: string; original_filename: string
   row_count: number; columns: string[]; created_at: string
+  status: string; imported_rows: number; import_error: string
+  total_rows_including_header: number
 }
 
 export interface WorkflowSummary { id: number; name: string; updated_at: string }
@@ -31,7 +33,7 @@ export interface NodeState { node_id: string; status: string; total: number; don
 export interface Run {
   id: number; workflow_id: number; workflow_name: string; status: string; error: string
   stats: { prompt_tokens?: number; completion_tokens?: number }
-  created_at: string; finished_at: string | null
+  created_at: string; started_at: string | null; finished_at: string | null
 }
 export interface RunDetail extends Run { graph: WorkflowGraph; node_states: NodeState[] }
 export interface RowsPage { total: number; rows: Record<string, any>[] }
@@ -91,6 +93,8 @@ export type ColumnsMap = Record<string, { input: string[]; output: string[] }>
 export interface RunLogEntry { created_at: string; node_id: string; level: string; message: string }
 
 export interface QcFailureEntry { node_id: string; sample: Record<string, any>; reasons: { model_config_id: number; status: string; reason: string }[]; created_at: string }
+
+export interface QcMetric { node_id: string; total: number; first_round_pass: number; first_round_rate: number }
 
 export interface PromptSummary {
   id: number; name: string; description: string; latest_version: number; variables: string[]

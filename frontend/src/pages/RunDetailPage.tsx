@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Card, Popconfirm, Progress, Select, Space, Table, Tabs, Tag, message } from 'antd'
+import { Alert, Button, Card, Popconfirm, Progress, Select, Space, Statistic, Table, Tabs, Tag, message } from 'antd'
 import { useParams } from 'react-router-dom'
 import { api, triggerDownload } from '../api/client'
 import { useEvents } from '../api/events'
-import type { ModelLogEntry, NodeState, QcFailureEntry, RowsPage, RunDetail, RunLogEntry } from '../api/types'
+import type { ModelLogEntry, NodeState, QcFailureEntry, QcMetric, RowsPage, RunDetail, RunLogEntry } from '../api/types'
 import { formatRunLog } from './runLog'
 import { NODE_LABELS } from '../canvas/serialize'
 import { STATUS_COLORS, STATUS_LABELS } from './RunsPage'
-import { renderCell } from '../utils'
+import { fmtDuration, renderCell } from '../utils'
 
 const ACTIVE = ['queued', 'running']
 
@@ -22,6 +22,7 @@ export default function RunDetailPage() {
   const [format, setFormat] = useState('jsonl')
   const [logs, setLogs] = useState<RunLogEntry[]>([])
   const [qcFailures, setQcFailures] = useState<QcFailureEntry[]>([])
+  const [qcMetrics, setQcMetrics] = useState<QcMetric[]>([])
   const [modelLogs, setModelLogs] = useState<ModelLogEntry[]>([])
   const refreshLogs = useCallback(
     () => api.get<RunLogEntry[]>(`/api/runs/${id}/logs`).then(setLogs), [id])
@@ -69,6 +70,7 @@ export default function RunDetailPage() {
   }, [id, node, page, failedPage])
   const refreshAux = useCallback(() => {
     void api.get<QcFailureEntry[]>(`/api/runs/${id}/qc-failures`).then(setQcFailures)
+    void api.get<QcMetric[]>(`/api/runs/${id}/qc-metrics`).then(setQcMetrics)
     void api.get<ModelLogEntry[]>(`/api/runs/${id}/model-logs`).then(setModelLogs)
   }, [id])
   useEffect(() => { if (run) refreshRows() }, [run?.status, refreshRows])
@@ -101,6 +103,7 @@ export default function RunDetailPage() {
       <Space style={{ marginBottom: 16 }} wrap>
         <h3 style={{ margin: 0 }}>运行 #{run.id}（{run.workflow_name}）</h3>
         <Tag color={STATUS_COLORS[run.status]}>{STATUS_LABELS[run.status] ?? run.status}</Tag>
+        <span>时长：{fmtDuration(run.started_at, run.finished_at)}</span>
         <span>Token：{(run.stats.prompt_tokens ?? 0) + (run.stats.completion_tokens ?? 0)}</span>
         {isActive && (
           <Popconfirm title="确认取消？" onConfirm={async () => { await api.post(`/api/runs/${id}/cancel`); message.success('已请求取消'); await refresh() }}>
@@ -136,6 +139,15 @@ export default function RunDetailPage() {
                       status={s.failed > 0 ? 'exception' : s.status === 'done' ? 'success' : 'active'} />
             <div style={{ fontSize: 13 }}>{s.done}/{s.total}
               {s.failed > 0 && <span style={{ color: '#ff4d4f' }}>（失败 {s.failed}）</span>}</div>
+            {!isActive && s.failed > 0 && (
+              <Button size="small" style={{ marginTop: 6 }}
+                      onClick={async () => {
+                        await api.post(`/api/runs/${id}/rerun-failed?node_id=${encodeURIComponent(s.node_id)}`)
+                        message.success('该节点失败行已重新入队'); await refresh()
+                      }}>
+                重跑本节点失败行
+              </Button>
+            )}
           </Card>
         ))}
       </Space>
@@ -150,6 +162,24 @@ export default function RunDetailPage() {
           {!logs.length && <span style={{ color: '#999' }}>暂无日志</span>}
         </div>
       </Card>
+      {qcMetrics.length > 0 && (
+        <Card size="small" title="质检记分卡" style={{ marginBottom: 16 }}>
+          <Space wrap size="large">
+            {qcMetrics.map((m) => {
+              const pct = Math.round(m.first_round_rate * 100)
+              return (
+                <Card key={m.node_id} size="small" style={{ width: 240 }}>
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>{nodeLabel(m.node_id)}</div>
+                  <Statistic title="首轮通过率" value={pct} suffix="%" />
+                  <Progress percent={pct} size="small" status={pct === 100 ? 'success' : 'normal'} />
+                  <div style={{ fontSize: 13 }}>通过 {m.first_round_pass} / 共 {m.total}
+                    （不通过 {m.total - m.first_round_pass}）</div>
+                </Card>
+              )
+            })}
+          </Space>
+        </Card>
+      )}
       {qcFailures.length > 0 && (
         <Card size="small" title={`质检失败样本（${qcFailures.length}）`} style={{ marginBottom: 16 }}
               extra={<Button size="small" onClick={() => window.open(`/api/runs/${id}/qc-failures.jsonl`)}>

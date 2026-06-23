@@ -100,7 +100,7 @@ function Canvas() {
     setNodes((ns) => ns.map((n) => (n.id === selectedId ? { ...n, data: { config } } : n)))
 
   return (
-    <div style={{ height: 'calc(100vh - 48px)' }}>
+    <div style={{ height: 'calc(100vh - 48px)', position: 'relative' }}>
       {cliChanged && (
         <Alert
           type="info" showIcon style={{ marginBottom: 8 }}
@@ -125,6 +125,21 @@ function Canvas() {
         <Background />
         <Controls />
       </ReactFlow>
+      {nodes.length === 0 && (
+        <div style={{
+          position: 'absolute', top: '46%', left: '50%', transform: 'translate(-50%, -50%)',
+          textAlign: 'center', color: '#8c8c8c', pointerEvents: 'none', zIndex: 5, maxWidth: 480,
+        }}>
+          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 10 }}>空白画布 · 从这里开始</div>
+          <div style={{ lineHeight: 2 }}>
+            ① 上方点「+ 输入」，在右侧选数据集<br />
+            ② 点「+ LLM 合成」，写提示词、选模型<br />
+            ③ 点「+ 输出」<br />
+            ④ 依次连线 输入 → 合成 → 输出，再点「运行」
+          </div>
+          <div style={{ marginTop: 10, fontSize: 12 }}>提示：质检节点的「回扫」边需从质检节点连出</div>
+        </div>
+      )}
       <Drawer
         title={selected ? `${NODE_LABELS[selected.type as keyof typeof NODE_LABELS]}（${selected.id}）` : ''}
         open={!!selected} onClose={() => setSelectedId(null)} width={440} mask={false}

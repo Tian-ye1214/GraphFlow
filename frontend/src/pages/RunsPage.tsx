@@ -4,6 +4,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
 import type { Run } from '../api/types'
 import { useEvents } from '../api/events'
+import { fmtDuration } from '../utils'
 
 export const STATUS_COLORS: Record<string, string> = {
   queued: 'default', running: 'processing', completed: 'success',
@@ -49,6 +50,7 @@ export default function RunsPage() {
           { title: '状态', dataIndex: 'status', render: (s: string) => <Tag color={STATUS_COLORS[s]}>{STATUS_LABELS[s] ?? s}</Tag> },
           { title: 'Token 用量', dataIndex: 'stats', render: (s: Run['stats']) => (s.prompt_tokens ?? 0) + (s.completion_tokens ?? 0) },
           { title: '创建时间', dataIndex: 'created_at' },
+          { title: '时长', key: 'dur', render: (_: unknown, r: Run) => fmtDuration(r.started_at, r.finished_at) },
           { title: '结束时间', dataIndex: 'finished_at' },
           {
             title: '操作', key: 'act',

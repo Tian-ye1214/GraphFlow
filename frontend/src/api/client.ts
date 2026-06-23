@@ -46,6 +46,14 @@ export function triggerDownload(blob: Blob, name: string): void {
   URL.revokeObjectURL(url)
 }
 
+// 数据集导出：直接用 <a href> 指向导出端点触发下载，由浏览器流式落盘（不经 blob 进内存，
+// 对 1-10G 大数据集友好）；服务端的 Content-Disposition 决定文件名。
+export function downloadDatasetExport(id: number, format: string): void {
+  const a = document.createElement('a')
+  a.href = `/api/datasets/${id}/export?format=${encodeURIComponent(format)}`
+  a.click()
+}
+
 // 链路导出：取 zip blob 触发浏览器下载（绕开 api.request 的 res.json()）。
 export async function downloadWorkflowPackage(id: number, fallback: string): Promise<void> {
   const res = await fetch(`/api/workflows/${id}/export`)

@@ -25,3 +25,24 @@ async def test_user_isolation(auth_client):
     await auth_client.post("/api/auth/login", json={"username": "other"})
     assert (await auth_client.get("/api/workflows")).json() == []
     assert (await auth_client.get(f"/api/workflows/{wf['id']}")).status_code == 404
+
+
+async def test_duplicate_workflow(auth_client):
+    wf = (await auth_client.post("/api/workflows", json={"name": "原流"})).json()
+    await auth_client.put(f"/api/workflows/{wf['id']}", json={"graph": GRAPH})
+    dup = (await auth_client.post(f"/api/workflows/{wf['id']}/duplicate")).json()
+    assert dup["id"] != wf["id"]
+    assert dup["name"] == "原流 副本"
+    assert dup["graph"]["nodes"][0]["id"] == "n1"           # 图被完整克隆
+    # 同形返回 + 列表里两条独立工作流
+    assert {"id", "name", "graph", "updated_at"} <= set(dup)
+    assert len((await auth_client.get("/api/workflows")).json()) == 2
+    # 重名递增
+    dup2 = (await auth_client.post(f"/api/workflows/{wf['id']}/duplicate")).json()
+    assert dup2["name"] == "原流 副本 2"
+
+
+async def test_duplicate_workflow_foreign_404(auth_client):
+    wf = (await auth_client.post("/api/workflows", json={"name": "私有"})).json()
+    await auth_client.post("/api/auth/login", json={"username": "thief"})
+    assert (await auth_client.post(f"/api/workflows/{wf['id']}/duplicate")).status_code == 404

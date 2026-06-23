@@ -70,6 +70,9 @@ def _run_out(run: Run, workflow_name: str = "") -> dict:
         "id": run.id, "workflow_id": run.workflow_id, "workflow_name": workflow_name,
         "status": run.status, "error": run.error, "stats": json.loads(run.stats_json),
         "created_at": run.created_at.isoformat(),
+        # started_at/finished_at 暴露给前端算「运行时长」：started 落在真正开跑、finished 落在收尾，
+        # 二者皆可能为 None（排队中/运行中）。created_at 始终有，作时长兜底基准。
+        "started_at": run.started_at.isoformat() if run.started_at else None,
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
     }
 
@@ -223,24 +226,36 @@ async def cancel_run(run_id: int, user: User = Depends(get_current_user),
 
 
 @router.post("/{run_id}/rerun-failed")
-async def rerun_failed(run_id: int, user: User = Depends(get_current_user),
+async def rerun_failed(run_id: int, node_id: str | None = None,
+                       user: User = Depends(get_current_user),
                        session: AsyncSession = Depends(get_session)):
     run = await _get_owned_run(run_id, user, session)
     if run.status not in ("completed", "failed", "cancelled"):
         raise HTTPException(status_code=409, detail="运行尚未结束")
-    failed_nodes = (await session.execute(
-        select(RunRow.node_id).where(RunRow.run_id == run.id, RunRow.status == "failed")
-        .distinct())).scalars().all()
-    if not failed_nodes:
-        raise HTTPException(status_code=409, detail="没有失败行")
     ver = await session.get(WorkflowVersion, run.workflow_version_id)
     graph = parse_graph(ver.graph_json)
+    # 传 node_id：只重跑该节点及其下游 descendants 的失败行（scope 圈定范围）；不传：全部失败节点（原行为）。
+    scope: set[str] | None = None
+    if node_id is not None:
+        if node_id not in {n.id for n in graph.nodes}:
+            raise HTTPException(status_code=404, detail="节点不在该运行的图中")
+        scope = {node_id} | descendants(graph, node_id)
+    failed_stmt = select(RunRow.node_id).where(
+        RunRow.run_id == run.id, RunRow.status == "failed").distinct()
+    if scope is not None:
+        failed_stmt = failed_stmt.where(RunRow.node_id.in_(scope))
+    failed_nodes = (await session.execute(failed_stmt)).scalars().all()
+    if not failed_nodes:
+        raise HTTPException(status_code=409, detail="没有失败行")
     reset_targets: set[str] = set()
     for nid in failed_nodes:
         reset_targets |= descendants(graph, nid)
-    await session.execute(update(RunRow).where(
-        RunRow.run_id == run.id, RunRow.status == "failed"
-    ).values(status="pending", error=""))
+    if scope is not None:                       # 限定 node_id 时只重算其下游，不波及域外节点
+        reset_targets &= scope
+    reset_failed = update(RunRow).where(RunRow.run_id == run.id, RunRow.status == "failed")
+    if scope is not None:
+        reset_failed = reset_failed.where(RunRow.node_id.in_(scope))
+    await session.execute(reset_failed.values(status="pending", error=""))
     if reset_targets:
         await session.execute(sa_delete(RunRow).where(
             RunRow.run_id == run.id, RunRow.node_id.in_(reset_targets)))

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Button, Input, Modal, Popconfirm, Space, Table, message } from 'antd'
+import { Button, Empty, Input, Modal, Popconfirm, Space, Table, message } from 'antd'
 import { Link } from 'react-router-dom'
 import { api, ApiError, downloadWorkflowPackage } from '../api/client'
 import type { ImportResult, WorkflowSummary } from '../api/types'
@@ -37,6 +37,16 @@ export default function WorkflowsPage() {
     }
   }
 
+  const duplicate = async (id: number) => {
+    try {
+      await api.post(`/api/workflows/${id}/duplicate`)
+      message.success('已复制为副本')
+      await reload()
+    } catch (err) {
+      message.error(err instanceof ApiError ? err.message : '复制失败')
+    }
+  }
+
   const onPickFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     e.target.value = '' // 复位，同一文件可再次选择
@@ -63,6 +73,13 @@ export default function WorkflowsPage() {
       <Table
         rowKey="id"
         dataSource={list}
+        locale={{
+          emptyText: (
+            <Empty description="还没有工作流">
+              <Button type="primary" onClick={() => setCreating(true)}>新建工作流</Button>
+            </Empty>
+          ),
+        }}
         columns={[
           { title: '名称', dataIndex: 'name', render: (v, wf) => <Link to={`/workflows/${wf.id}/canvas`}>{v}</Link> },
           { title: '更新时间', dataIndex: 'updated_at' },
@@ -72,6 +89,7 @@ export default function WorkflowsPage() {
               <Space>
                 <Link to={`/workflows/${wf.id}/canvas`}>编辑</Link>
                 <Link to={`/runs?workflow_id=${wf.id}`}>运行记录</Link>
+                <a onClick={() => void duplicate(wf.id)}>复制</a>
                 <a onClick={() => void exportWf(wf.id, wf.name)}>导出</a>
                 <Popconfirm title="确认删除？" onConfirm={async () => { await api.del(`/api/workflows/${wf.id}`); await reload() }}>
                   <a>删除</a>

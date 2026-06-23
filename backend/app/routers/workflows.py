@@ -71,6 +71,25 @@ async def get_workflow(wf_id: int, user: User = Depends(get_current_user),
     return _out(await get_owned_workflow(wf_id, user, session))
 
 
+@router.post("/{wf_id}/duplicate")
+async def duplicate_workflow(wf_id: int, user: User = Depends(get_current_user),
+                             session: AsyncSession = Depends(get_session)):
+    # 同用户克隆：直接复制 graph_json，图内对模型/提示词/数据集的 id 引用仍归属本人 → 无需重写。
+    src = await get_owned_workflow(wf_id, user, session)
+    existing = set((await session.execute(
+        select(Workflow.name).where(Workflow.user_id == user.id))).scalars().all())
+    name = f"{src.name} 副本"
+    i = 2
+    while name in existing:
+        name = f"{src.name} 副本 {i}"
+        i += 1
+    wf = Workflow(user_id=user.id, name=name, graph_json=src.graph_json)
+    session.add(wf)
+    await session.commit()
+    publish(user.id, "workflow", wf.id)
+    return _out(wf)
+
+
 @router.get("/{wf_id}/columns")
 async def workflow_columns(wf_id: int, user: User = Depends(get_current_user),
                            session: AsyncSession = Depends(get_session)):

@@ -39,6 +39,30 @@ MAX_ROWS_PER_REQUEST = 5000
 
 SUPPORTED_SUFFIXES = {".csv", ".jsonl", ".json", ".xlsx", ".xls"}
 
+# 内置小样本：一键给新用户灌入可立即跑的演示数据，不依赖任何外部文件。
+# 走 create_dataset 内存路径建成 ready（数据极小），/rows、/export 首读时由 ensure_dataset_materialized 落分片。
+SAMPLE_DATASETS: list[tuple[str, list[dict]]] = [
+    ("示例-中文短句", [{"q": s} for s in [
+        "今天天气怎么样", "帮我写一首关于春天的诗", "什么是机器学习",
+        "推荐几本科幻小说", "如何提高睡眠质量", "解释一下相对论",
+        "用一句话介绍北京", "番茄炒蛋怎么做", "为什么天空是蓝色的",
+        "如何缓解工作压力", "介绍一下长城的历史", "怎样学好英语",
+        "什么是区块链", "推荐一部好看的电影", "如何养成阅读习惯",
+        "光合作用的原理是什么", "怎么挑选一台笔记本电脑", "简述唐朝的兴衰",
+        "如何制定健身计划", "什么是人工智能"]]),
+    ("示例-待分类评论", [{"text": s} for s in [
+        "这家餐厅的菜真好吃，下次还来", "服务态度太差了，再也不来了",
+        "物流速度很快，包装也很好", "质量一般，跟描述不太一样",
+        "性价比超高，强烈推荐", "用了一周就坏了，很失望",
+        "客服很耐心，解决了我的问题", "价格偏贵，但东西确实不错",
+        "发货太慢了，等了半个月", "颜色和图片有色差，有点难受",
+        "手感很棒，做工精细", "完全是智商税，不要买",
+        "界面简洁，操作流畅", "广告太多，体验很差",
+        "音质出乎意料地好", "电池续航很拉胯",
+        "包装精美，适合送礼", "拍照效果一般般",
+        "性能强劲，玩游戏很爽", "系统经常卡顿，闹心"]]),
+]
+
 _ILLEGAL_FN = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 
@@ -244,6 +268,20 @@ async def upload(
                                   version=ds.version, user_id=user.id, session_factory=factory)
             results.append(_out(ds))
             publish(user.id, "dataset", ds.id)
+    return results
+
+
+@router.post("/sample")
+async def create_sample_datasets(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    # 一键注入内置示例数据集，返回与 /upload 同形的列表（每份均为 ready，可立即 /rows、/export、入图运行）。
+    results = []
+    for name, rows in SAMPLE_DATASETS:
+        ds = await create_dataset(session, user.id, name, rows, source="upload")
+        results.append(_out(ds))
+        publish(user.id, "dataset", ds.id)
     return results
 
 

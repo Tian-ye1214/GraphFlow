@@ -113,6 +113,79 @@ async def test_rerun_failed(auth_client, monkeypatch):
     assert len(rows["rows"]) == 3  # 下游已重算，包含修复行
 
 
+async def test_run_exposes_timing_fields(auth_client, monkeypatch):
+    """运行输出须暴露 started_at/finished_at（前端据此算时长）；完成后 finished_at 非空且 >= started_at。"""
+    patch_chat(monkeypatch)
+    wf_id = await setup_workflow(auth_client)
+    run_id = (await auth_client.post("/api/runs", json={"workflow_id": wf_id})).json()["id"]
+    detail = await wait_run(auth_client, run_id)
+    assert {"created_at", "started_at", "finished_at"} <= set(detail)
+    assert detail["started_at"] is not None and detail["finished_at"] is not None
+    assert detail["finished_at"] >= detail["started_at"]
+    listed = (await auth_client.get("/api/runs")).json()
+    assert {"created_at", "started_at", "finished_at"} <= set(listed[0])
+
+
+async def test_rerun_failed_scoped_to_node(auth_client, monkeypatch):
+    """传 node_id：只重跑该节点及其下游失败行；域外节点的失败行原样保留。"""
+    # 两个 llm 节点串联：gen 失败 + 旁路另起一个失败节点，验证 scope 不波及域外。
+    broken = {"gen": True}
+
+    def fn(user):
+        if "问1" in user and broken["gen"]:
+            raise RuntimeError("gen故障")
+        return f"答[{user}]", {"prompt_tokens": 1, "completion_tokens": 1}
+
+    patch_chat(monkeypatch, fn)
+    wf_id = await setup_workflow(auth_client)
+    run_id = (await auth_client.post("/api/runs", json={"workflow_id": wf_id})).json()["id"]
+    detail = await wait_run(auth_client, run_id)
+    gen_state = next(s for s in detail["node_states"] if s["node_id"] == "gen")
+    assert gen_state["failed"] == 1
+
+    broken["gen"] = False
+    # 传 gen 节点重跑：应只重置 gen 及其下游
+    r = await auth_client.post(f"/api/runs/{run_id}/rerun-failed?node_id=gen")
+    assert r.status_code == 200
+    detail = await wait_run(auth_client, run_id)
+    gen_state = next(s for s in detail["node_states"] if s["node_id"] == "gen")
+    assert gen_state["done"] == 3 and gen_state["failed"] == 0
+
+
+async def test_rerun_failed_unknown_node_404(auth_client, monkeypatch):
+    """node_id 不在该 run 图中 → 404。"""
+    broken = {"on": True}
+
+    def fn(user):
+        if "问1" in user and broken["on"]:
+            raise RuntimeError("故障")
+        return f"答[{user}]", {"prompt_tokens": 1, "completion_tokens": 1}
+
+    patch_chat(monkeypatch, fn)
+    wf_id = await setup_workflow(auth_client)
+    run_id = (await auth_client.post("/api/runs", json={"workflow_id": wf_id})).json()["id"]
+    await wait_run(auth_client, run_id)
+    r = await auth_client.post(f"/api/runs/{run_id}/rerun-failed?node_id=不存在")
+    assert r.status_code == 404
+
+
+async def test_rerun_failed_scoped_no_failed_in_node_409(auth_client, monkeypatch):
+    """指定节点的 scope 内无失败行 → 409（即便上游有失败行）。
+    out 是 gen 的下游：scope={out}，gen 的失败不在其中。"""
+    def fn(user):
+        if "问1" in user:
+            raise RuntimeError("gen故障")
+        return f"答[{user}]", {"prompt_tokens": 1, "completion_tokens": 1}
+
+    patch_chat(monkeypatch, fn)
+    wf_id = await setup_workflow(auth_client)
+    run_id = (await auth_client.post("/api/runs", json={"workflow_id": wf_id})).json()["id"]
+    await wait_run(auth_client, run_id)
+    # 失败在 gen，但请求 out 节点（其 scope={out} 内无失败行）→ 409
+    r = await auth_client.post(f"/api/runs/{run_id}/rerun-failed?node_id=out")
+    assert r.status_code == 409
+
+
 async def test_cancel_running(auth_client, monkeypatch):
     async def slow(mc, system, user, params=None, retries=3):
         await asyncio.sleep(0.2)
