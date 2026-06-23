@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Card, Popconfirm, Progress, Select, Space, Statistic, Table, Tabs, Tag, message } from 'antd'
+import { Alert, Button, Card, Collapse, Drawer, Popconfirm, Progress, Select, Space, Spin, Statistic, Table, Tabs, Tag, message } from 'antd'
 import { useParams } from 'react-router-dom'
 import { api, triggerDownload } from '../api/client'
 import { useEvents } from '../api/events'
-import type { ModelLogEntry, NodeState, QcFailureEntry, QcMetric, RowsPage, RunDetail, RunLogEntry } from '../api/types'
+import type { AgentSessionSummary, ModelLogEntry, NodeState, QcFailureEntry, QcMetric, RowsPage, RunDetail, RunLogEntry, TraceDetail, TraceEvent } from '../api/types'
 import { formatRunLog } from './runLog'
 import { NODE_LABELS } from '../canvas/serialize'
 import { STATUS_COLORS, STATUS_LABELS } from './RunsPage'
 import { fmtDuration, renderCell } from '../utils'
 
 const ACTIVE = ['queued', 'running']
+
+function compactJson(value: unknown) {
+  return JSON.stringify(value, null, 2)
+}
 
 export default function RunDetailPage() {
   const { id } = useParams()
@@ -24,6 +28,10 @@ export default function RunDetailPage() {
   const [qcFailures, setQcFailures] = useState<QcFailureEntry[]>([])
   const [qcMetrics, setQcMetrics] = useState<QcMetric[]>([])
   const [modelLogs, setModelLogs] = useState<ModelLogEntry[]>([])
+  const [trace, setTrace] = useState<TraceDetail | null>(null)
+  const [traceOpen, setTraceOpen] = useState(false)
+  const [traceLoading, setTraceLoading] = useState(false)
+  const [diagnosing, setDiagnosing] = useState(false)
   const refreshLogs = useCallback(
     () => api.get<RunLogEntry[]>(`/api/runs/${id}/logs`).then(setLogs), [id])
   useEffect(() => { void refreshLogs() }, [refreshLogs])
@@ -81,6 +89,45 @@ export default function RunDetailPage() {
     return () => clearInterval(t)
   }, [run?.status, refreshRows, refreshAux])
 
+  const openTrace = useCallback(async (traceId?: string) => {
+    if (!traceId) {
+      message.info('该运行不支持行级 Trace')
+      return
+    }
+    setTraceOpen(true)
+    setTrace(null)
+    setTraceLoading(true)
+    try {
+      setTrace(await api.get<TraceDetail>(`/api/runs/${id}/trace/${encodeURIComponent(traceId)}`))
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : 'Trace 加载失败')
+    } finally {
+      setTraceLoading(false)
+    }
+  }, [id])
+
+  const diagnoseRun = useCallback(async () => {
+    setDiagnosing(true)
+    try {
+      const sessions = await api.get<AgentSessionSummary[]>('/api/agent/sessions')
+      const sess = sessions.find((s) => s.status !== 'running') ?? sessions[0]
+      if (!sess) {
+        message.warning('请先创建或选择红莲会话')
+        return
+      }
+      if (sess.status === 'running') {
+        message.warning('当前红莲会话正在运行，请稍后再试')
+        return
+      }
+      await api.post(`/api/agent/sessions/${sess.id}/diagnose-run`, { run_id: Number(id) })
+      message.success('已提交给红莲诊断')
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : '提交诊断失败')
+    } finally {
+      setDiagnosing(false)
+    }
+  }, [id])
+
   const nodeLabel = useCallback((nid: string) => {
     const n = run?.graph.nodes.find((g) => g.id === nid)
     return n ? `${NODE_LABELS[n.type]}（${nid}）` : nid
@@ -97,6 +144,46 @@ export default function RunDetailPage() {
   const previewColumns = Object.keys(rows.rows[0] ?? {}).map((c) => ({
     title: c, dataIndex: c, ellipsis: true, render: renderCell,
   }))
+  const failureGroups = Object.entries(qcFailures.reduce<Record<string, number>>((acc, f) => {
+    f.reasons
+      .filter((r) => r.status.toLowerCase() !== 'pass')
+      .forEach((r) => { acc[r.reason || '未说明原因'] = (acc[r.reason || '未说明原因'] ?? 0) + 1 })
+    return acc
+  }, {})).sort((a, b) => b[1] - a[1]).slice(0, 8)
+  const traceButton = (traceId?: string) => traceId
+    ? <Button size="small" onClick={() => void openTrace(traceId)}>Trace</Button>
+    : <Tag>无 Trace</Tag>
+  const renderTraceEvent = (ev: TraceEvent) => (
+    <Space orientation="vertical" style={{ width: '100%' }}>
+      <Space wrap>
+        <Tag color={ev.status === 'failed' ? 'error' : ev.status === 'done' ? 'success' : 'processing'}>
+          {ev.status}
+        </Tag>
+        {ev.node_type && <Tag>{ev.node_type}</Tag>}
+        {ev.row_idx !== undefined && <span>row_idx：{ev.row_idx}</span>}
+        {ev.attempt !== undefined && <span>attempt：{ev.attempt}</span>}
+        {ev.qc_round !== undefined && <span>qc_round：{ev.qc_round}</span>}
+        {ev.tokens && <span>tokens：{(ev.tokens.prompt_tokens ?? 0) + (ev.tokens.completion_tokens ?? 0)}</span>}
+      </Space>
+      {ev.error && <Alert type="error" message={ev.error} />}
+      {ev.qc_reasons?.length ? (
+        <div>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>QC 理由</div>
+          {ev.qc_reasons.map((r, i) => <div key={i}>{r.status}：{r.reason}</div>)}
+        </div>
+      ) : null}
+      {ev.output?.length ? <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{compactJson(ev.output)}</pre> : null}
+      {ev.model_logs?.length ? (
+        <Collapse size="small" items={ev.model_logs.map((log) => ({
+          key: String(log.id),
+          label: `${log.source} · ${log.model_name}`,
+          children: <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>
+            {compactJson(log.request)}{'\n--- 响应 ---\n'}{log.response}
+          </pre>,
+        }))} />
+      ) : null}
+    </Space>
+  )
 
   return (
     <>
@@ -182,12 +269,26 @@ export default function RunDetailPage() {
       )}
       {qcFailures.length > 0 && (
         <Card size="small" title={`质检失败样本（${qcFailures.length}）`} style={{ marginBottom: 16 }}
-              extra={<Button size="small" onClick={() => window.open(`/api/runs/${id}/qc-failures.jsonl`)}>
-                下载 jsonl
-              </Button>}>
+              extra={<Space>
+                <Button size="small" onClick={() => void diagnoseRun()} loading={diagnosing}>
+                  让红莲诊断本次失败
+                </Button>
+                <Button size="small" onClick={() => window.open(`/api/runs/${id}/qc-failures.jsonl`)}>
+                  下载 jsonl
+                </Button>
+              </Space>}>
+          {failureGroups.length > 0 && (
+            <Space wrap style={{ marginBottom: 12 }}>
+              {failureGroups.map(([reason, count]) => (
+                <Tag key={reason} color="error">{reason} × {count}</Tag>
+              ))}
+            </Space>
+          )}
           <Table rowKey={(_, i) => String(i)} dataSource={qcFailures} size="small"
                  pagination={{ pageSize: 10 }}
                  columns={[
+                   { title: 'Trace', dataIndex: 'trace_id', width: 100,
+                     render: (v: string | undefined) => traceButton(v) },
                    { title: '样本', dataIndex: 'sample', ellipsis: true,
                      render: (v: object) => JSON.stringify(v) },
                    { title: '各模型理由', dataIndex: 'reasons',
@@ -223,6 +324,8 @@ export default function RunDetailPage() {
                 children: <Table rowKey="row_idx" dataSource={failed.rows}
                                  columns={[
                                    { title: '行号', dataIndex: 'row_idx', width: 80 },
+                                   { title: 'Trace', dataIndex: 'trace_id', width: 100,
+                                     render: (v: string | undefined) => traceButton(v) },
                                    { title: '尝试次数', dataIndex: 'attempt', width: 90 },
                                    { title: '错误', dataIndex: 'error' },
                                  ]}
@@ -247,6 +350,26 @@ export default function RunDetailPage() {
           />
         </>
       )}
+      <Drawer title={trace ? `Trace ${trace.trace_id}` : 'Trace'}
+              width={760}
+              open={traceOpen}
+              onClose={() => setTraceOpen(false)}>
+        {traceLoading && <Spin />}
+        {!traceLoading && !trace && <Alert type="warning" message="该运行不支持行级 Trace" />}
+        {!traceLoading && trace && (
+          <Space orientation="vertical" style={{ width: '100%' }}>
+            {trace.parent_trace_id && <Tag>parent：{trace.parent_trace_id}</Tag>}
+            <Collapse
+              defaultActiveKey={trace.events.map((_, i) => String(i))}
+              items={trace.events.map((ev, i) => ({
+                key: String(i),
+                label: `${nodeLabel(ev.node_id)} · ${ev.status}`,
+                children: renderTraceEvent(ev),
+              }))}
+            />
+          </Space>
+        )}
+      </Drawer>
     </>
   )
 }

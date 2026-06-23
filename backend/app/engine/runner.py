@@ -15,8 +15,10 @@ from app.events import publish
 from app.models import (Dataset, ModelConfig, Prompt, PromptVersion, QcFailure, QcMetric, Run,
                         RunLog, RunNodeState, RunRow, WorkflowVersion)
 from app.services.dataset_store import _iter_dataset_rows, ensure_dataset_materialized
-from app.services.model_log import forget_run, log_context
+from app.services.model_log import forget_run, log_context, prune_run_model_logs
 from app.services.run_artifacts import ArtifactWriter, register_artifact_as_dataset
+from app.services.trace import (TRACE_KEYS, attach_child_trace, attach_root_trace, row_trace_id,
+                                strip_trace_rows)
 
 
 def _now() -> datetime:
@@ -101,6 +103,10 @@ async def execute_run(run_id: int, session_factory: async_sessionmaker,
             await s.commit()
         await _log(session_factory, run_id, "", f"运行失败：{e}", "error")
     finally:
+        try:
+            await prune_run_model_logs(session_factory, run_id)
+        except Exception as e:
+            await _log(session_factory, run_id, "", f"模型日志裁剪失败（已忽略）：{e}", "error")
         forget_run(run_id)   # run 到终态：清理 model_log 计数键，防长跑无界累积
 
 
@@ -163,7 +169,7 @@ async def _finish(session_factory, run_id, status):
     publish(user_id, "run", run_id)
 
 
-async def _node_outputs(session_factory, run_id, node_id) -> list[dict]:
+async def _node_outputs(session_factory, run_id, node_id, *, include_trace: bool = False) -> list[dict]:
     async with session_factory() as s:
         recs = (await s.execute(
             select(RunRow).where(RunRow.run_id == run_id, RunRow.node_id == node_id,
@@ -172,12 +178,12 @@ async def _node_outputs(session_factory, run_id, node_id) -> list[dict]:
     out: list[dict] = []
     for r in recs:
         out.extend(json.loads(r.data_json))
-    return out
+    return out if include_trace else strip_trace_rows(out)
 
 
 async def _node_inputs(session_factory, run_id, graph: Graph, node: Node) -> list[dict]:
     parents = upstream_ids(graph, node.id)
-    branches = [await _node_outputs(session_factory, run_id, uid) for uid in parents]
+    branches = [await _node_outputs(session_factory, run_id, uid, include_trace=True) for uid in parents]
     if len(branches) <= 1:
         return branches[0] if branches else []
     return _merge_branches(node.id, branches)
@@ -195,7 +201,7 @@ def _merge_branches(node_id: str, branches: list[list[dict]]) -> list[dict]:
     # 唯一的共享列时，无锚可校验对齐 → 会把错配的行静默并到一起。要求各支至少共享一列：有锚则错配会被
     # 下面的「取值不同」检查拦下；无锚则此处直接报错点名整 run failed，杜绝静默错配落库。0 行无可错配，跳过。
     if counts and counts[0] > 0:
-        col_sets = [set().union(*(set(r) for r in b)) for b in branches]
+        col_sets = [set().union(*((set(r) - TRACE_KEYS) for r in b)) for b in branches]
         if not set.intersection(*col_sets):
             raise ValueError(f"节点 {node_id}: 多个上游分支间无共享列，无法校验按行对齐"
                              f"（按位合并依赖共享列作对齐锚；请为各分支保留至少一个共同列，"
@@ -215,7 +221,8 @@ def _merge_branches(node_id: str, branches: list[list[dict]]) -> list[dict]:
 
 
 async def _write_unit(session_factory, run_id, node_id, row_idx, status, out_rows, error,
-                      usage: dict | None = None, qc_round: int = 0, drop=None):
+                      usage: dict | None = None, qc_round: int = 0, drop=None,
+                      trace_id: str = ""):
     async with session_factory() as s:
         rec = (await s.execute(select(RunRow).where(
             RunRow.run_id == run_id, RunRow.node_id == node_id, RunRow.row_idx == row_idx
@@ -224,6 +231,7 @@ async def _write_unit(session_factory, run_id, node_id, row_idx, status, out_row
             rec = RunRow(run_id=run_id, node_id=node_id, row_idx=row_idx, attempt=0)
             s.add(rec)
         rec.status = status
+        rec.trace_id = row_trace_id(out_rows[0]) if out_rows else (trace_id or rec.trace_id)
         if drop:
             drop_set = set(drop)
             out_rows = [{k: v for k, v in r.items() if k not in drop_set} for r in out_rows]
@@ -284,7 +292,7 @@ async def _barrier_output(session_factory, user_id, node: Node, inputs, run_id: 
                     continue
                 ds = await ensure_dataset_materialized(s, ds, settings.data_dir)
                 rows.extend(row for _, row in _iter_dataset_rows(ds, settings.data_dir))
-        return rows
+        return attach_root_trace(rows, run_id=run_id or 0, node_id=node.id)
     if node.type == "auto_process":
         return await nodes.apply_operations_with_agent(
             inputs, cfg.get("operations", []), seed=cfg.get("seed"))
@@ -294,10 +302,11 @@ async def _barrier_output(session_factory, user_id, node: Node, inputs, run_id: 
         drop = set(cfg.get("drop_columns") or [])
         out = [{k: v for k, v in r.items() if k not in drop} for r in inputs] if drop else inputs
         if cfg.get("save_as_dataset"):
-            columns = ordered_union([list(row) for row in out])
+            export_rows = strip_trace_rows(out)
+            columns = ordered_union([list(row) for row in export_rows])
             writer = ArtifactWriter(settings.data_dir, run_id=run_id or 0, node_id=node.id,
                                     columns=columns)
-            for idx, row in enumerate(out, start=1):
+            for idx, row in enumerate(export_rows, start=1):
                 writer.append(idx, [row])
             artifact = writer.close()
             async with session_factory() as s:
@@ -333,7 +342,9 @@ async def _run_per_row_node(session_factory, run_id, user_id, node: Node, inputs
         async with node_sem:
             if cancel_event.is_set():
                 return
-            ctx = (log_context(run_id=run_id, node_id=node.id, user_id=user_id, source=log_source)
+            trace_id = row_trace_id(inputs[idx])
+            ctx = (log_context(run_id=run_id, node_id=node.id, user_id=user_id,
+                               source=log_source, trace_id=trace_id)
                    if log_source else nullcontext())
             try:
                 with ctx:
@@ -341,9 +352,11 @@ async def _run_per_row_node(session_factory, run_id, user_id, node: Node, inputs
             except asyncio.CancelledError:
                 return  # 硬中断：在途请求已 abort，该行不落库（保持 pending）
             except Exception as e:
-                await _write_unit(session_factory, run_id, node.id, idx, "failed", [], str(e))
+                await _write_unit(session_factory, run_id, node.id, idx, "failed", [], str(e),
+                                  trace_id=trace_id)
                 failed_count += 1
             else:
+                out_rows = attach_child_trace(inputs[idx], out_rows, node_id=node.id, row_idx=idx)
                 await _write_unit(session_factory, run_id, node.id, idx, "done", out_rows, "",
                                   usage=usage, drop=cfg.get("drop_columns"))
                 done_count += 1
@@ -449,7 +462,8 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
     async def judge_all(rows):
         async def judge(row):
             async with sem:
-                with log_context(run_id=run_id, node_id=node.id, user_id=user_id, source="qc"):
+                with log_context(run_id=run_id, node_id=node.id, user_id=user_id,
+                                 source="qc", trace_id=row_trace_id(row)):
                     return await _cancellable(
                         nodes.run_qc_judge_row(cfg, row, jmcs, pass_k, user_sem), cancel_event)
         passed_, failed_ = [], []
@@ -482,16 +496,17 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
 
             async def regen(row):
                 async with rsem:
-                    with log_context(run_id=run_id, node_id=target_id, user_id=user_id, source="synth"):
+                    with log_context(run_id=run_id, node_id=target_id, user_id=user_id,
+                                     source="synth", trace_id=row_trace_id(row)):
                         return await _cancellable(
                             nodes.run_llm_synth_row(regen_cfg, row, tmc, user_sem), cancel_event)
 
             while failed and rounds < cfg.get("max_rounds", 3):
                 rounds += 1
                 regenerated: list[dict] = []
-                for out_rows, u in await asyncio.gather(*[regen(r) for r in failed]):
+                for src, (out_rows, u) in zip(failed, await asyncio.gather(*[regen(r) for r in failed])):
                     fold(u)
-                    regenerated.extend(out_rows)
+                    regenerated.extend(attach_child_trace(src, out_rows, node_id=target_id, row_idx=0))
                 fresh_pass, failed = await judge_all(regenerated)
                 passed.extend(fresh_pass)
                 await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running",
@@ -501,6 +516,7 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
                 for fr in failed:
                     sample = nodes.strip_qc_internal(fr)
                     s.add(QcFailure(run_id=run_id, node_id=node.id,
+                                    trace_id=row_trace_id(fr),
                                     sample_json=json.dumps(sample, ensure_ascii=False),
                                     reasons_json=json.dumps(fr.get("_qc_per_model", []),
                                                             ensure_ascii=False)))

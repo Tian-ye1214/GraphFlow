@@ -48,6 +48,11 @@ export default function RunsPage() {
           { title: 'ID', dataIndex: 'id', render: (v) => <Link to={`/runs/${v}`}>#{v}</Link> },
           { title: '工作流', dataIndex: 'workflow_name' },
           { title: '状态', dataIndex: 'status', render: (s: string) => <Tag color={STATUS_COLORS[s]}>{STATUS_LABELS[s] ?? s}</Tag> },
+          { title: 'QC 首轮通过率', key: 'qc', render: (_: unknown, r: Run) => {
+            const q = r.qc_summary
+            if (!q || !q.total || q.first_round_rate == null) return <span style={{ color: '#999' }}>无质检指标</span>
+            return `${Math.round(q.first_round_rate * 100)}%（${q.first_round_pass}/${q.total}）`
+          } },
           { title: 'Token 用量', dataIndex: 'stats', render: (s: Run['stats']) => (s.prompt_tokens ?? 0) + (s.completion_tokens ?? 0) },
           { title: '创建时间', dataIndex: 'created_at' },
           { title: '时长', key: 'dur', render: (_: unknown, r: Run) => fmtDuration(r.started_at, r.finished_at) },

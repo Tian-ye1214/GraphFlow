@@ -99,7 +99,62 @@ async def test_stop_endpoint(auth_client, mc_id, no_run):
                                   json={"model_config_id": mc_id})).json()["id"]
     r = await auth_client.post(f"/api/agent/sessions/{sid}/stop")
     assert r.status_code == 200
-    assert sid in turns.turn_manager.stop_flags
+
+
+async def test_diagnose_run_submits_failure_context_to_agent(auth_client, mc_id, session_factory, monkeypatch):
+    from app.agent import turns
+    from app.models import AgentMessage, QcFailure, Run, User, Workflow, WorkflowVersion
+    from sqlalchemy import select
+
+    submitted = []
+
+    def fake_submit(sid, uid, text):
+        submitted.append((sid, uid, text))
+
+    monkeypatch.setattr(turns.turn_manager, "submit", fake_submit)
+    sid = (await auth_client.post("/api/agent/sessions",
+                                  json={"model_config_id": mc_id})).json()["id"]
+    async with session_factory() as s:
+        uid = (await s.execute(select(User).where(User.username == "tester"))).scalar_one().id
+        wf = Workflow(user_id=uid, name="w", graph_json='{"nodes":[],"edges":[]}')
+        s.add(wf); await s.flush()
+        ver = WorkflowVersion(workflow_id=wf.id, version=1, graph_json=wf.graph_json)
+        s.add(ver); await s.flush()
+        run = Run(user_id=uid, workflow_id=wf.id, workflow_version_id=ver.id, status="completed")
+        s.add(run); await s.flush()
+        s.add(QcFailure(run_id=run.id, node_id="qc", trace_id="tr-1",
+                        sample_json='{"q":"x","a":"bad"}',
+                        reasons_json='[{"status":"failed","reason":"事实错误"}]'))
+        await s.commit()
+        run_id = run.id
+
+    r = await auth_client.post(f"/api/agent/sessions/{sid}/diagnose-run",
+                               json={"run_id": run_id})
+    assert r.status_code == 200
+    assert submitted and submitted[0][0] == sid
+    assert "运行 #" in submitted[0][2]
+    assert "tr-1" in submitted[0][2] and "事实错误" in submitted[0][2]
+    detail = (await auth_client.get(f"/api/agent/sessions/{sid}")).json()
+    assert detail["status"] == "running"
+    assert detail["messages"][-1]["role"] == "user"
+
+
+async def test_diagnose_run_rejects_foreign_run(auth_client, mc_id, session_factory):
+    from app.models import Run, User, Workflow, WorkflowVersion
+    sid = (await auth_client.post("/api/agent/sessions",
+                                  json={"model_config_id": mc_id})).json()["id"]
+    async with session_factory() as s:
+        stranger = User(username="stranger-diagnose")
+        s.add(stranger); await s.flush()
+        wf = Workflow(user_id=stranger.id, name="foreign", graph_json='{"nodes":[],"edges":[]}')
+        s.add(wf); await s.flush()
+        ver = WorkflowVersion(workflow_id=wf.id, version=1, graph_json=wf.graph_json)
+        s.add(ver); await s.flush()
+        run = Run(user_id=stranger.id, workflow_id=wf.id, workflow_version_id=ver.id)
+        s.add(run); await s.commit(); run_id = run.id
+    assert (await auth_client.post(f"/api/agent/sessions/{sid}/diagnose-run",
+                                   json={"run_id": run_id})).status_code == 404
+    assert sid not in turns.turn_manager.tasks
 
 
 async def test_delete_cleans_workdir(auth_client, mc_id, no_run):

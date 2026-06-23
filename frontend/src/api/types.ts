@@ -30,10 +30,12 @@ export interface WorkflowGraph { nodes: GraphNode[]; edges: GraphEdge[] }
 export interface Workflow { id: number; name: string; graph: WorkflowGraph; updated_at: string }
 
 export interface NodeState { node_id: string; status: string; total: number; done: number; failed: number }
+export interface QcSummary { total: number; first_round_pass: number; first_round_rate: number | null }
 export interface Run {
   id: number; workflow_id: number; workflow_name: string; status: string; error: string
   stats: { prompt_tokens?: number; completion_tokens?: number }
   created_at: string; started_at: string | null; finished_at: string | null
+  qc_summary?: QcSummary
 }
 export interface RunDetail extends Run { graph: WorkflowGraph; node_states: NodeState[] }
 export interface RowsPage { total: number; rows: Record<string, any>[] }
@@ -69,7 +71,7 @@ export interface NodeAssistReply {
 
 export interface ModelLogEntry {
   id: number; source: string; node_id: string; run_id: number | null
-  workflow_id: number | null; session_id: number | null
+  workflow_id: number | null; session_id: number | null; trace_id?: string
   model_name: string; provider: string
   request: { role: string; content: string }[] | unknown
   response: string; prompt_tokens: number; completion_tokens: number; created_at: string
@@ -92,9 +94,30 @@ export type ColumnsMap = Record<string, { input: string[]; output: string[] }>
 
 export interface RunLogEntry { created_at: string; node_id: string; level: string; message: string }
 
-export interface QcFailureEntry { node_id: string; sample: Record<string, any>; reasons: { model_config_id: number; status: string; reason: string }[]; created_at: string }
+export interface QcFailureEntry { node_id: string; trace_id?: string; sample: Record<string, any>; reasons: { model_config_id: number; status: string; reason: string }[]; created_at: string }
 
 export interface QcMetric { node_id: string; total: number; first_round_pass: number; first_round_rate: number }
+
+export interface TraceEvent {
+  node_id: string
+  node_type?: string
+  status: string
+  row_idx?: number
+  attempt?: number
+  qc_round?: number
+  input?: Record<string, any>[]
+  output?: Record<string, any>[]
+  error?: string
+  qc_reasons?: QcFailureEntry['reasons']
+  model_logs?: ModelLogEntry[]
+  tokens?: { prompt_tokens?: number; completion_tokens?: number }
+}
+
+export interface TraceDetail {
+  trace_id: string
+  parent_trace_id?: string
+  events: TraceEvent[]
+}
 
 export interface PromptSummary {
   id: number; name: string; description: string; latest_version: number; variables: string[]

@@ -81,6 +81,7 @@ class Workflow(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     name: Mapped[str]
     graph_json: Mapped[str] = mapped_column(Text, default='{"nodes": [], "edges": []}')
+    is_template: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
@@ -127,6 +128,7 @@ class RunRow(Base):
     run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"))
     node_id: Mapped[str]
     row_idx: Mapped[int]
+    trace_id: Mapped[str] = mapped_column(default="", index=True)
     file_row: Mapped[int | None] = mapped_column(default=None)
     attempt: Mapped[int] = mapped_column(default=0)
     qc_round: Mapped[int] = mapped_column(default=0)
@@ -140,6 +142,7 @@ class RunRow(Base):
     __table_args__ = (
         Index("ix_run_row_unit", "run_id", "node_id", "row_idx", unique=True),
         Index("ix_run_row_file_row", "run_id", "node_id", "file_row", unique=True),
+        Index("ix_run_row_trace", "run_id", "trace_id"),
     )
 
 
@@ -168,9 +171,11 @@ class QcFailure(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"), index=True)
     node_id: Mapped[str] = mapped_column(default="")
+    trace_id: Mapped[str] = mapped_column(default="", index=True)
     sample_json: Mapped[str] = mapped_column(Text, default="")
     reasons_json: Mapped[str] = mapped_column(Text, default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    __table_args__ = (Index("ix_qc_failure_trace", "run_id", "trace_id"),)
 
 
 class AgentSession(Base):
@@ -204,6 +209,7 @@ class ModelCallLog(Base):
     workflow_id: Mapped[int | None] = mapped_column(ForeignKey("workflows.id"), index=True, default=None)
     session_id: Mapped[int | None] = mapped_column(ForeignKey("agent_sessions.id"), index=True, default=None)
     node_id: Mapped[str] = mapped_column(default="")
+    trace_id: Mapped[str] = mapped_column(default="", index=True)
     source: Mapped[str] = mapped_column(default="")  # synth/qc/redlotus/codegen/assistant/compactor
     model_config_id: Mapped[int | None] = mapped_column(default=None)
     model_name: Mapped[str] = mapped_column(default="")
@@ -213,6 +219,7 @@ class ModelCallLog(Base):
     prompt_tokens: Mapped[int] = mapped_column(default=0)
     completion_tokens: Mapped[int] = mapped_column(default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    __table_args__ = (Index("ix_model_call_log_trace", "run_id", "trace_id"),)
 
 
 class Prompt(Base):

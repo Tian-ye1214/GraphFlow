@@ -14,6 +14,7 @@ router = APIRouter(prefix="/api/model-logs", tags=["model-logs"])
 def _out(r: ModelCallLog) -> dict:
     return {"id": r.id, "source": r.source, "node_id": r.node_id, "run_id": r.run_id,
             "workflow_id": r.workflow_id, "session_id": r.session_id,
+            "trace_id": r.trace_id,
             "model_name": r.model_name, "provider": r.provider,
             "request": json.loads(r.request_json or "[]"), "response": r.response_json,
             "prompt_tokens": r.prompt_tokens, "completion_tokens": r.completion_tokens,

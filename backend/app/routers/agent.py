@@ -17,7 +17,7 @@ from app.auth import get_current_user, make_session_cookie
 from app.db import get_session, get_session_factory
 from app.engine.graph import parse_graph
 from app.events import publish
-from app.models import AgentMessage, AgentSession, ModelCallLog, ModelConfig, User, Workflow
+from app.models import AgentMessage, AgentSession, ModelCallLog, ModelConfig, QcFailure, Run, User, Workflow
 from app.services.model_log import log_context
 from app.services.run_service import workflow_has_qc
 from app.thinking import with_thinking_defaults
@@ -178,6 +178,84 @@ async def stop_session(sid: int, user: User = Depends(get_current_user),
 class GoalIn(BaseModel):
     workflow_id: int
     goal_text: str
+
+
+class DiagnoseRunIn(BaseModel):
+    run_id: int
+
+
+def _safe_json_loads(text: str, fallback):
+    try:
+        return json.loads(text or "")
+    except Exception:
+        return fallback
+
+
+def _compact_json(value, limit: int = 900) -> str:
+    text = json.dumps(value, ensure_ascii=False)
+    return text if len(text) <= limit else text[:limit] + "...<truncated>"
+
+
+async def _build_run_diagnosis_prompt(session: AsyncSession, run: Run) -> str:
+    failures = (await session.execute(
+        select(QcFailure).where(QcFailure.run_id == run.id)
+        .order_by(QcFailure.id).limit(20)
+    )).scalars().all()
+    trace_ids = [f.trace_id for f in failures if f.trace_id]
+    logs: list[ModelCallLog] = []
+    if trace_ids:
+        logs = (await session.execute(
+            select(ModelCallLog).where(
+                ModelCallLog.run_id == run.id,
+                ModelCallLog.trace_id.in_(trace_ids),
+            ).order_by(ModelCallLog.id).limit(40)
+        )).scalars().all()
+    log_counts: dict[str, int] = {}
+    for item in logs:
+        log_counts[item.trace_id] = log_counts.get(item.trace_id, 0) + 1
+
+    lines = [
+        "[运行失败诊断]",
+        f"运行 #{run.id}，工作流 #{run.workflow_id}，状态：{run.status}。",
+        "请基于下面的失败 Trace 摘要归纳失败模式，并提出需要用户确认后才能应用的修改建议。",
+        "边界：禁止修改 QC 节点提示词/判定标准，禁止替换输入数据集；优先建议非 QC 节点、合成提示词、字段映射、重跑策略或链路配置调整。",
+        "",
+        "失败样本：",
+    ]
+    if not failures:
+        lines.append("- 当前运行没有记录 QC 失败样本，请检查失败行、节点错误和模型日志摘要。")
+    for idx, failure in enumerate(failures, 1):
+        sample = _safe_json_loads(failure.sample_json, {})
+        reasons = _safe_json_loads(failure.reasons_json, [])
+        lines.extend([
+            f"- 样本 {idx}",
+            f"  trace_id: {failure.trace_id or '<missing>'}",
+            f"  qc_node: {failure.node_id}",
+            f"  sample: {_compact_json(sample)}",
+            f"  qc_reasons: {_compact_json(reasons)}",
+            f"  model_log_count: {log_counts.get(failure.trace_id, 0)}",
+        ])
+    return "\n".join(lines)
+
+
+@router.post("/sessions/{sid}/diagnose-run")
+async def diagnose_run(sid: int, body: DiagnoseRunIn, user: User = Depends(get_current_user),
+                       session: AsyncSession = Depends(get_session)):
+    sess = await _get_owned(sid, user, session)
+    if sess.status == "running":
+        raise HTTPException(status_code=409, detail="回合进行中")
+    run = await session.get(Run, body.run_id)
+    if run is None or run.user_id != user.id:
+        raise HTTPException(status_code=404, detail="运行不存在")
+    await _check_models(json.loads(sess.models_json), user, session)
+    text = await _build_run_diagnosis_prompt(session, run)
+    session.add(AgentMessage(session_id=sid, role="user",
+                             content_json=json.dumps({"text": text}, ensure_ascii=False)))
+    sess.status = "running"
+    await session.commit()
+    publish(user.id, "agent", sid, kind="message")
+    turn_manager.submit(sid, user.id, text)
+    return {"ok": True}
 
 
 @router.post("/sessions/{sid}/goal")

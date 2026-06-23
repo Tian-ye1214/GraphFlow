@@ -13,7 +13,7 @@ from app.agent.tools import EMIT
 from app.config import settings
 from app.db import get_session_factory
 from app.events import publish
-from app.models import AgentMessage, AgentSession, ModelConfig, User
+from app.models import AgentMessage, AgentSession, ModelConfig, User, Workflow
 from app.services.model_log import log_context
 
 
@@ -137,6 +137,9 @@ class AgentTurnManager:
         threshold = rs.parse_threshold(goal_text)
         best, no_improve, round_i = -1.0, 0, 0
         input_text = gl.first_round_prompt(goal_text)
+        async with sf() as s:
+            wf = await s.get(Workflow, workflow_id)
+            guard_graph = json.loads(wf.graph_json) if wf is not None else {"nodes": [], "edges": []}
         try:
             while True:
                 with log_context(user_id=user_id, session_id=session_id, source="redlotus"):
@@ -144,6 +147,14 @@ class AgentTurnManager:
                 signal, cleaned = parse_goal(output)
                 await self._add_message(session_id, user_id, "assistant", {"text": cleaned})
                 if signal == "DONE" or session_id in self.stop_flags:
+                    break
+                async with sf() as s:
+                    wf = await s.get(Workflow, workflow_id)
+                    current_graph = json.loads(wf.graph_json) if wf is not None else {"nodes": [], "edges": []}
+                guard = gl.validate_goal_graph_change(guard_graph, current_graph)
+                if not guard.ok:
+                    await self._add_message(session_id, user_id, "assistant",
+                                            {"text": f"目标模式已停止：{guard.reason}"})
                     break
                 run_id = await rs.enqueue_run(sf, user_id, workflow_id)
                 round_i += 1

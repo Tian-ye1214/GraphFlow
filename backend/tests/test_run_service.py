@@ -23,6 +23,26 @@ async def test_first_round_rate_none_when_no_metric(session_factory):
     assert await rs.first_round_rate(session_factory, 999) is None
 
 
+async def test_sample_failures_includes_trace_and_model_log_summary(session_factory):
+    from app.models import ModelCallLog, QcFailure
+    async with session_factory() as s:
+        s.add(QcFailure(run_id=8, node_id="qc", trace_id="tr-8",
+                        sample_json='{"q":"x","_gf_trace_id":"tr-8"}',
+                        reasons_json='[{"status":"failed","reason":"bad"}]'))
+        s.add(ModelCallLog(run_id=8, trace_id="tr-8", node_id="gen", source="synth",
+                           model_name="m", provider="openai", request_json='[{"role":"user","content":"q"}]',
+                           response_json="bad answer", prompt_tokens=2, completion_tokens=3))
+        await s.commit()
+
+    failures = await rs.sample_failures(session_factory, 8, n=5)
+    assert failures[0]["trace_id"] == "tr-8"
+    assert "_gf_trace_id" not in failures[0]["sample"]
+    assert failures[0]["model_logs"][0] == {
+        "node_id": "gen", "source": "synth", "model_name": "m",
+        "prompt_tokens": 2, "completion_tokens": 3, "response": "bad answer",
+    }
+
+
 async def test_purge_run_rows_cascades_all_children_and_versions(session_factory):
     """purge_run_rows 单点：删一批 run 的 6 张子表 + Run 本身 + (可选)版本快照；新增 run 子表只改这里。"""
     from app.models import (ModelCallLog, QcFailure, QcMetric, Run, RunLog, RunNodeState, RunRow,

@@ -9,6 +9,7 @@ from app.engine.graph import parse_graph, validate_graph
 from app.engine.manager import manager
 from app.models import (Dataset, ModelCallLog, ModelConfig, QcFailure, QcMetric, Run, RunLog,
                         RunNodeState, RunRow, User, Workflow, WorkflowVersion)
+from app.services.trace import strip_trace_row
 
 # run 的全部子表（按 run_id 外键）。新增 run 子表只需加到这里，所有删除入口（删单 run / 清空 run /
 # 删工作流 / 删用户）自动级联，避免某入口漏删致孤儿数据 + 跨租户泄漏。
@@ -117,5 +118,31 @@ async def sample_failures(session_factory, run_id: int, n: int = 20) -> list[dic
     async with session_factory() as s:
         rows = (await s.execute(select(QcFailure).where(QcFailure.run_id == run_id)
                                 .order_by(QcFailure.id).limit(n))).scalars().all()
-    return [{"sample": json.loads(f.sample_json), "reasons": json.loads(f.reasons_json)}
-            for f in rows]
+        trace_ids = [f.trace_id for f in rows if f.trace_id]
+        logs = []
+        if trace_ids:
+            logs = (await s.execute(select(ModelCallLog).where(
+                ModelCallLog.run_id == run_id,
+                ModelCallLog.trace_id.in_(trace_ids),
+            ).order_by(ModelCallLog.id))).scalars().all()
+    by_trace: dict[str, list[dict]] = {}
+    for log in logs:
+        by_trace.setdefault(log.trace_id, [])
+        if len(by_trace[log.trace_id]) >= 3:
+            continue
+        response = log.response_json or ""
+        by_trace[log.trace_id].append({
+            "node_id": log.node_id,
+            "source": log.source,
+            "model_name": log.model_name,
+            "prompt_tokens": log.prompt_tokens,
+            "completion_tokens": log.completion_tokens,
+            "response": response if len(response) <= 500 else response[:500] + "...<truncated>",
+        })
+    return [{
+        "trace_id": f.trace_id,
+        "node_id": f.node_id,
+        "sample": strip_trace_row(json.loads(f.sample_json)),
+        "reasons": json.loads(f.reasons_json),
+        "model_logs": by_trace.get(f.trace_id, []),
+    } for f in rows]

@@ -37,6 +37,33 @@ async def test_node_source_success_capped_failures_kept(session_factory):
     assert await _count(session_factory, source="synth", run_id=100) == model_log.NODE_LIMIT + 3
 
 
+async def test_prune_keeps_failure_traces_and_limits_success_qc_logs(session_factory):
+    from app.models import QcFailure, RunRow
+    model_log._success_counts.clear()
+    for i in range(25):
+        with model_log.log_context(user_id=1, run_id=300, node_id="qc", source="qc", trace_id=f"ok-{i}"):
+            await model_log.log_model_call(messages=[{"role": "user", "content": "x"}],
+                                           response_text=f"r{i}", ok=True,
+                                           model_name="m", provider="openai")
+    async with session_factory() as s:
+        s.add(QcFailure(run_id=300, node_id="qc", trace_id="ok-24",
+                        sample_json='{"q":"x"}', reasons_json='[]'))
+        s.add(RunRow(run_id=300, node_id="gen", row_idx=0, status="failed", trace_id="row-fail"))
+        s.add(ModelCallLog(run_id=300, node_id="gen", source="synth", trace_id="row-fail",
+                           response_json="boom"))
+        await s.commit()
+
+    assert await _count(session_factory, run_id=300, source="qc") == 25
+    await model_log.prune_run_model_logs(session_factory, 300, success_per_node=3)
+    async with session_factory() as s:
+        logs = (await s.execute(select(ModelCallLog).where(ModelCallLog.run_id == 300)
+                                .order_by(ModelCallLog.id))).scalars().all()
+    traces = [l.trace_id for l in logs]
+    assert "ok-24" in traces
+    assert "row-fail" in traces
+    assert len([t for t in traces if t.startswith("ok-") and t != "ok-24"]) == 3
+
+
 def test_forget_run_clears_only_that_run():
     """M1: run 到终态后清理其 (run_id,node_id) 计数键，防止长跑进程无界累积；不误清其它 run。"""
     model_log._success_counts.clear()

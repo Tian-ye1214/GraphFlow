@@ -4,6 +4,7 @@ import random
 import re
 
 from app.agent.prompts import load_prompt
+from app.services.trace import strip_trace_row
 from app.engine import pycode
 from app.models import ModelConfig
 from app.services import http, llm
@@ -164,6 +165,10 @@ def strip_qc_internal(row: dict) -> dict:
     return {k: v for k, v in row.items() if k not in _QC_INTERNAL_KEYS}
 
 
+def strip_internal(row: dict) -> dict:
+    return strip_trace_row(strip_qc_internal(row))
+
+
 def zero_usage() -> dict:
     return {"prompt_tokens": 0, "completion_tokens": 0}
 
@@ -176,7 +181,7 @@ def add_usage(acc: dict, u: dict) -> None:
 async def run_llm_synth_row(config: dict, row: dict, mc: ModelConfig,
                             user_sem: asyncio.Semaphore) -> tuple[list[dict], dict]:
     """处理一条输入行：扇出 fanout_n 次调用，返回 (输出行列表, usage 汇总)。失败抛异常由 runner 记为行失败。"""
-    base = strip_qc_internal(row)
+    base = strip_internal(row)
     system = render_template(config.get("system_prompt", ""), base)
     user = render_template(config.get("user_prompt", ""), base)
     if row.get("_qc_reason"):
@@ -219,7 +224,7 @@ async def run_llm_synth_row(config: dict, row: dict, mc: ModelConfig,
 async def run_http_fetch_row(config: dict, row: dict) -> tuple[list[dict], dict]:
     """处理一条输入行：渲染 url/headers/body 后调接口，按 extract 的 JSON 路径提取落列。
     返回 (输出行列表, 空 usage)。请求失败/响应非 JSON 抛异常由 runner 记为行失败（逐行隔离）。"""
-    base = strip_qc_internal(row)
+    base = strip_internal(row)
     method = config.get("method", "GET")
     url = render_template(config.get("url", ""), base)
     headers = {k: render_template(str(v), base) for k, v in (config.get("headers") or {}).items()}
@@ -241,7 +246,7 @@ async def run_qc_judge_row(config: dict, row: dict, mcs: list[ModelConfig], pass
                            user_sem: asyncio.Semaphore) -> tuple[bool, str, dict, list]:
     """多模型 K-of-N 质检判定：N 个模型共用提示词并发判定，≥pass_k 个通过即整行通过。
     返回 (是否通过, 聚合理由, usage 汇总, per_model 列表)。"""
-    base = strip_qc_internal(row)
+    base = strip_internal(row)
     if not any(str(v).strip() for v in base.values()):   # 空/全空白样本：直接判不通过，不调 judge
         return False, "样本内容为空", zero_usage(), []
     system = render_template(config.get("system_prompt", ""), base) + QC_EMPTY_ANCHOR

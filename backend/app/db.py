@@ -45,6 +45,13 @@ async def _migrate_sqlite_schema(conn) -> None:
             "ALTER TABLE model_configs ADD COLUMN azure_api_mode VARCHAR NOT NULL DEFAULT 'legacy'"
         )
 
+    rows = (await conn.exec_driver_sql("PRAGMA table_info(workflows)")).all()
+    cols = {row[1] for row in rows}
+    if rows and "is_template" not in cols:
+        await conn.exec_driver_sql(
+            "ALTER TABLE workflows ADD COLUMN is_template BOOLEAN NOT NULL DEFAULT 0"
+        )
+
     rows = (await conn.exec_driver_sql("PRAGMA table_info(agent_sessions)")).all()
     cols = {row[1] for row in rows}
     if rows and "model_params_json" not in cols:
@@ -84,6 +91,7 @@ async def _migrate_sqlite_schema(conn) -> None:
     run_row_adds = {
         "file_row": "INTEGER",
         "output_ref": "TEXT NOT NULL DEFAULT ''",
+        "trace_id": "VARCHAR NOT NULL DEFAULT ''",
     }
     for name, ddl in run_row_adds.items():
         if rows and name not in cols:
@@ -92,6 +100,31 @@ async def _migrate_sqlite_schema(conn) -> None:
         await conn.exec_driver_sql(
             "CREATE UNIQUE INDEX IF NOT EXISTS ix_run_row_file_row "
             "ON run_rows (run_id, node_id, file_row)"
+        )
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_run_row_trace ON run_rows (run_id, trace_id)"
+        )
+
+    rows = (await conn.exec_driver_sql("PRAGMA table_info(qc_failures)")).all()
+    cols = {row[1] for row in rows}
+    if rows and "trace_id" not in cols:
+        await conn.exec_driver_sql(
+            "ALTER TABLE qc_failures ADD COLUMN trace_id VARCHAR NOT NULL DEFAULT ''"
+        )
+    if rows:
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_qc_failure_trace ON qc_failures (run_id, trace_id)"
+        )
+
+    rows = (await conn.exec_driver_sql("PRAGMA table_info(model_call_logs)")).all()
+    cols = {row[1] for row in rows}
+    if rows and "trace_id" not in cols:
+        await conn.exec_driver_sql(
+            "ALTER TABLE model_call_logs ADD COLUMN trace_id VARCHAR NOT NULL DEFAULT ''"
+        )
+    if rows:
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_model_call_log_trace ON model_call_logs (run_id, trace_id)"
         )
 
 

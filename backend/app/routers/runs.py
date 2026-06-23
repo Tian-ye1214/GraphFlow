@@ -22,6 +22,8 @@ from app.services.export import export_rows
 from app.services.run_artifacts import read_output_ref_rows
 from app.services.run_service import (purge_run_rows, unlink_run_exports,
                                       validate_graph_resource_ownership)
+from app.services.trace import (PARENT_TRACE_ID_KEY, row_trace_id, rows_matching_trace,
+                                strip_trace_row, strip_trace_rows)
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
@@ -65,10 +67,20 @@ async def create_run(body: RunCreate, user: User = Depends(get_current_user),
     return {"id": run.id, "status": run.status}
 
 
-def _run_out(run: Run, workflow_name: str = "") -> dict:
+async def _qc_summary(session: AsyncSession, run_id: int) -> dict:
+    rows = (await session.execute(
+        select(QcMetric).where(QcMetric.run_id == run_id))).scalars().all()
+    total = sum(m.total for m in rows)
+    passed = sum(m.first_round_pass for m in rows)
+    return {"total": total, "first_round_pass": passed,
+            "first_round_rate": (passed / total) if total else None}
+
+
+def _run_out(run: Run, workflow_name: str = "", qc_summary: dict | None = None) -> dict:
     return {
         "id": run.id, "workflow_id": run.workflow_id, "workflow_name": workflow_name,
         "status": run.status, "error": run.error, "stats": json.loads(run.stats_json),
+        "qc_summary": qc_summary or {"total": 0, "first_round_pass": 0, "first_round_rate": None},
         "created_at": run.created_at.isoformat(),
         # started_at/finished_at 暴露给前端算「运行时长」：started 落在真正开跑、finished 落在收尾，
         # 二者皆可能为 None（排队中/运行中）。created_at 始终有，作时长兜底基准。
@@ -85,7 +97,7 @@ async def list_runs(workflow_id: int | None = None, user: User = Depends(get_cur
     if workflow_id is not None:
         stmt = stmt.where(Run.workflow_id == workflow_id)
     rows = (await session.execute(stmt)).all()
-    return [_run_out(run, name) for run, name in rows]
+    return [_run_out(run, name, await _qc_summary(session, run.id)) for run, name in rows]
 
 
 @router.get("/{run_id}")
@@ -96,7 +108,8 @@ async def run_detail(run_id: int, user: User = Depends(get_current_user),
     wf = await session.get(Workflow, run.workflow_id)
     states = (await session.execute(
         select(RunNodeState).where(RunNodeState.run_id == run.id))).scalars().all()
-    return {**_run_out(run, wf.name if wf else ""), "graph": json.loads(ver.graph_json),
+    return {**_run_out(run, wf.name if wf else "", await _qc_summary(session, run.id)),
+            "graph": json.loads(ver.graph_json),
             "node_states": [{"node_id": s.node_id, "status": s.status, "total": s.total,
                              "done": s.done, "failed": s.failed} for s in states]}
 
@@ -146,7 +159,8 @@ async def run_qc_failures(run_id: int, node_id: str | None = None, limit: int = 
     if node_id is not None:
         stmt = stmt.where(QcFailure.node_id == node_id)
     rows = (await session.execute(stmt.order_by(QcFailure.id).limit(limit))).scalars().all()
-    return [{"node_id": f.node_id, "sample": json.loads(f.sample_json),
+    return [{"node_id": f.node_id, "trace_id": f.trace_id,
+             "sample": strip_trace_row(json.loads(f.sample_json)),
              "reasons": json.loads(f.reasons_json), "created_at": f.created_at.isoformat()}
             for f in rows]
 
@@ -163,7 +177,7 @@ async def run_qc_failures_jsonl(run_id: int, node_id: str | None = None,
     rows = (await session.execute(stmt.order_by(QcFailure.id))).scalars().all()
     lines = []
     for f in rows:
-        rec = json.loads(f.sample_json)
+        rec = strip_trace_row(json.loads(f.sample_json))
         for i, pm in enumerate(json.loads(f.reasons_json), start=1):
             rec[f"_qc_model_{i}"] = pm.get("status", "")
             rec[f"_qc_model_{i}_reason"] = pm.get("reason", "")
@@ -283,7 +297,85 @@ def _flatten(recs: list[RunRow], data_dir: Path) -> list[dict]:
             rows.extend(read_output_ref_rows(r.output_ref, data_dir))
         else:
             rows.extend(json.loads(r.data_json))
-    return rows
+    return strip_trace_rows(rows)
+
+
+def _raw_rows_for_rec(rec: RunRow, data_dir: Path) -> list[dict]:
+    if rec.output_ref:
+        return read_output_ref_rows(rec.output_ref, data_dir)
+    return json.loads(rec.data_json or "[]")
+
+
+async def _model_logs_for_trace(session: AsyncSession, run_id: int, node_id: str,
+                                trace_id: str, extra_trace_ids: list[str] | None = None) -> list[dict]:
+    from app.routers.model_logs import _out
+    trace_ids = [trace_id] + [t for t in (extra_trace_ids or []) if t and t != trace_id]
+    rows = (await session.execute(
+        select(ModelCallLog).where(
+            ModelCallLog.run_id == run_id,
+            ModelCallLog.node_id == node_id,
+            ModelCallLog.trace_id.in_(trace_ids),
+        ).order_by(ModelCallLog.id))).scalars().all()
+    return [_out(r) for r in rows]
+
+
+@router.get("/{run_id}/trace/{trace_id}")
+async def run_trace(run_id: int, trace_id: str, user: User = Depends(get_current_user),
+                    session: AsyncSession = Depends(get_session)):
+    run = await _get_owned_run(run_id, user, session)
+    ver = await session.get(WorkflowVersion, run.workflow_version_id)
+    graph = parse_graph(ver.graph_json)
+    recs = (await session.execute(
+        select(RunRow).where(RunRow.run_id == run.id).order_by(RunRow.id))).scalars().all()
+    qcs = (await session.execute(
+        select(QcFailure).where(QcFailure.run_id == run.id, QcFailure.trace_id == trace_id)
+        .order_by(QcFailure.id))).scalars().all()
+    by_node: dict[str, list[RunRow]] = {}
+    for rec in recs:
+        by_node.setdefault(rec.node_id, []).append(rec)
+    events = []
+    parent = ""
+    for node in graph.nodes:
+        node_events = []
+        for rec in by_node.get(node.id, []):
+            raw = _raw_rows_for_rec(rec, settings.data_dir)
+            matched = rows_matching_trace(raw, trace_id)
+            if rec.trace_id == trace_id or matched:
+                parent_trace = str((matched or raw or [{}])[0].get(PARENT_TRACE_ID_KEY) or "")
+                if parent_trace and not parent:
+                    parent = parent_trace
+                node_events.append({
+                    "row_idx": rec.row_idx,
+                    "status": rec.status,
+                    "attempt": rec.attempt,
+                    "qc_round": rec.qc_round,
+                    "error": rec.error,
+                    "tokens": {"prompt_tokens": rec.prompt_tokens,
+                               "completion_tokens": rec.completion_tokens},
+                    "output": strip_trace_rows(matched or raw),
+                    "model_logs": await _model_logs_for_trace(
+                        session, run.id, node.id, trace_id, [parent_trace]),
+                })
+        node_failures = [f for f in qcs if f.node_id == node.id]
+        if node_events or node_failures:
+            merged = node_events[0] if node_events else {
+                "row_idx": None, "status": "qc_failed", "attempt": 0, "qc_round": 0,
+                "error": "", "tokens": {"prompt_tokens": 0, "completion_tokens": 0},
+                "output": [], "model_logs": await _model_logs_for_trace(session, run.id, node.id, trace_id),
+            }
+            merged.update({
+                "node_id": node.id,
+                "node_type": node.type,
+                "qc_reasons": [
+                    reason
+                    for f in node_failures
+                    for reason in json.loads(f.reasons_json)
+                ],
+            })
+            events.append(merged)
+    if not events:
+        raise HTTPException(status_code=404, detail="该运行没有这条行级 Trace")
+    return {"trace_id": trace_id, "parent_trace_id": parent, "events": events}
 
 
 @router.get("/{run_id}/rows")
@@ -300,7 +392,8 @@ async def run_rows(run_id: int, node_id: str, status: str = "done",
         .offset((page - 1) * page_size).limit(page_size))).scalars().all()
     if status == "failed":
         return {"total": total, "rows": [
-            {"row_idx": r.row_idx, "error": r.error, "attempt": r.attempt} for r in recs]}
+            {"row_idx": r.row_idx, "trace_id": r.trace_id, "error": r.error,
+             "attempt": r.attempt} for r in recs]}
     return {"total": total, "rows": _flatten(recs, settings.data_dir)}
 
 
