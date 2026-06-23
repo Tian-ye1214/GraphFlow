@@ -452,6 +452,22 @@ def test_merge_requires_shared_anchor_column():
     assert runner._merge_branches("m", [[], []]) == []
 
 
+def test_merge_ignores_divergent_internal_trace_columns():
+    """内部 trace 列(_gf_trace_id/_gf_parent_trace_id)是引擎注入、非用户数据：各支取值不同不应报「取值不同」。
+    回归:trace 诊断引入后，两并行 fanout≥2 分支或异源分支汇合时 trace_id 发散，会被值合并循环误杀整 run。
+    合并行沿用首支 trace 让下游血缘续接；用户列真冲突仍须照常报错(trace 排除不能放过真冲突)。"""
+    import pytest
+    from app.services.trace import PARENT_TRACE_ID_KEY, TRACE_ID_KEY
+    a = [{"q": 1, "a": "x", TRACE_ID_KEY: "run1:in:0|A:0:0", PARENT_TRACE_ID_KEY: "run1:in:0"}]
+    b = [{"q": 1, "b": "y", TRACE_ID_KEY: "run1:in:0|B:0:0", PARENT_TRACE_ID_KEY: "run1:in:0"}]
+    assert runner._merge_branches("m", [a, b]) == [
+        {"q": 1, "a": "x", "b": "y", TRACE_ID_KEY: "run1:in:0|A:0:0", PARENT_TRACE_ID_KEY: "run1:in:0"}]
+    # 用户列冲突仍报错(即便各支 trace 不同也不能掩盖真冲突)
+    with pytest.raises(ValueError, match="取值不同"):
+        runner._merge_branches("m", [[{"q": 1, "a": 2, TRACE_ID_KEY: "t1"}],
+                                     [{"q": 1, "a": 3, TRACE_ID_KEY: "t2"}]])
+
+
 async def test_merge_no_shared_column_fails_run_named(session_factory, monkeypatch):
     """某分支删掉与另一支唯一共享列(concat→qcopy 再 drop q)→按位合并无锚→整 run failed 点名，
     替代原本的静默错配落库。"""

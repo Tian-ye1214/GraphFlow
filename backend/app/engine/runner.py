@@ -211,11 +211,16 @@ def _merge_branches(node_id: str, branches: list[list[dict]]) -> list[dict]:
         row: dict = {}
         for b in branches:
             for k, v in b[i].items():
+                if k in TRACE_KEYS:  # trace 是引擎注入的内部列、非用户数据，与锚列检查一致地排除出冲突比较
+                    continue
                 # 同时比类型：否则 0/False、1/True、0/0.0 数值相等但语义不同会被静默合并（后写覆盖先写）
                 if k in row and (type(row[k]) is not type(v) or row[k] != v):
                     raise ValueError(f"节点 {node_id}: 第 {i} 行列 '{k}' 在多个上游取值不同，"
                                      f"无法合并（请为各分支产出列改用不同列名）")
                 row[k] = v
+        for tk in TRACE_KEYS:  # 各支按位汇合后沿用首支血缘，下游据此续接 trace（fanout≥2/异源分支各支 trace 本就发散）
+            if tk in branches[0][i]:
+                row[tk] = branches[0][i][tk]
         merged.append(row)
     return merged
 
