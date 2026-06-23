@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Button, Collapse, Input, InputNumber, Popover, Radio, Select, Space, Spin, Switch, Table, Tag } from 'antd'
 import { api } from '../../api/client'
 import type { CodegenOut, ColumnsMap, Dataset, ModelConfig, PromptDetail, PromptSummary, RowsPage } from '../../api/types'
-import { sendAssist, setDraft, useNodeAssist } from '../../agent/nodeAssistantStore'
+import { sendAssist, setDraft, setModelConfigId, useNodeAssist } from '../../agent/nodeAssistantStore'
 import { extractTplVars, renderCell } from '../../utils'
 
 export interface FormProps {
@@ -43,6 +43,48 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       {children}
     </div>
   )
+}
+
+type CollapseActiveKey = string | string[] | undefined
+
+function nodeCollapseKey(workflowId: number | undefined, nodeType: string, nodeId: string | undefined) {
+  return `graphflow.nodeConfigCollapse.v1:${workflowId ?? 0}:${nodeType}:${nodeId ?? ''}`
+}
+
+function readCollapseKeys(storageKey: string): string[] {
+  try {
+    const parsed = JSON.parse(globalThis.localStorage?.getItem(storageKey) ?? '[]') as unknown
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+function writeCollapseKeys(storageKey: string, keys: string[]) {
+  try {
+    if (keys.length === 0) globalThis.localStorage?.removeItem(storageKey)
+    else globalThis.localStorage?.setItem(storageKey, JSON.stringify(keys))
+  } catch {
+    /* localStorage may be unavailable in hardened browsers. */
+  }
+}
+
+function normalizeCollapseKeys(keys: CollapseActiveKey): string[] {
+  if (!keys) return []
+  return Array.isArray(keys) ? keys : [keys]
+}
+
+function usePersistentCollapse(storageKey: string) {
+  const [activeKey, setActiveKey] = useState<string[]>(() => readCollapseKeys(storageKey))
+  useEffect(() => {
+    setActiveKey(readCollapseKeys(storageKey))
+  }, [storageKey])
+  const onChange = (keys: CollapseActiveKey) => {
+    const next = normalizeCollapseKeys(keys)
+    setActiveKey(next)
+    writeCollapseKeys(storageKey, next)
+  }
+  return { activeKey, onChange }
 }
 
 function ThinkingControls({ params, patchParams }: {
@@ -236,8 +278,11 @@ function DatasetHeadPreview({ ds }: { ds: Dataset }) {
   )
 }
 
-function InputNodeForm({ config, onChange }: FormProps) {
+function InputNodeForm({ config, onChange, workflowId, nodeId }: FormProps & {
+  workflowId?: number; nodeId?: string
+}) {
   const [datasets, setDatasets] = useState<Dataset[]>([])
+  const collapse = usePersistentCollapse(nodeCollapseKey(workflowId, 'input', nodeId))
   useEffect(() => {
     void api.get<Dataset[]>('/api/datasets').then(setDatasets)
   }, [])
@@ -245,7 +290,7 @@ function InputNodeForm({ config, onChange }: FormProps) {
     .map((id: number) => datasets.find((d) => d.id === id))
     .filter(Boolean) as Dataset[]
   return (
-    <Collapse defaultActiveKey={[]} items={[
+    <Collapse activeKey={collapse.activeKey} onChange={collapse.onChange} items={[
       { key: 'dataset', label: '数据集', children: (
         <>
           <Field label="数据集（可多选，按行拼接）">
@@ -268,9 +313,9 @@ function NodeAssist({ nodeType, workflowId, nodeId, config, onApply }: {
   onApply: (config: Record<string, any>) => void
 }) {
   const [models, setModels] = useState<ModelConfig[]>([])
-  const [modelSel, setModelSel] = useState<number>()
-  const key = `${workflowId ?? 0}:${nodeId ?? ''}`
+  const key = `graphflow.nodeAssistant.v1:${workflowId ?? 0}:${nodeType}:${nodeId ?? ''}`
   const st = useNodeAssist(key)
+  const modelSel = st.modelConfigId
   useEffect(() => {
     void api.get<ModelConfig[]>('/api/models').then(setModels)
   }, [])
@@ -302,7 +347,8 @@ function NodeAssist({ nodeType, workflowId, nodeId, config, onApply }: {
                       onChange={(e) => setDraft(key, e.target.value)} />
       <Space style={{ marginTop: 8 }}>
         <Select size="small" style={{ width: 150 }} placeholder="生成用模型" value={modelSel}
-                onChange={setModelSel} options={models.map((m) => ({ value: m.id, label: m.name }))} />
+                onChange={(v) => setModelConfigId(key, v)}
+                options={models.map((m) => ({ value: m.id, label: m.name }))} />
         <Button size="small" loading={st.pending} disabled={!st.draft.trim() || !modelSel}
                 onClick={send}>发送</Button>
       </Space>
@@ -314,6 +360,7 @@ function LlmSynthForm({ config, onChange, workflowId, nodeId, inputCols }: FormP
   workflowId?: number; nodeId?: string; inputCols: string[]
 }) {
   const [models, setModels] = useState<ModelConfig[]>([])
+  const collapse = usePersistentCollapse(nodeCollapseKey(workflowId, 'llm_synth', nodeId))
   useEffect(() => {
     void api.get<ModelConfig[]>('/api/models').then(setModels)
   }, [])
@@ -324,7 +371,7 @@ function LlmSynthForm({ config, onChange, workflowId, nodeId, inputCols }: FormP
     <>
       <NodeAssist nodeType="llm_synth" workflowId={workflowId} nodeId={nodeId} config={config}
                   onApply={(c) => onChange({ ...config, ...c })} />
-      <Collapse defaultActiveKey={[]} items={[
+      <Collapse activeKey={collapse.activeKey} onChange={collapse.onChange} items={[
         { key: 'model', label: '模型', children: (
           <Field label="模型">
             <Select
@@ -479,14 +526,16 @@ function OpFields({ op, update }: { op: Record<string, any>; update: (p: object)
   }
 }
 
-function AgentOpFields({ op, update, workflowId, nodeId }: {
+function AgentOpFields({ op, update, workflowId, nodeId, opIndex }: {
   op: Record<string, any>; update: (p: object) => void
-  workflowId?: number; nodeId?: string
+  workflowId?: number; nodeId?: string; opIndex: number
 }) {
   const [models, setModels] = useState<ModelConfig[]>([])
-  const [modelSel, setModelSel] = useState<number>()
   const [busy, setBusy] = useState(false)
   const [info, setInfo] = useState('')
+  const key = `graphflow.nodeAssistant.v1:${workflowId ?? 0}:auto_process:${nodeId ?? ''}:agent:${opIndex}`
+  const st = useNodeAssist(key)
+  const modelSel = st.modelConfigId
   const params = op.params ?? {}
   const patchParams = (p: object) => update({ params: { ...params, ...p } })
   useEffect(() => {
@@ -513,7 +562,8 @@ function AgentOpFields({ op, update, workflowId, nodeId }: {
                       onChange={(e) => update({ instruction: e.target.value })} />
       <Space style={{ margin: '8px 0' }}>
         <Select size="small" style={{ width: 150 }} placeholder="生成用模型" value={modelSel}
-                onChange={setModelSel} options={models.map((m) => ({ value: m.id, label: m.name }))} />
+                onChange={(v) => setModelConfigId(key, v)}
+                options={models.map((m) => ({ value: m.id, label: m.name }))} />
         <Button size="small" loading={busy} disabled={!op.instruction || !modelSel}
                 onClick={() => void generate()}>生成代码</Button>
       </Space>
@@ -540,9 +590,10 @@ function AutoProcessForm({ config, onChange, workflowId, nodeId }: FormProps & {
   workflowId?: number; nodeId?: string
 }) {
   const ops: Record<string, any>[] = config.operations ?? []
+  const collapse = usePersistentCollapse(nodeCollapseKey(workflowId, 'auto_process', nodeId))
   const setOps = (next: Record<string, any>[]) => onChange({ ...config, operations: next })
   return (
-    <Collapse defaultActiveKey={[]} items={[
+    <Collapse activeKey={collapse.activeKey} onChange={collapse.onChange} items={[
       { key: 'ops', label: '处理操作', children: (
         <>
           {ops.map((op, i) => (
@@ -555,6 +606,7 @@ function AutoProcessForm({ config, onChange, workflowId, nodeId }: FormProps & {
               </Space>
               {op.op === 'agent'
                 ? <AgentOpFields op={op} workflowId={workflowId} nodeId={nodeId}
+                                 opIndex={i}
                                  update={(p) => setOps(ops.map((o, j) => (j === i ? { ...o, ...p } : o)))} />
                 : <OpFields op={op} update={(p) => setOps(ops.map((o, j) => (j === i ? { ...o, ...p } : o)))} />}
             </div>
@@ -576,6 +628,7 @@ function QcForm({ config, onChange, workflowId, nodeId, inputCols }: FormProps &
   workflowId?: number; nodeId?: string; inputCols: string[]
 }) {
   const [models, setModels] = useState<ModelConfig[]>([])
+  const collapse = usePersistentCollapse(nodeCollapseKey(workflowId, 'qc', nodeId))
   useEffect(() => {
     void api.get<ModelConfig[]>('/api/models').then(setModels)
   }, [])
@@ -586,7 +639,7 @@ function QcForm({ config, onChange, workflowId, nodeId, inputCols }: FormProps &
     <>
       <NodeAssist nodeType="qc" workflowId={workflowId} nodeId={nodeId} config={config}
                   onApply={(c) => onChange({ ...config, ...c })} />
-      <Collapse defaultActiveKey={[]} items={[
+      <Collapse activeKey={collapse.activeKey} onChange={collapse.onChange} items={[
         { key: 'judge', label: '判定', children: (
           <>
             <Field label="判定模型（多选，N 个模型同提示词判定）">
@@ -651,9 +704,12 @@ function QcForm({ config, onChange, workflowId, nodeId, inputCols }: FormProps &
   )
 }
 
-function OutputNodeForm({ config, onChange }: FormProps) {
+function OutputNodeForm({ config, onChange, workflowId, nodeId }: FormProps & {
+  workflowId?: number; nodeId?: string
+}) {
+  const collapse = usePersistentCollapse(nodeCollapseKey(workflowId, 'output', nodeId))
   return (
-    <Collapse defaultActiveKey={[]} items={[
+    <Collapse activeKey={collapse.activeKey} onChange={collapse.onChange} items={[
       { key: 'output', label: '输出', children: (
         <>
           <Field label="同时保存为新数据集">
@@ -702,10 +758,13 @@ function KvEditor({ pairs, onChange, keyPlaceholder, valPlaceholder }: {
   )
 }
 
-function HttpFetchForm({ config, onChange, inputCols }: FormProps & { inputCols: string[] }) {
+function HttpFetchForm({ config, onChange, workflowId, nodeId, inputCols }: FormProps & {
+  workflowId?: number; nodeId?: string; inputCols: string[]
+}) {
+  const collapse = usePersistentCollapse(nodeCollapseKey(workflowId, 'http_fetch', nodeId))
   const patch = (p: object) => onChange({ ...config, ...p })
   return (
-    <Collapse defaultActiveKey={[]} items={[
+    <Collapse activeKey={collapse.activeKey} onChange={collapse.onChange} items={[
       { key: 'req', label: '请求', children: (
         <>
           <Field label="请求方法">
@@ -789,7 +848,7 @@ export default function NodeConfigForm({ type, config, onChange, workflowId, nod
   )
   switch (type) {
     case 'input':
-      return <InputNodeForm config={config} onChange={onChange} />
+      return <InputNodeForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} />
     case 'llm_synth':
       return <>{bar}<LlmSynthForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} inputCols={inputCols} /></>
     case 'auto_process':
@@ -797,9 +856,9 @@ export default function NodeConfigForm({ type, config, onChange, workflowId, nod
     case 'qc':
       return <>{bar}<QcForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} inputCols={inputCols} /></>
     case 'http_fetch':
-      return <>{bar}<HttpFetchForm config={config} onChange={onChange} inputCols={inputCols} /></>
+      return <>{bar}<HttpFetchForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} inputCols={inputCols} /></>
     case 'output':
-      return <>{bar}<OutputNodeForm config={config} onChange={onChange} /></>
+      return <>{bar}<OutputNodeForm config={config} onChange={onChange} workflowId={workflowId} nodeId={nodeId} /></>
     default:
       return null
   }
