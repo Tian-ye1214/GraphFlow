@@ -42,7 +42,7 @@ def create_model(mc: ModelConfig, params: dict | None = None) -> OpenAIChatModel
         model_cls = OpenAIChatModel
     model = model_cls(
         mc.model_name,
-        provider=make_agent_provider(mc, responses=use_responses),
+        provider=make_agent_provider(mc),
         settings=ModelSettings(**kw) if kw else None,
     )
     return LoggingModel(model)

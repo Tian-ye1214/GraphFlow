@@ -223,7 +223,7 @@ async def test_resume_unfinished_fails_stale_importing(session_factory):
 
 # --- Task 4: /upload 端点 后台摄入 ----------------------------------------
 
-from conftest import upload_ready, wait_ready  # noqa: E402
+from conftest import wait_ready  # noqa: E402
 
 
 async def test_upload_endpoint_returns_importing_then_ready(auth_client):

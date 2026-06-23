@@ -17,9 +17,9 @@ def test_create_model_decrypts_key(monkeypatch):
     captured = {}
     real = factory.make_agent_provider
 
-    def spy(mc, *, responses=False):
+    def spy(mc):
         captured.update(base_url=mc.base_url, api_key=crypto.decrypt(mc.api_key_enc))
-        return real(mc, responses=responses)
+        return real(mc)
 
     monkeypatch.setattr(factory, "make_agent_provider", spy)
     model = factory.create_model(_mc())

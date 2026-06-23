@@ -13,7 +13,6 @@
 import asyncio
 import json
 
-import pytest
 
 from conftest import wait_ready
 

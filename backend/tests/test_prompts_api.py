@@ -1,4 +1,3 @@
-import pytest
 
 
 async def test_create_makes_v1_and_extracts_vars(auth_client):

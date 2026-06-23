@@ -71,7 +71,7 @@ def _agent_http_client(mc: ModelConfig) -> httpx.AsyncClient:
     return _agent_client_cache[key]
 
 
-def make_agent_provider(mc: ModelConfig, *, responses: bool = False) -> AzureProvider | OpenAIProvider:
+def make_agent_provider(mc: ModelConfig) -> AzureProvider | OpenAIProvider:
     api_key = decrypt_api_key(mc)
     http_client = _agent_http_client(mc)
     if provider_name(mc) != "azure":

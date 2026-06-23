@@ -1,4 +1,3 @@
-import json
 
 import pytest
 
@@ -71,7 +70,6 @@ async def test_goal_rejects_empty_text(auth_client, mc_id, no_goal):
 
 
 async def test_goal_rejects_running_session(auth_client, mc_id, no_goal):
-    from app.agent import turns as t
 
     r = await auth_client.post("/api/agent/sessions", json={"model_config_id": mc_id})
     sid = r.json()["id"]

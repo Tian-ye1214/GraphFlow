@@ -324,7 +324,7 @@ async def test_delete_run_cascades(auth_client, monkeypatch, session_factory):
     patch_chat(monkeypatch)
     wf_id = await setup_workflow(auth_client)
     run_id = (await auth_client.post("/api/runs", json={"workflow_id": wf_id})).json()["id"]
-    detail = await wait_run(auth_client, run_id)
+    await wait_run(auth_client, run_id)
     async with session_factory() as s:
         ver_id = (await s.execute(
             select(Run.workflow_version_id).where(Run.id == run_id))).scalar()

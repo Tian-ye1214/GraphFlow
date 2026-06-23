@@ -15,7 +15,7 @@ from app.db import get_session, get_session_factory
 from app.events import publish
 from app.engine.graph import GraphError, descendants, parse_graph, validate_graph
 from app.engine.manager import manager
-from app.models import (Dataset, ModelCallLog, ModelConfig, QcFailure, QcMetric, Run, RunLog,
+from app.models import (ModelCallLog, QcFailure, QcMetric, Run, RunLog,
                         RunNodeState, RunRow, User, Workflow, WorkflowVersion)
 from app.routers.workflows import get_owned_workflow
 from app.services.export import export_rows

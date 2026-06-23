@@ -2,7 +2,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.models import Dataset, ModelConfig, Run, RunNodeState, RunRow, User, Workflow, WorkflowVersion
+from app.models import Run, RunNodeState, RunRow, User, Workflow, WorkflowVersion
 
 
 async def test_create_user_and_query(session_factory):

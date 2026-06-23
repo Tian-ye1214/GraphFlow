@@ -1,4 +1,3 @@
-import pytest
 
 from app.models import QcFailure, QcMetric
 
@@ -26,7 +25,6 @@ async def test_qc_metrics_and_failures_endpoints(auth_client, session_factory):
 
 
 async def test_qc_endpoints_reject_foreign_run(auth_client, session_factory):
-    from sqlalchemy import select
     from app.models import Run, User
     # Create a "stranger" user directly in the DB (without touching the shared auth_client cookie)
     async with session_factory() as s:
@@ -68,7 +66,6 @@ async def test_qc_failures_jsonl_export(auth_client, session_factory):
 
 
 async def test_qc_failures_jsonl_rejects_foreign_run(auth_client, session_factory):
-    from sqlalchemy import select
     from app.models import Run, User
     async with session_factory() as s:
         stranger = User(username="stranger2", display_name="s2")

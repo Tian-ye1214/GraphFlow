@@ -2,7 +2,6 @@ import json
 
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import FunctionModel
-from sqlalchemy import select
 
 from app.agent import codegen
 from app.models import Dataset, DatasetRow, Workflow

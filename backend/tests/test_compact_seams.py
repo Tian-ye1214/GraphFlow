@@ -3,7 +3,6 @@ spy 替换 maybe_compact，验证当 compactor_mc 非 None 时被调用，None �
 """
 import json
 
-import pytest
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import FunctionModel
 
@@ -108,7 +107,6 @@ async def test_manager_seam_calls_compact_when_set(tmp_path, monkeypatch):
     monkeypatch.setattr("app.agent.orchestrator.maybe_compact", spy)
 
     from app.agent.system import AgentSystem
-    from app.models import ModelConfig
 
     # 用真 ModelConfig 让 resolve_compactor_model 返回非 None
     # 但 _compact 内部不会走真 LLM（spy 直接返回 history）

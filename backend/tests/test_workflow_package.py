@@ -70,7 +70,7 @@ async def _seed_workflow(session_factory):
     """建 1 用户 + 1 模型(带 key) + 1 提示词(2 版) + 1 数据集(2 行) + 1 引用它们的工作流。
     返回 (uid, wf_id)。"""
     from app.crypto import encrypt
-    from app.models import (Dataset, DatasetRow, ModelConfig, Prompt, PromptVersion, User,
+    from app.models import (Dataset, ModelConfig, Prompt, User,
                             Workflow)
     async with session_factory() as s:
         u = User(username="exp"); s.add(u); await s.flush()
@@ -595,7 +595,6 @@ async def test_import_same_name_distinct_resources_not_folded(session_factory, t
         wf_out, report = await wp.import_package(s, str(path), uid)
     assert len(report["datasets_created"]) == 2 and not report["datasets_reused"]
     async with session_factory() as s:
-        from sqlalchemy import select
         g = json.loads((await s.get(Workflow, wf_out["id"])).graph_json)
         d1 = next(n for n in g["nodes"] if n["id"] == "in1")["config"]["dataset_ids"][0]
         d2 = next(n for n in g["nodes"] if n["id"] == "in2")["config"]["dataset_ids"][0]

@@ -1,5 +1,4 @@
-import app.cli as cli
-from test_cli import gf, server   # 复用 server fixture 与 gf 包装
+from test_cli import gf, server  # noqa: F401  复用 server fixture（pytest 按名注入，看似未用实为必需）
 
 
 def _login(server):

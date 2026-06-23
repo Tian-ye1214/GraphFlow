@@ -1,5 +1,4 @@
 from conftest import wait_ready
-from sqlalchemy import select
 
 from app.models import Dataset, User
 

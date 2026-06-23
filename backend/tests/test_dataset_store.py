@@ -1,7 +1,6 @@
 import json
 
 from openpyxl import load_workbook
-from sqlalchemy import select
 
 from app.config import settings
 from app.models import Dataset, DatasetRow, User

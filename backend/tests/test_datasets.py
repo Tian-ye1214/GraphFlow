@@ -185,7 +185,6 @@ async def test_export_dataset_csv(auth_client):
 
 
 async def test_export_dataset_rejects_foreign(auth_client, session_factory):
-    from sqlalchemy import select
     from app.models import User
     async with session_factory() as s:
         stranger = User(username="ds_stranger", display_name="x")

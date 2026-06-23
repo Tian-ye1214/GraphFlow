@@ -1,6 +1,5 @@
 import json
 import socket
-import sys
 import threading
 import time
 
@@ -631,7 +630,6 @@ def test_model_logs_top_level_and_source_filter(server, capsys):
 
 def test_qc_prints_metrics_and_failures(server, capsys, tmp_path):
     import json as _json
-    from app.config import settings as _s
     from app.db import get_session_factory
     from app.models import Run, User, QcMetric, QcFailure
     from sqlalchemy import select

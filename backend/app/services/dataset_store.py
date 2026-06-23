@@ -15,7 +15,6 @@ from openpyxl.utils.exceptions import InvalidFileException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.engine.columns import ordered_union
 from app.models import Dataset, DatasetRow
 
 SHARD_SIZE = 100_000
