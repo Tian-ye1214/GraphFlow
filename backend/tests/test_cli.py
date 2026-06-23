@@ -414,6 +414,20 @@ def test_node_set_judge_models_and_pass_k(server, capsys):
     assert node["config"]["pass_k"] == 2
 
 
+def test_node_set_output_count(server, capsys):
+    login_and_wf(server)
+    gf("node", "add", "output")
+    capsys.readouterr()
+    gf("node", "set", "output_1", "count=100")
+    capsys.readouterr()
+    gf("node", "show", "output_1")
+    assert json.loads(capsys.readouterr().out)["config"]["count"] == 100
+    gf("node", "set", "output_1", "count=")           # 留空清除上限
+    capsys.readouterr()
+    gf("node", "show", "output_1")
+    assert json.loads(capsys.readouterr().out)["config"]["count"] is None
+
+
 def test_wf_rename(server, capsys):
     login_and_wf(server, "旧名")
     gf("wf", "rename", "旧名", "新名")

@@ -42,6 +42,8 @@ def cmd_node_set(args):
             cfg["pass_k"] = int(v)
         elif k == "max_rounds":
             cfg["max_rounds"] = int(v)
+        elif k == "count":                          # output 产量上限：合成产够即停；留空=不限
+            cfg["count"] = int(v) if v else None
         elif k in HTTP_STR_KEYS:
             cfg[k] = v
         elif k == "extract":

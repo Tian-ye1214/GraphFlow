@@ -40,6 +40,10 @@ def validate_graph(g: Graph) -> None:
     for n in g.nodes:
         if n.type not in NODE_TYPES:
             raise GraphError(f"未知节点类型: {n.type}")
+        if n.type == "output":
+            c = n.config.get("count")
+            if c is not None and (isinstance(c, bool) or not isinstance(c, int) or c < 1):
+                raise GraphError(f"输出节点 {n.id}: count 必须为 ≥1 的整数或留空，当前为 {c!r}")
     qc_ids = {n.id for n in g.nodes if n.type == "qc"}
     for e in g.edges:
         if e["source"] not in id_set or e["target"] not in id_set:

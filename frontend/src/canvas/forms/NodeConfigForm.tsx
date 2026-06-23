@@ -722,7 +722,14 @@ function OutputNodeForm({ config, onChange, workflowId, nodeId }: FormProps & {
                      onChange={(e) => onChange({ ...config, dataset_name: e.target.value })} />
             </Field>
           )}
-          <div style={{ color: '#999' }}>导出文件在运行详情页选择格式下载。</div>
+          <Field label="最多输出行数">
+            <InputNumber min={1} value={config.count ?? undefined} style={{ width: 160 }}
+                         placeholder="留空=不限"
+                         onChange={(v) => onChange({ ...config, count: v ?? undefined })} />
+          </Field>
+          <div style={{ color: '#999' }}>设了行数：合成产够即停、省大模型调用（失败/质检淘汰都不补，最终 ≤ 该数）。
+            仅对「单链：合成→(质检)→本输出」省成本；遇分叉/多父合并按全量跑、只在此截断。
+            导出文件在运行详情页选择格式下载。</div>
         </>
       ) },
     ]} />

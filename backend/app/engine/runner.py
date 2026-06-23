@@ -129,7 +129,7 @@ async def _execute(run_id, session_factory, user_sem, cancel_event):
         await _log(session_factory, run_id, node.id, f"▶ 节点 {node.id} 开始")
         inputs = await _node_inputs(session_factory, run_id, graph, node)
         if node.type == "llm_synth":
-            await _run_llm_node(session_factory, run_id, user_id, node, inputs,
+            await _run_llm_node(session_factory, run_id, user_id, graph, node, inputs,
                                 user_sem, cancel_event)
         elif node.type == "qc":
             await _run_qc_node(session_factory, run_id, user_id, graph, node, inputs,
@@ -301,6 +301,8 @@ async def _barrier_output(session_factory, user_id, node: Node, inputs, run_id: 
         # 被标记删除的列不应泄漏进最终训练数据集。（_write_unit 之后会再 drop 一次，幂等无害。）
         drop = set(cfg.get("drop_columns") or [])
         out = [{k: v for k, v in r.items() if k not in drop} for r in inputs] if drop else inputs
+        if cfg.get("count"):                       # 产量封顶：合成已早停，此处把最终输出截到精确 ≤count
+            out = out[:cfg["count"]]
         if cfg.get("save_as_dataset"):
             export_rows = strip_trace_rows(out)
             columns = ordered_union([list(row) for row in export_rows])
@@ -319,22 +321,29 @@ async def _barrier_output(session_factory, user_id, node: Node, inputs, run_id: 
 
 
 async def _run_per_row_node(session_factory, run_id, user_id, node: Node, inputs, cancel_event,
-                            *, row_coro, log_source=None):
+                            *, row_coro, log_source=None, max_output_rows=None):
     """逐行隔离节点（llm_synth / http_fetch）的公共脚手架：断点续跑（跳过已 done/failed 的行）、
     节点内并发、硬中断、逐行成败计数与落库、收尾置节点终态——这套语义必须两类节点完全一致。
     差异只在 row_coro（产生第 idx 行结果的协程，返回 (out_rows, usage)）与 log_source（模型日志归因来源；
-    http 无模型调用故为 None）。节点特有的 config 预校验由各包装函数在调用本函数前完成。"""
+    http 无模型调用故为 None）。节点特有的 config 预校验由各包装函数在调用本函数前完成。
+    max_output_rows（output 节点 count）：产量封顶——最多处理 ceil(count/fanout) 个输入行就停，
+    省大模型调用；按「累计已尝试输入行(done+failed)」算，使断点续跑跨次不超额、淘汰不补（多少要多少）。"""
     cfg = node.config
     async with session_factory() as s:
         existing = (await s.execute(select(RunRow.row_idx, RunRow.status).where(
             RunRow.run_id == run_id, RunRow.node_id == node.id))).all()
     done_idx = {idx for idx, st in existing if st == "done"}
     failed_idx = {idx for idx, st in existing if st == "failed"}
+    todo = [i for i in range(len(inputs)) if i not in done_idx and i not in failed_idx]
     total = len(inputs)
+    if max_output_rows is not None:
+        fanout = cfg.get("fanout_n", 1)             # 合法性已由 validate_node_config_shape 保证（≥1 int）
+        max_input = -(-max_output_rows // fanout)   # ceil：产量预算换算成最多处理的输入行数
+        todo = todo[:max(0, max_input - len(done_idx) - len(failed_idx))]
+        total = len(done_idx) + len(failed_idx) + len(todo)
     done_count, failed_count = len(done_idx), len(failed_idx)
     await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running",
                           total=total, done=done_count, failed=failed_count)
-    todo = [i for i in range(total) if i not in done_idx and i not in failed_idx]
     node_sem = asyncio.Semaphore(cfg.get("concurrency", 4))
 
     async def work(idx: int):
@@ -388,7 +397,29 @@ def validate_node_config_shape(node: Node) -> None:
             raise ValueError(f"http_fetch 节点 {node.id}: extract 必须为对象，当前为 {type(cfg.get('extract')).__name__}")
 
 
-async def _run_llm_node(session_factory, run_id, user_id, node: Node, inputs,
+def _resolve_output_count(graph: Graph, node: Node) -> int | None:
+    """合成节点的产量上限 count：仅当它处在「直链」——沿 normal 边 synth→…→单个 output，沿途每节点
+    单父单子（无分叉、无合并）、终点 output 设了 count——才返回该 count，据此早停合成省大模型调用。
+    一旦中途分叉/汇合/多 output，返回 None 不早停：产量正确性仍由 output 端 out[:count] 截断保证，
+    只是这些复杂图省不到合成成本。如此 count 绝不破坏多父合并 / 多 output / 留空(不限) 的兄弟分支。
+    count 取值合法性由 validate_graph 在 run 启动时校验，此处只读已合法的正整数。"""
+    normal = [e for e in graph.edges if e["kind"] == "normal"]
+    by_id = {n.id: n for n in graph.nodes}
+    cur = node.id
+    while True:
+        children = [e["target"] for e in normal if e["source"] == cur]
+        if len(children) != 1:                                  # 分叉(>1)或断头(0)：非直链
+            return None
+        child = children[0]
+        if len([e for e in normal if e["target"] == child]) != 1:   # child 多父=合并：非直链
+            return None
+        cnode = by_id[child]
+        if cnode.type == "output":
+            return cnode.config.get("count") or None
+        cur = child
+
+
+async def _run_llm_node(session_factory, run_id, user_id, graph: Graph, node: Node, inputs,
                         user_sem, cancel_event):
     cfg = node.config
     validate_node_config_shape(node)   # fanout_n 等配置错误：先于逐行循环校验，整 run failed 点名节点
@@ -399,7 +430,7 @@ async def _run_llm_node(session_factory, run_id, user_id, node: Node, inputs,
     await _run_per_row_node(
         session_factory, run_id, user_id, node, inputs, cancel_event,
         row_coro=lambda idx: nodes.run_llm_synth_row(cfg, inputs[idx], mc, user_sem),
-        log_source="synth")
+        log_source="synth", max_output_rows=_resolve_output_count(graph, node))
 
 
 async def _run_http_node(session_factory, run_id, user_id, node: Node, inputs, cancel_event):

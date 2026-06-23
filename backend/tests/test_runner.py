@@ -663,3 +663,140 @@ async def test_llm_passes_through_all_columns(session_factory, monkeypatch):
     for r in out_rows:
         assert all(f"c{j}" in r for j in range(10))   # 全部 10 列透传到最终保存
         assert "ans" in r                              # 产出列也在
+
+
+# ---- 输出节点 count：合成产够 count 就停掉大模型（省调用），最终输出截到 ≤count（不补，多少要多少）----
+
+async def test_output_count_caps_synth(session_factory, monkeypatch):
+    """out 节点 count=2、输入 5 行：合成只跑 2 行就停（省 3 次大模型调用），最终输出 2 行。"""
+    calls = patch_chat(monkeypatch)
+    graph = json.loads(json.dumps(GRAPH))
+    graph["nodes"][2]["config"]["count"] = 2
+    run_id = await make_run(session_factory, graph=graph, rows=5)
+    await run_it(session_factory, run_id)
+    assert (await get_run(session_factory, run_id)).status == "completed"
+    assert len(calls) == 2                                            # 只调 2 次大模型，没跑满 5 行
+    assert len(await runner._node_outputs(session_factory, run_id, "gen")) == 2
+    assert len(await runner._node_outputs(session_factory, run_id, "out")) == 2
+    async with session_factory() as s:
+        gen = (await s.execute(select(RunNodeState).where(
+            RunNodeState.run_id == run_id, RunNodeState.node_id == "gen"))).scalar_one()
+    assert gen.total == 2 and gen.done == 2 and gen.failed == 0       # 进度分母=封顶后实际处理数
+
+
+async def test_output_count_with_qc_no_topup(session_factory, monkeypatch):
+    """带 QC：合成封顶 count=3，QC 淘汰不补——某行判不过则最终输出 < count。"""
+    def fn(u):
+        if u.startswith("判定:"):
+            ok = "问0" not in u                                      # 答[Q:问0] 这条判不过
+            return (json.dumps({"status": "pass" if ok else "failed", "reason": "x"}),
+                    {"prompt_tokens": 1, "completion_tokens": 1})
+        return f"答[{u}]", {"prompt_tokens": 1, "completion_tokens": 2}
+    patch_chat(monkeypatch, fn)
+    graph = json.loads(json.dumps(QC_LINE_GRAPH))
+    graph["nodes"][3]["config"]["count"] = 3
+    run_id = await make_run(session_factory, graph=graph, rows=5)
+    await run_it(session_factory, run_id)
+    assert (await get_run(session_factory, run_id)).status == "completed"
+    assert len(await runner._node_outputs(session_factory, run_id, "gen")) == 3   # 合成封顶 3
+    assert len(await runner._node_outputs(session_factory, run_id, "out")) == 2   # QC 淘汰 1，不补
+
+
+async def test_output_count_exceeds_input_runs_all(session_factory, monkeypatch):
+    """count 大于可用输入：有多少跑多少，不报错。"""
+    calls = patch_chat(monkeypatch)
+    graph = json.loads(json.dumps(GRAPH))
+    graph["nodes"][2]["config"]["count"] = 10
+    run_id = await make_run(session_factory, graph=graph, rows=3)
+    await run_it(session_factory, run_id)
+    assert len(calls) == 3
+    assert len(await runner._node_outputs(session_factory, run_id, "out")) == 3
+
+
+async def test_output_count_resume_respects_cap(session_factory, monkeypatch):
+    """断点续跑下 count 以「累计已处理输入行」算：已 1 行 + count=2 → 只再补跑 1 行。"""
+    calls = patch_chat(monkeypatch)
+    graph = json.loads(json.dumps(GRAPH))
+    graph["nodes"][2]["config"]["count"] = 2
+    run_id = await make_run(session_factory, graph=graph, rows=5)
+    async with session_factory() as s:                               # 预置 idx0 已完成
+        s.add(RunRow(run_id=run_id, node_id="gen", row_idx=0, status="done",
+                     data_json=json.dumps([{"q": "问0", "a": "旧"}], ensure_ascii=False)))
+        await s.commit()
+    await run_it(session_factory, run_id)
+    assert len(calls) == 1                                           # 只补跑 1 行（不是又跑满 2）
+    assert len(await runner._node_outputs(session_factory, run_id, "gen")) == 2
+
+
+async def test_output_count_fanout_rounds_up(session_factory, monkeypatch):
+    """扇出>1：count 按整输入行向上取整（合成可能略多产），输出截到精确 count。"""
+    calls = patch_chat(monkeypatch)
+    graph = json.loads(json.dumps(GRAPH))
+    graph["nodes"][1]["config"]["fanout_n"] = 2
+    graph["nodes"][2]["config"]["count"] = 3
+    run_id = await make_run(session_factory, graph=graph, rows=5)
+    await run_it(session_factory, run_id)
+    assert len(calls) == 4                                           # ceil(3/2)=2 输入行 ×2 扇出
+    assert len(await runner._node_outputs(session_factory, run_id, "gen")) == 4   # 合成产 4
+    assert len(await runner._node_outputs(session_factory, run_id, "out")) == 3   # 输出截到 3
+
+
+def test_validate_graph_count_rules():
+    from app.engine.graph import GraphError, parse_graph, validate_graph
+    def g(count):
+        return parse_graph({"nodes": [{"id": "out", "type": "output", "config": {"count": count}}],
+                            "edges": []})
+    validate_graph(g(None))                                          # 留空合法
+    validate_graph(g(5))                                             # 正整数合法
+    for bad in (-1, 0, "x", 1.5, True):
+        try:
+            validate_graph(g(bad))
+            assert False, f"应拒绝 count={bad!r}"
+        except GraphError:
+            pass
+
+
+def test_resolve_output_count_only_linear():
+    """复审修复：合成产量封顶只在「直链」生效——分叉/多父合并一律 None（不早停），
+    免得 count 把喂合并的支或喂多个/留空 output 的支静默饿死/拖垮整 run。"""
+    from app.engine.graph import parse_graph
+
+    def cap(nodes, edges, sid="s"):
+        g = parse_graph({"nodes": nodes, "edges": edges})
+        return runner._resolve_output_count(g, next(n for n in g.nodes if n.id == sid))
+
+    syn = {"id": "s", "type": "llm_synth", "config": {}}
+    e = lambda a, b: {"source": a, "target": b, "kind": "normal"}                      # noqa: E731
+    # 直链 synth→output(count) / synth→qc→output(count) → 返回 count
+    assert cap([syn, {"id": "o", "type": "output", "config": {"count": 3}}], [e("s", "o")]) == 3
+    assert cap([syn, {"id": "q", "type": "qc", "config": {}},
+                {"id": "o", "type": "output", "config": {"count": 3}}],
+               [e("s", "q"), e("q", "o")]) == 3
+    # output 未设 count → None
+    assert cap([syn, {"id": "o", "type": "output", "config": {}}], [e("s", "o")]) is None
+    # 多父合并（output 有两个父）→ None（不早停，防 merge 错配整 run failed）
+    assert cap([syn, {"id": "s2", "type": "llm_synth", "config": {}},
+                {"id": "o", "type": "output", "config": {"count": 3}}],
+               [e("s", "o"), e("s2", "o")]) is None
+    # 分叉（合成喂两个 output，含一个留空=不限）→ None（各 output 自截，互不饿死）
+    assert cap([syn, {"id": "o1", "type": "output", "config": {"count": 2}},
+                {"id": "o2", "type": "output", "config": {}}],
+               [e("s", "o1"), e("s", "o2")]) is None
+
+
+async def test_output_count_failed_row_consumes_budget(session_factory, monkeypatch):
+    """count 按「跑了几个输入行」算：失败行也占额度、不补——合成失败致最终 < count 是已知行为，
+    剩余未跑输入不自动补（要补用 rerun-failed）。"""
+    def fn(u):
+        if "问1" in u:
+            raise RuntimeError("boom")                 # idx1 合成失败
+        return f"答[{u}]", {"prompt_tokens": 1, "completion_tokens": 2}
+    patch_chat(monkeypatch, fn)
+    graph = json.loads(json.dumps(GRAPH))
+    graph["nodes"][2]["config"]["count"] = 3
+    run_id = await make_run(session_factory, graph=graph, rows=10)
+    await run_it(session_factory, run_id)
+    assert (await get_run(session_factory, run_id)).status == "completed"
+    # 跑了 idx0/1/2 三个输入行，idx1 失败 → 合成 2 行、最终输出 2（<count），剩 7 行不补
+    assert len(await runner._node_outputs(session_factory, run_id, "gen")) == 2
+    assert len(await runner._node_outputs(session_factory, run_id, "out")) == 2
