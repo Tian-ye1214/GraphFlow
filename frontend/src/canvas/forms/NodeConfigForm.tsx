@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Button, Collapse, Input, InputNumber, Popover, Radio, Select, Space, Spin, Switch, Table, Tag } from 'antd'
 import { api } from '../../api/client'
 import type { CodegenOut, ColumnsMap, Dataset, ModelConfig, PromptDetail, PromptSummary, RowsPage } from '../../api/types'
-import { sendAssist, setDraft, setModelConfigId, useNodeAssist } from '../../agent/nodeAssistantStore'
+import { activeConversation, sendAssist, setDraft, setModelConfigId, useNodeAssist } from '../../agent/nodeAssistantStore'
 import { extractTplVars, renderCell } from '../../utils'
 
 export interface FormProps {
@@ -371,7 +371,7 @@ function NodeAssist({ nodeType, workflowId, nodeId, config, onApply }: {
     <div style={{ border: '1px dashed #d9d9d9', borderRadius: 6, padding: 8, marginBottom: 12 }}>
       <div style={{ color: '#722ed1', marginBottom: 4 }}>RedLotus 助手：多轮对话配置本节点</div>
       <div style={{ maxHeight: 200, overflowY: 'auto', marginBottom: 8 }}>
-        {st.messages.map((m, i) => (
+        {activeConversation(st).messages.map((m, i) => (
           <div key={i} style={{ textAlign: m.role === 'user' ? 'right' : 'left', margin: '4px 0' }}>
             <span style={{ background: m.role === 'user' ? '#e6f4ff' : '#f6ffed',
                            borderRadius: 8, padding: '4px 8px', display: 'inline-block',
