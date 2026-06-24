@@ -38,7 +38,10 @@ def _summarize_node(node) -> dict:
     elif t == "auto_process":
         out = {"operations": [op.get("op") for op in c.get("operations", [])]}
     elif t == "http_fetch":
-        out = {"method": c.get("method", "GET"), "url": c.get("url"), "extract": c.get("extract")}
+        out = {"method": c.get("method", "GET"),
+               "endpoint": c.get("endpoint") or c.get("url", ""),
+               "param_keys": sorted((c.get("params") or {}).keys()),
+               "extract": c.get("extract", {})}
     elif t == "output":
         out = {"save_as_dataset": c.get("save_as_dataset", False), "dataset_name": c.get("dataset_name")}
     else:

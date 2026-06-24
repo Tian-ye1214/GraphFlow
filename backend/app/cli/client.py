@@ -92,7 +92,8 @@ def summarize(n: dict) -> str:
     if n["type"] == "auto_process":
         return f"{len(c.get('operations', []))} 个操作"
     if n["type"] == "http_fetch":
-        return f"{c.get('method', 'GET')} {c.get('url', '?')} -> {list((c.get('extract') or {}).keys())}"
+        endpoint = c.get("endpoint") or c.get("url", "?")
+        return f"{c.get('method', 'GET')} {endpoint} -> {list((c.get('extract') or {}).keys())}"
     return f"保存为数据集「{c['dataset_name']}」" if c.get("save_as_dataset") else ""
 
 
@@ -103,7 +104,7 @@ LLM_PARAM_KEYS = {"temp": "temperature", "top_p": "top_p", "max_tokens": "max_to
                   "timeout": "timeout", "json_mode": "json_mode"}
 INT_KEYS = {"fanout_n", "concurrency", "retries", "max_tokens", "timeout"}
 FLOAT_KEYS = {"temperature", "top_p"}
-HTTP_STR_KEYS = {"url", "method", "body"}
+HTTP_STR_KEYS = {"url", "endpoint", "method", "body"}
 
 
 def convert(field: str, v: str):
