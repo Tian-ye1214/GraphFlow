@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { Button, Collapse, Input, InputNumber, Popover, Radio, Select, Space, Spin, Switch, Table, Tag } from 'antd'
 import { api } from '../../api/client'
 import type { CodegenOut, ColumnsMap, Dataset, ModelConfig, PromptDetail, PromptSummary, RowsPage } from '../../api/types'
-import { activeConversation, sendAssist, setDraft, setModelConfigId, useNodeAssist } from '../../agent/nodeAssistantStore'
+import { activeConversation, newConversation, sendAssist, setDraft, setModelConfigId, switchConversation, useNodeAssist } from '../../agent/nodeAssistantStore'
+import { roleLabel, ROLE_BG } from '../../agent/chatPresentation'
 import { extractTplVars, renderCell } from '../../utils'
 
 export interface FormProps {
@@ -356,10 +357,9 @@ function NodeAssist({ nodeType, workflowId, nodeId, config, onApply }: {
   const [models, setModels] = useState<ModelConfig[]>([])
   const key = `graphflow.nodeAssistant.v1:${workflowId ?? 0}:${nodeType}:${nodeId ?? ''}`
   const st = useNodeAssist(key)
+  const active = activeConversation(st)
   const modelSel = st.modelConfigId
-  useEffect(() => {
-    void api.get<ModelConfig[]>('/api/models').then(setModels)
-  }, [])
+  useEffect(() => { void api.get<ModelConfig[]>('/api/models').then(setModels) }, [])
   const send = () => {
     if (!modelSel || !workflowId || !nodeId) return
     void sendAssist(key, {
@@ -369,16 +369,21 @@ function NodeAssist({ nodeType, workflowId, nodeId, config, onApply }: {
   }
   return (
     <div style={{ border: '1px dashed #d9d9d9', borderRadius: 6, padding: 8, marginBottom: 12 }}>
-      <div style={{ color: '#722ed1', marginBottom: 4 }}>RedLotus 助手：多轮对话配置本节点</div>
+      <div style={{ color: '#722ed1', marginBottom: 6 }}>RedLotus 助手：多轮对话配置本节点</div>
+      <Space style={{ marginBottom: 8 }} wrap>
+        <Select size="small" style={{ width: 150 }} value={active.id}
+                onChange={(v) => switchConversation(key, v)}
+                options={st.conversations.map((c, i) => ({ value: c.id, label: c.title || `会话 ${st.conversations.length - i}` }))} />
+        <Button size="small" onClick={() => newConversation(key)}>新会话</Button>
+      </Space>
       <div style={{ maxHeight: 200, overflowY: 'auto', marginBottom: 8 }}>
-        {activeConversation(st).messages.map((m, i) => (
-          <div key={i} style={{ textAlign: m.role === 'user' ? 'right' : 'left', margin: '4px 0' }}>
-            <span style={{ background: m.role === 'user' ? '#e6f4ff' : '#f6ffed',
-                           borderRadius: 8, padding: '4px 8px', display: 'inline-block',
-                           whiteSpace: 'pre-wrap', fontSize: 12 }}>{m.text}</span>
+        {active.messages.map((m, i) => (
+          <div key={i} style={{ margin: '6px 0' }}>
+            <div style={{ fontSize: 11, color: '#999' }}>{roleLabel(m.role)}</div>
+            <div style={{ background: ROLE_BG[m.role], borderRadius: 6, padding: '4px 8px',
+                          whiteSpace: 'pre-wrap', fontSize: 12 }}>{m.text}</div>
             {m.config && (
-              <div><Button size="small" type="link"
-                           onClick={() => onApply(m.config!)}>应用到节点</Button></div>
+              <Button size="small" type="link" onClick={() => onApply(m.config!)}>应用到节点</Button>
             )}
           </div>
         ))}

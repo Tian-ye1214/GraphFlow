@@ -314,6 +314,19 @@ describe('missingLibVars', () => {
   })
 })
 
+describe('NodeConfigForm node assistant UI', () => {
+  it('节点助手有「新会话」按钮和「发送」按钮', async () => {
+    mockNodeConfigApis({ llm_a: { input: ['q'], output: ['q'] } })
+
+    render(
+      <NodeConfigForm type="llm_synth" workflowId={110} nodeId="llm_a" config={{}} onChange={() => {}} />,
+    )
+
+    expect(await screen.findByRole('button', { name: '新会话' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /发\s*送/ })).toBeInTheDocument()
+  })
+})
+
 describe('NodeConfigForm thinking params', () => {
   it('offers max reasoning effort', () => {
     expect(THINKING_EFFORT_OPTIONS).toContain('max')
