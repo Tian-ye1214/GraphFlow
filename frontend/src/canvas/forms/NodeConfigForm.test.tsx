@@ -327,6 +327,29 @@ describe('NodeConfigForm node assistant UI', () => {
   })
 })
 
+describe('NodeConfigForm http_fetch form', () => {
+  it('HTTP 表单有接口/Params/助手，Headers 在高级', async () => {
+    mockNodeConfigApis({ http_node: { input: ['id'], output: ['id'] } })
+
+    render(
+      <NodeConfigForm
+        type="http_fetch"
+        workflowId={301}
+        nodeId="http_node"
+        config={{}}
+        onChange={() => {}}
+      />,
+    )
+
+    // 节点助手在折叠面板外，直接可见
+    expect(await screen.findByText(/RedLotus 助手/)).toBeInTheDocument()
+    // 展开请求面板查看 接口/Params 字段
+    fireEvent.click(await screen.findByText('请求'))
+    expect(await screen.findByText(/接口/)).toBeInTheDocument()
+    expect(await screen.findByText(/Params/)).toBeInTheDocument()
+  })
+})
+
 describe('NodeConfigForm thinking params', () => {
   it('offers max reasoning effort', () => {
     expect(THINKING_EFFORT_OPTIONS).toContain('max')

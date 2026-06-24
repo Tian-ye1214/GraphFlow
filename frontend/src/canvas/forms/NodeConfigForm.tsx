@@ -816,53 +816,73 @@ function HttpFetchForm({ config, onChange, workflowId, nodeId, inputCols }: Form
 }) {
   const collapse = usePersistentCollapse(nodeCollapseKey(workflowId, 'http_fetch', nodeId))
   const patch = (p: object) => onChange({ ...config, ...p })
+  const method = config.method ?? 'GET'
+  const endpoint = config.endpoint ?? config.url ?? ''        // 兼容旧 url
   return (
-    <Collapse activeKey={collapse.activeKey} onChange={collapse.onChange} items={[
-      { key: 'req', label: '请求', children: (
-        <>
-          <Field label="请求方法">
-            <Radio.Group value={config.method ?? 'GET'} onChange={(e) => patch({ method: e.target.value })}>
-              <Radio.Button value="GET">GET</Radio.Button>
-              <Radio.Button value="POST">POST</Radio.Button>
-            </Radio.Group>
-          </Field>
-          <Field label="URL（用 {{列名}} 引用上游数据列）">
-            <Input.TextArea rows={2} value={config.url ?? ''}
-                            onChange={(e) => patch({ url: e.target.value })} />
-            <MissingColsWarning text={config.url ?? ''} inputCols={inputCols} />
-          </Field>
-          {(config.method ?? 'GET') === 'POST' && (
-            <Field label="请求体 Body（{{列名}} 可引用；JSON 字符串）">
-              <Input.TextArea rows={3} value={config.body ?? ''}
-                              onChange={(e) => patch({ body: e.target.value })} />
-              <MissingColsWarning text={config.body ?? ''} inputCols={inputCols} />
+    <>
+      <NodeAssist nodeType="http_fetch" workflowId={workflowId} nodeId={nodeId} config={config}
+                  onApply={(c) => onChange({ ...config, ...c })} />
+      <Collapse activeKey={collapse.activeKey} onChange={collapse.onChange} items={[
+        { key: 'req', label: '请求', children: (
+          <>
+            <Field label="请求方法">
+              <Radio.Group value={method} onChange={(e) => patch({ method: e.target.value })}>
+                <Radio.Button value="GET">GET</Radio.Button>
+                <Radio.Button value="POST">POST</Radio.Button>
+              </Radio.Group>
             </Field>
-          )}
-        </>
-      ) },
-      { key: 'auth', label: '鉴权与提取', children: (
-        <>
-          <Field label="请求头 Headers（值可用 {{列名}}；如 Authorization / Bearer xxx）">
-            <KvEditor pairs={config.headers ?? {}} onChange={(h) => patch({ headers: h })}
-                      keyPlaceholder="Header 名" valPlaceholder="值" />
-          </Field>
+            <Field label="接口 Endpoint（用 {{列名}} 引用上游数据列）">
+              <Input.TextArea rows={2} value={endpoint}
+                              onChange={(e) => patch({ endpoint: e.target.value, url: undefined })} />
+              <MissingColsWarning text={endpoint} inputCols={inputCols} />
+            </Field>
+            <Field label="Params 查询参数（值可用 {{列名}}；api_key 放这里）">
+              <KvEditor pairs={config.params ?? {}} onChange={(p) => patch({ params: p })}
+                        keyPlaceholder="参数名 如 api_key" valPlaceholder="值" />
+            </Field>
+            {method === 'POST' && (
+              <>
+                <Field label="Body 格式">
+                  <Radio.Group value={config.body_format ?? 'json'}
+                               onChange={(e) => patch({ body_format: e.target.value })}>
+                    <Radio.Button value="json">JSON</Radio.Button>
+                    <Radio.Button value="raw">原始文本</Radio.Button>
+                    <Radio.Button value="form">表单</Radio.Button>
+                  </Radio.Group>
+                </Field>
+                <Field label="请求体 Body（{{列名}} 可引用）">
+                  <Input.TextArea rows={3} value={config.body ?? ''}
+                                  onChange={(e) => patch({ body: e.target.value })} />
+                  <MissingColsWarning text={config.body ?? ''} inputCols={inputCols} />
+                </Field>
+              </>
+            )}
+          </>
+        ) },
+        { key: 'extract', label: '提取', children: (
           <Field label="提取（响应 JSON 路径 → 输出列；如 temp ← data.temp）">
             <KvEditor pairs={config.extract ?? {}} onChange={(e) => patch({ extract: e })}
                       keyPlaceholder="输出列名" valPlaceholder="JSON 路径 如 data.weather.0.desc" />
           </Field>
-        </>
-      ) },
-      { key: 'advanced', label: '高级（并发 / 重试 / 超时）', children: (
-        <Space wrap>
-          <Field label="节点并发"><InputNumber min={1} value={config.concurrency ?? 4}
-            onChange={(v) => patch({ concurrency: v ?? 4 })} /></Field>
-          <Field label="重试次数"><InputNumber min={0} value={config.retries ?? 2}
-            onChange={(v) => patch({ retries: v ?? 2 })} /></Field>
-          <Field label="超时(秒)"><InputNumber min={1} value={config.timeout ?? 30}
-            onChange={(v) => patch({ timeout: v ?? 30 })} /></Field>
-        </Space>
-      ) },
-    ]} />
+        ) },
+        { key: 'advanced', label: '高级（请求头 / 并发 / 重试 / 超时）', children: (
+          <>
+            <Field label="请求头 Headers（Authorization / Bearer 等；值可用 {{列名}}）">
+              <KvEditor pairs={config.headers ?? {}} onChange={(h) => patch({ headers: h })}
+                        keyPlaceholder="Header 名" valPlaceholder="值" />
+            </Field>
+            <Space wrap>
+              <Field label="节点并发"><InputNumber min={1} value={config.concurrency ?? 4}
+                onChange={(v) => patch({ concurrency: v ?? 4 })} /></Field>
+              <Field label="重试次数"><InputNumber min={0} value={config.retries ?? 2}
+                onChange={(v) => patch({ retries: v ?? 2 })} /></Field>
+              <Field label="超时(秒)"><InputNumber min={1} value={config.timeout ?? 30}
+                onChange={(v) => patch({ timeout: v ?? 30 })} /></Field>
+            </Space>
+          </>
+        ) },
+      ]} />
+    </>
   )
 }
 
@@ -878,7 +898,7 @@ export default function NodeConfigForm({ type, config, onChange, workflowId, nod
   const outputCols = type === 'input' ? nodeCols.output : liveOutput(type, config, inputCols)
   // 绿标：本节点模板字段里 {{列}} 引用到、且确实在输入列中的列 = 实际用到的列
   const refText = type === 'http_fetch'
-    ? [config.url, config.body, ...Object.values(config.headers ?? {})].filter(Boolean).map(String).join('\n')
+    ? [config.endpoint ?? config.url, config.body, ...Object.values(config.params ?? {}), ...Object.values(config.headers ?? {})].filter(Boolean).map(String).join('\n')
     : `${config.system_prompt ?? ''}\n${config.user_prompt ?? ''}`
   const referenced = referencedCols(refText, inputCols)
   const canInsert = type === 'llm_synth' || type === 'qc' || type === 'http_fetch'
