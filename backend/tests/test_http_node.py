@@ -141,22 +141,25 @@ async def test_http_node_resume_skips_done(session_factory, monkeypatch):
 
 
 @pytest.mark.parametrize("bad_cfg, kw", [
-    ({"url": {"bad": 1}}, "url"),
-    ({"url": "http://x", "body": [1]}, "body"),
-    ({"url": "http://x", "headers": ["a"]}, "headers"),
-    ({"url": "http://x", "extract": ["a"]}, "extract"),
+    ({"endpoint": {"bad": 1}}, "endpoint"),
+    ({"url": {"bad": 1}}, "endpoint"),                 # 旧 url 走兼容，仍按 endpoint 报
+    ({"endpoint": "http://x", "params": ["a"]}, "params"),
+    ({"endpoint": "http://x", "body": [1]}, "body"),
+    ({"endpoint": "http://x", "body_format": "xml"}, "body_format"),
+    ({"endpoint": "http://x", "headers": ["a"]}, "headers"),
+    ({"endpoint": "http://x", "extract": ["a"]}, "extract"),
 ])
 async def test_http_node_dirty_config_fails_run_named(session_factory, monkeypatch, bad_cfg, kw):
-    """脏草稿 config(非字符串 url/body、非 dict headers/extract)是节点配置错误，应整 run failed 并
-    点名节点/键(对照 _run_llm_node 的 fanout_n 预校验)，而非逐行裸 Python 错误且 run 误报 completed。"""
+    """脏草稿 config(非字符串 endpoint/body、非 dict params/headers/extract、非法 body_format)是节点配置错误，
+    应整 run failed 并点名节点/键(对照 _run_llm_node 的 fanout_n 预校验)，而非逐行裸 Python 错误且 run 误报 completed。"""
     async def fake_fetch(method, url, headers=None, body=None, timeout=30, retries=2):
         return 200, "{}"
-
     monkeypatch.setattr("app.services.http.fetch", fake_fetch)
     graph = json.loads(json.dumps(HTTP_GRAPH))
     for n in graph["nodes"]:
         if n["type"] == "http_fetch":
-            n["config"] = {**n["config"], **bad_cfg}
+            cfg = {k: v for k, v in n["config"].items() if k != "url"}  # 去掉基础 url，避免覆盖被测键
+            n["config"] = {**cfg, **bad_cfg}
     run_id = await make_run(session_factory, graph=graph)
     await run_it(session_factory, run_id)
     run = await get_run(session_factory, run_id)

@@ -392,10 +392,16 @@ def validate_node_config_shape(node: Node) -> None:
         if not isinstance(fanout, int) or fanout < 1:
             raise ValueError(f"节点 {node.id}: fanout_n 必须为 ≥1 的整数，当前为 {fanout!r}")
     elif node.type == "http_fetch":
-        if not isinstance(cfg.get("url", ""), str):
-            raise ValueError(f"http_fetch 节点 {node.id}: url 必须为字符串，当前为 {type(cfg.get('url')).__name__}")
+        ep = cfg.get("endpoint", cfg.get("url", ""))
+        if not isinstance(ep, str):
+            raise ValueError(f"http_fetch 节点 {node.id}: endpoint 必须为字符串，当前为 {type(ep).__name__}")
+        if cfg.get("params") is not None and not isinstance(cfg.get("params"), dict):
+            raise ValueError(f"http_fetch 节点 {node.id}: params 必须为对象，当前为 {type(cfg.get('params')).__name__}")
         if cfg.get("body") and not isinstance(cfg.get("body"), str):
             raise ValueError(f"http_fetch 节点 {node.id}: body 必须为字符串，当前为 {type(cfg.get('body')).__name__}")
+        bf = cfg.get("body_format")
+        if bf is not None and bf not in ("json", "raw", "form"):
+            raise ValueError(f"http_fetch 节点 {node.id}: body_format 必须为 json/raw/form，当前为 {bf!r}")
         if cfg.get("headers") is not None and not isinstance(cfg.get("headers"), dict):
             raise ValueError(f"http_fetch 节点 {node.id}: headers 必须为对象，当前为 {type(cfg.get('headers')).__name__}")
         if cfg.get("extract") is not None and not isinstance(cfg.get("extract"), dict):
