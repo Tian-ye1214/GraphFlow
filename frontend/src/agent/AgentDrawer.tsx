@@ -7,6 +7,7 @@ import type {
   AgentMessageOut, AgentSessionDetail, AgentSessionSummary, AgentToolContent, ModelConfig,
 } from '../api/types'
 import { extractConfirmDeletes, stripGoalMarkers } from './parse'
+import { roleLabel, ROLE_BG } from './chatPresentation'
 
 export const AGENT_ROLES = ['coordinator', 'manager', 'worker', 'compactor'] as const
 
@@ -192,21 +193,25 @@ export default function AgentDrawer() {
     const raw = m.content.text ?? ''
     if (m.role === 'user') {
       return (
-        <div key={m.id} style={{ textAlign: 'right', margin: '8px 0' }}>
-          <span style={{ background: '#e6f4ff', borderRadius: 8, padding: '6px 10px', display: 'inline-block', whiteSpace: 'pre-wrap' }}>{raw}</span>
+        <div key={m.id} style={{ margin: '8px 0' }}>
+          <div style={{ fontSize: 11, color: '#999', marginBottom: 2 }}>{roleLabel('user')}</div>
+          <div style={{ background: ROLE_BG.user, borderRadius: 8, padding: '6px 10px', whiteSpace: 'pre-wrap' }}>{raw}</div>
         </div>
       )
     }
     const { text, commands } = extractConfirmDeletes(stripGoalMarkers(raw))
     return (
       <div key={m.id} style={{ margin: '8px 0' }}>
-        <ReactMarkdown>{text}</ReactMarkdown>
-        {commands.map((cmd) => (
-          <Button key={cmd} danger size="small" style={{ marginRight: 8 }} disabled={running}
-                  onClick={() => void send(`确认：${cmd}`)}>
-            确认删除：{cmd}
-          </Button>
-        ))}
+        <div style={{ fontSize: 11, color: '#999', marginBottom: 2 }}>{roleLabel('assistant')}</div>
+        <div style={{ background: ROLE_BG.assistant, borderRadius: 8, padding: '6px 10px' }}>
+          <ReactMarkdown>{text}</ReactMarkdown>
+          {commands.map((cmd) => (
+            <Button key={cmd} danger size="small" style={{ marginRight: 8 }} disabled={running}
+                    onClick={() => void send(`确认：${cmd}`)}>
+              确认删除：{cmd}
+            </Button>
+          ))}
+        </div>
       </div>
     )
   }
