@@ -121,6 +121,47 @@ function toggleColRef(text: string, col: string): string {
   return (text ?? '') + `{{${col}}}`
 }
 
+function hasColRef(text: any, col: string): boolean {
+  const esc = col.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp('\\{\\{\\s*' + esc + '\\s*\\}\\}').test(String(text ?? ''))
+}
+
+// 三态循环的纯函数：返回切换某列引用态后的新 config。
+// 关键修复：移除 {{列}} 引用时，作用于「真正含该占位的字段」（http_fetch 搜 url→body→headers），
+// 而非盲目写 url——否则 body/headers 引用没被清掉，url 反被注入用户没写的 {{列}}。
+export function cycleColRef(type: string, config: Record<string, any>, col: string): Record<string, any> {
+  const dropped: string[] = config.drop_columns ?? []
+  if (dropped.includes(col)) {
+    return { ...config, drop_columns: dropped.filter((c) => c !== col) }
+  }
+  // 全新插入（灰→绿）落到默认字段即可
+  const insertField = type === 'http_fetch' ? 'url' : 'user_prompt'
+  // 移除（绿→红）：找到真正持有该占位的字段
+  if (type === 'http_fetch') {
+    const headers: Record<string, any> = config.headers ?? {}
+    const headerKey = Object.keys(headers).find((k) => hasColRef(headers[k], col))
+    if (hasColRef(config.url, col)) {
+      return { ...config, url: toggleColRef(config.url ?? '', col), drop_columns: [...dropped, col] }
+    }
+    if (hasColRef(config.body, col)) {
+      return { ...config, body: toggleColRef(config.body ?? '', col), drop_columns: [...dropped, col] }
+    }
+    if (headerKey !== undefined) {
+      return {
+        ...config,
+        headers: { ...headers, [headerKey]: toggleColRef(headers[headerKey] ?? '', col) },
+        drop_columns: [...dropped, col],
+      }
+    }
+    // 未被任何字段引用：灰→绿，插入默认字段
+    return { ...config, [insertField]: toggleColRef(config[insertField] ?? '', col) }
+  }
+  if (hasColRef(config[insertField], col)) {
+    return { ...config, [insertField]: toggleColRef(config[insertField] ?? '', col), drop_columns: [...dropped, col] }
+  }
+  return { ...config, [insertField]: toggleColRef(config[insertField] ?? '', col) }
+}
+
 function MissingColsWarning({ text, inputCols }: { text: string; inputCols: string[] }) {
   const miss = missingCols(text, inputCols)
   if (miss.length === 0) return null
@@ -835,20 +876,10 @@ export default function NodeConfigForm({ type, config, onChange, workflowId, nod
     ? [config.url, config.body, ...Object.values(config.headers ?? {})].filter(Boolean).map(String).join('\n')
     : `${config.system_prompt ?? ''}\n${config.user_prompt ?? ''}`
   const referenced = referencedCols(refText, inputCols)
-  const insertField = type === 'http_fetch' ? 'url' : 'user_prompt'
   const canInsert = type === 'llm_synth' || type === 'qc' || type === 'http_fetch'
   const dropped: string[] = config.drop_columns ?? []
   // 三态循环：灰(透传)→绿(喂模型,插{{列}})→红(删除,移{{列}}并入 drop_columns)→灰
-  const cycle = (col: string) => {
-    if (dropped.includes(col)) {
-      onChange({ ...config, drop_columns: dropped.filter((c) => c !== col) })
-    } else if (referenced.includes(col)) {
-      onChange({ ...config, [insertField]: toggleColRef(config[insertField] ?? '', col),
-                 drop_columns: [...dropped, col] })
-    } else {
-      onChange({ ...config, [insertField]: toggleColRef(config[insertField] ?? '', col) })
-    }
-  }
+  const cycle = (col: string) => onChange(cycleColRef(type, config, col))
   const bar = type === 'input' ? null : (
     <ColumnsBar inputCols={inputCols} outputCols={outputCols} referenced={referenced}
                 dropped={dropped} onCycle={canInsert ? cycle : undefined} />

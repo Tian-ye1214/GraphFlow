@@ -3,7 +3,7 @@ import json
 from contextlib import nullcontext
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select, update as sa_update
+from sqlalchemy import delete as sa_delete, func, select, update as sa_update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.config import settings
@@ -488,6 +488,14 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
             raise ValueError(f"质检节点 {node.id}: 输出列 {col} 与输入已有列同名，将覆盖原始数据，请改用其他列名")
     await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running",
                           total=len(inputs), done=0, failed=0)
+    # 续跑幂等：清掉本节点上一次（崩溃前）已落的 QC 指标/失败样本，否则崩溃-resume 重跑本节点体
+    # 会再 INSERT 一条，导致 first_round_rate（目标模式标尺）被双算（与 rerun-failed 端点一致）。
+    async with session_factory() as s:
+        await s.execute(sa_delete(QcMetric).where(
+            QcMetric.run_id == run_id, QcMetric.node_id == node.id))
+        await s.execute(sa_delete(QcFailure).where(
+            QcFailure.run_id == run_id, QcFailure.node_id == node.id))
+        await s.commit()
     usage = nodes.zero_usage()
 
     def fold(u):

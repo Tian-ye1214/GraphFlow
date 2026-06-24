@@ -67,13 +67,29 @@ async def create_run(body: RunCreate, user: User = Depends(get_current_user),
     return {"id": run.id, "status": run.status}
 
 
+def _qc_summary_of(total: int, passed: int) -> dict:
+    return {"total": total, "first_round_pass": passed,
+            "first_round_rate": (passed / total) if total else None}
+
+
 async def _qc_summary(session: AsyncSession, run_id: int) -> dict:
     rows = (await session.execute(
         select(QcMetric).where(QcMetric.run_id == run_id))).scalars().all()
-    total = sum(m.total for m in rows)
-    passed = sum(m.first_round_pass for m in rows)
-    return {"total": total, "first_round_pass": passed,
-            "first_round_rate": (passed / total) if total else None}
+    return _qc_summary_of(sum(m.total for m in rows), sum(m.first_round_pass for m in rows))
+
+
+async def _qc_summaries_bulk(session: AsyncSession, run_ids: list[int]) -> dict[int, dict]:
+    """一次查询聚合多 run 的 QC 指标，避免 list_runs 每 run 一次查询的 N+1。"""
+    if not run_ids:
+        return {}
+    rows = (await session.execute(
+        select(QcMetric).where(QcMetric.run_id.in_(run_ids)))).scalars().all()
+    agg: dict[int, list[int]] = {}
+    for m in rows:
+        a = agg.setdefault(m.run_id, [0, 0])
+        a[0] += m.total
+        a[1] += m.first_round_pass
+    return {rid: _qc_summary_of(t, p) for rid, (t, p) in agg.items()}
 
 
 def _run_out(run: Run, workflow_name: str = "", qc_summary: dict | None = None) -> dict:
@@ -97,7 +113,8 @@ async def list_runs(workflow_id: int | None = None, user: User = Depends(get_cur
     if workflow_id is not None:
         stmt = stmt.where(Run.workflow_id == workflow_id)
     rows = (await session.execute(stmt)).all()
-    return [_run_out(run, name, await _qc_summary(session, run.id)) for run, name in rows]
+    summaries = await _qc_summaries_bulk(session, [run.id for run, _ in rows])
+    return [_run_out(run, name, summaries.get(run.id)) for run, name in rows]
 
 
 @router.get("/{run_id}")
@@ -158,7 +175,8 @@ async def run_qc_failures(run_id: int, node_id: str | None = None, limit: int = 
     stmt = select(QcFailure).where(QcFailure.run_id == run_id)
     if node_id is not None:
         stmt = stmt.where(QcFailure.node_id == node_id)
-    rows = (await session.execute(stmt.order_by(QcFailure.id).limit(limit))).scalars().all()
+    rows = (await session.execute(
+        stmt.order_by(QcFailure.id).limit(min(max(limit, 0), 500)))).scalars().all()
     return [{"node_id": f.node_id, "trace_id": f.trace_id,
              "sample": strip_trace_row(json.loads(f.sample_json)),
              "reasons": json.loads(f.reasons_json), "created_at": f.created_at.isoformat()}

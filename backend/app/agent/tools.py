@@ -27,7 +27,7 @@ DANGEROUS_PATTERNS = ["rm -rf /", "rm -rf /*", "mkfs.", "dd if=", ":(){:|:&};:",
 DANGEROUS_START_PATTERNS = ["eval ", "exec "]
 GF_DELETE_RE = re.compile(r"gf\s+(wf|data|model)\s+rm\b", re.IGNORECASE)
 GF_LOGIN_RE = re.compile(r"gf\s+login\b", re.IGNORECASE)
-BACKGROUND_RE = re.compile(r"\b(start|nohup|setsid)\b|&\s*$", re.IGNORECASE)
+BACKGROUND_RE = re.compile(r"^\s*(start|nohup|setsid)\b|&\s*$", re.IGNORECASE)
 
 
 def truncate(text: str) -> str:
@@ -148,7 +148,7 @@ class AgentToolkit:
                     "在回复末尾单独一行输出 [confirm_delete] <完整 gf 命令>，然后结束回合等待确认。")
         if GF_LOGIN_RE.search(cmd):
             return "会话已绑定当前用户，禁止用 gf login 切换身份；直接执行业务命令即可。"
-        if cmd == "gf" or cmd.startswith("gf "):
+        if lower == "gf" or lower.startswith("gf "):
             cmd = f'"{sys.executable}" -m app.cli{cmd[2:]}'
         # PYTHONIOENCODING：Windows 管道默认 cp936，gf 打印中文会乱码
         env = {**os.environ, "GF_STATE_FILE": str(self._state_file),

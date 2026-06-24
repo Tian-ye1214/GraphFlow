@@ -43,7 +43,18 @@ export default function DatasetsPage() {
   })
 
   useEffect(() => {
-    if (preview) void api.get<RowsPage>(`/api/datasets/${preview.id}/rows?page=${page}&page_size=20`).then(setRows)
+    if (!list.some((ds) => ds.status === 'importing')) return
+    const id = setInterval(() => { void reload() }, 1500)
+    return () => clearInterval(id)
+  }, [list])
+
+  useEffect(() => {
+    if (!preview) return
+    let ignore = false
+    void api.get<RowsPage>(`/api/datasets/${preview.id}/rows?page=${page}&page_size=20`).then((r) => {
+      if (!ignore) setRows(r)
+    })
+    return () => { ignore = true }
   }, [preview, page])
 
   const doUpload = async (files: File[]) => {

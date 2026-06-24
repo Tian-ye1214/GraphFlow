@@ -83,4 +83,8 @@ def validate_goal_graph_change(before: dict, after: dict) -> GraphGuardDecision:
                 return GraphGuardDecision(False, f"QC 节点 {node_id} 被删除或改型")
             if _qc_config(old) != _qc_config(new):
                 return GraphGuardDecision(False, f"QC 节点 {node_id} 配置被修改")
+    for node_id, new in after_nodes.items():
+        # 新增 input/qc 测量节点会改写聚合首轮通过率（刷分），优化必须落在既有链路上
+        if node_id not in before_nodes and new.get("type") in ("input", "qc"):
+            return GraphGuardDecision(False, f"目标模式不得新增测量节点 {node_id}（{new.get('type')}）")
     return GraphGuardDecision(True, "")

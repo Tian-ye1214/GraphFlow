@@ -342,6 +342,7 @@ async def dataset_rows(
         data_dir=settings.data_dir,
         start_row=start,
         end_row=end,
+        columns=_columns_arg(columns),
         max_rows=MAX_ROWS_PER_REQUEST,       # 行数顶：超大 page_size 只读上限行，防整库进内存
         max_chars=0,                         # 关 agent 字符预算：整页足额，不被 60KB 腰斩且尾行可达
     )
@@ -432,6 +433,15 @@ async def delete_dataset(
     await session.commit()
     shutil.rmtree(shard_dir, ignore_errors=True)
     if file_path:
-        Path(file_path).unlink(missing_ok=True)
+        # 多 sheet Excel 共享同一 file_path；只有无其他 Dataset 仍在 importing 时才删源文件，
+        # 否则兄弟 sheet 的后台摄入任务会因源文件消失而 failed。
+        still = (await session.execute(
+            select(Dataset.id).where(
+                Dataset.file_path == str(file_path),
+                Dataset.status == "importing",
+            )
+        )).first()
+        if still is None:
+            Path(file_path).unlink(missing_ok=True)
     publish(user.id, "dataset", ds_id)
     return {"ok": True}

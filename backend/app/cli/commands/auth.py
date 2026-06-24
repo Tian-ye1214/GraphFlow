@@ -11,8 +11,11 @@ def cmd_login(args):
                    timeout=10, trust_env=False)  # 同上：登录也不走系统代理
     if r.status_code >= 400:
         die(f"登录失败: HTTP {r.status_code} {r.text[:200]}")
+    cookie = r.cookies.get("gf_session")
+    if not cookie:
+        die("登录响应未携带会话 cookie，请检查服务器/反向代理")
     state = load_state()
-    state.update(server=server, cookie=r.cookies.get("gf_session"))
+    state.update(server=server, cookie=cookie)
     save_state(state)
     print(f"已登录 {args.username} @ {server}")
 

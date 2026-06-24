@@ -93,10 +93,10 @@ class AgentTurnManager:
 
     async def _run_turn(self, session_id: int, user_id: int, text: str) -> None:
         sf = get_session_factory()
-        system, history = await self._setup_turn(session_id, user_id, sf,
-                                                 confirm_delete=text.startswith("确认"))
-        rounds, capped, input_text = 0, False, text
+        rounds, capped, input_text, history = 0, False, text, []
         try:
+            system, history = await self._setup_turn(session_id, user_id, sf,
+                                                     confirm_delete=text.startswith("确认"))
             while True:
                 with log_context(user_id=user_id, session_id=session_id, source="redlotus"):
                     history, output = await system.run_turn(input_text, history)
@@ -133,14 +133,14 @@ class AgentTurnManager:
         from app.engine.manager import manager
         from app.services import run_service as rs
         sf = get_session_factory()
-        system, history = await self._setup_turn(session_id, user_id, sf, confirm_delete=False)
-        threshold = rs.parse_threshold(goal_text)
-        best, no_improve, round_i = -1.0, 0, 0
-        input_text = gl.first_round_prompt(goal_text)
-        async with sf() as s:
-            wf = await s.get(Workflow, workflow_id)
-            guard_graph = json.loads(wf.graph_json) if wf is not None else {"nodes": [], "edges": []}
+        best, no_improve, round_i, history = -1.0, 0, 0, []
         try:
+            system, history = await self._setup_turn(session_id, user_id, sf, confirm_delete=False)
+            threshold = rs.parse_threshold(goal_text)
+            input_text = gl.first_round_prompt(goal_text)
+            async with sf() as s:
+                wf = await s.get(Workflow, workflow_id)
+                guard_graph = json.loads(wf.graph_json) if wf is not None else {"nodes": [], "edges": []}
             while True:
                 with log_context(user_id=user_id, session_id=session_id, source="redlotus"):
                     history, output = await system.run_turn(input_text, history)

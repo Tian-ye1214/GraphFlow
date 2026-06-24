@@ -47,10 +47,8 @@ async def _migrate_sqlite_schema(conn) -> None:
 
     rows = (await conn.exec_driver_sql("PRAGMA table_info(workflows)")).all()
     cols = {row[1] for row in rows}
-    if rows and "is_template" not in cols:
-        await conn.exec_driver_sql(
-            "ALTER TABLE workflows ADD COLUMN is_template BOOLEAN NOT NULL DEFAULT 0"
-        )
+    if rows and "is_template" in cols:  # 已废弃死字段：从既有库幂等剔除，避免残列与 ORM 模型不一致
+        await conn.exec_driver_sql("ALTER TABLE workflows DROP COLUMN is_template")
 
     rows = (await conn.exec_driver_sql("PRAGMA table_info(agent_sessions)")).all()
     cols = {row[1] for row in rows}

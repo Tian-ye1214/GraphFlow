@@ -1,5 +1,6 @@
 """数据集：data ls|up|head|rm|download。"""
 import json
+import re
 from pathlib import Path
 
 from app.cli.client import Cli, die
@@ -45,7 +46,11 @@ def cmd_data_rm(args):
 def cmd_data_download(args):
     cli = Cli()
     ds_id = cli.resolve("datasets", args.ref)
-    out = Path(args.output or f"{args.ref}.{args.format}")
+    if args.output:
+        out = Path(args.output)
+    else:   # 默认名取自 dataset ref：仅留末段并替非法字符，避免名含 / 写错位置
+        safe = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", Path(args.ref).name).strip(" .") or "dataset"
+        out = Path(f"{safe}.{args.format}")
     n = cli.download(f"/api/datasets/{ds_id}/export", out, params={"format": args.format})
     print(f"已下载 {out}（{n} 字节）")
 

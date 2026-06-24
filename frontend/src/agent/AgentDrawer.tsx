@@ -9,6 +9,13 @@ import type {
 import { extractConfirmDeletes, stripGoalMarkers } from './parse'
 
 export const AGENT_ROLES = ['coordinator', 'manager', 'worker', 'compactor'] as const
+
+/** Find the index of the running tool entry that best matches a tool_end event. */
+export function findToolEndIndex(ts: AgentToolContent[], d: AgentToolContent): number {
+  return ts.findIndex(
+    (t) => t.status === 'running' && t.tool === d.tool && t.agent_role === d.agent_role && t.args_brief === d.args_brief,
+  )
+}
 export function buildSessionPayload({ advanced, modelSel, roleSel }: {
   advanced: boolean
   modelSel?: number
@@ -96,7 +103,7 @@ export default function AgentDrawer() {
     } else if (e.kind === 'tool_end') {
       const d = e.data as AgentToolContent
       setLiveTools((ts) => {
-        const i = ts.findIndex((t) => t.status === 'running' && t.tool === d.tool && t.agent_role === d.agent_role)
+        const i = findToolEndIndex(ts, d)
         if (i < 0) return [...ts, d]
         const next = ts.slice()
         next[i] = d

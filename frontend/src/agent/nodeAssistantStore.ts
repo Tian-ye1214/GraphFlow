@@ -6,7 +6,7 @@ import type { NodeAssistReply } from '../api/types'
 // 不随节点抽屉/换页卸载 → 切节点/应用内导航不丢；F5 丢（既定取舍）。
 // send 的 promise 由 store 持有 → 组件卸载后仍回填该 key（后台续）。
 
-export interface AssistMsg { role: 'user' | 'assistant'; text: string; config?: Record<string, any> }
+export interface AssistMsg { role: 'user' | 'assistant'; text: string; config?: Record<string, any>; error?: true }
 export interface NodeAssistState {
   messages: AssistMsg[]
   draft: string
@@ -92,7 +92,7 @@ export async function sendAssist(key: string, payload: {
   const cur = get(key)
   const text = cur.draft.trim()
   if (!text || cur.pending) return
-  const history = cur.messages.map((m) => ({ role: m.role, text: m.text }))
+  const history = cur.messages.filter((m) => !m.error).map((m) => ({ role: m.role, text: m.text }))
   set(key, { ...cur, messages: [...cur.messages, { role: 'user', text }], draft: '', pending: true })
   try {
     const r = await api.post<NodeAssistReply>('/api/agent/node-assist', { ...payload, instruction: text, history })
@@ -102,6 +102,6 @@ export async function sendAssist(key: string, payload: {
   } catch (e) {
     const c = get(key)
     set(key, { ...c, pending: false,
-      messages: [...c.messages, { role: 'assistant', text: '出错：' + (e as Error).message }] })
+      messages: [...c.messages, { role: 'assistant', text: '出错：' + (e as Error).message, error: true as const }] })
   }
 }

@@ -425,3 +425,29 @@ async def test_rerun_failed_no_duplicate_qc_metric(auth_client, monkeypatch):
     metrics = (await auth_client.get(f"/api/runs/{run_id}/qc-metrics")).json()
     assert len(metrics) == 1                                    # 单节点单条指标
     assert metrics[0]["total"] == 3 and metrics[0]["first_round_rate"] == 1.0
+
+
+async def test_list_runs_qc_summary_bulk_and_failures_limit_clamp(auth_client, session_factory, monkeypatch):
+    """N+1 修复:list_runs 一次查询批量聚合各 run 的 QcMetric,每 run 仍得正确 first_round_rate;
+    L8:qc-failures?limit=-1 被钳到 [0,500](修复前 SQLite 负 LIMIT=无限制,会全量拉)。"""
+    from app.models import QcFailure, QcMetric
+    patch_chat(monkeypatch)
+    wf_id = await setup_workflow(auth_client)
+    r1 = (await auth_client.post("/api/runs", json={"workflow_id": wf_id})).json()["id"]
+    await wait_run(auth_client, r1)
+    r2 = (await auth_client.post("/api/runs", json={"workflow_id": wf_id})).json()["id"]
+    await wait_run(auth_client, r2)
+    async with session_factory() as s:
+        s.add(QcMetric(run_id=r1, node_id="qcA", total=10, first_round_pass=4))
+        s.add(QcMetric(run_id=r1, node_id="qcB", total=10, first_round_pass=6))  # 同 run 多节点 → 按 run 聚合
+        s.add(QcMetric(run_id=r2, node_id="qcA", total=4, first_round_pass=1))
+        for i in range(5):
+            s.add(QcFailure(run_id=r1, node_id="qcA", trace_id=f"t{i}",
+                            sample_json="{}", reasons_json="[]"))
+        await s.commit()
+    summaries = {x["id"]: x["qc_summary"] for x in (await auth_client.get("/api/runs")).json()}
+    assert summaries[r1]["total"] == 20 and summaries[r1]["first_round_pass"] == 10
+    assert summaries[r1]["first_round_rate"] == 0.5            # (4+6)/(10+10),按 run 正确聚合
+    assert summaries[r2]["total"] == 4 and summaries[r2]["first_round_rate"] == 0.25
+    assert (await auth_client.get(f"/api/runs/{r1}/qc-failures?limit=-1")).json() == []   # 负 limit 钳到 0
+    assert len((await auth_client.get(f"/api/runs/{r1}/qc-failures?limit=2")).json()) == 2

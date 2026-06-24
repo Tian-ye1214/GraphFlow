@@ -150,9 +150,11 @@ def _build_plan(source: Dataset, source_columns: list[str], total_rows: int,
         else:
             raise DatasetCrudError(f"unknown operation: {kind}")
 
-    _validate_non_overlapping(delete_ranges + [
+    row_ranges = delete_ranges + [
         (start, end_rows[0]) for start, end_rows in replace_ranges.items()
-    ])
+    ]
+    _validate_non_overlapping(row_ranges)
+    _validate_inserts_outside_ranges(inserts, row_ranges)
     return {
         "columns": columns,
         "column_ops": column_ops,
@@ -235,6 +237,15 @@ def _validate_non_overlapping(ranges: list[tuple[int, int]]) -> None:
         if start <= prev_end:
             raise DatasetCrudError("row operations overlap")
         prev_end = end
+
+
+def _validate_inserts_outside_ranges(
+    inserts: dict[int, list[dict]], ranges: list[tuple[int, int]]
+) -> None:
+    # before_row=start 插在整段替换/删除之前是合法边界；start<before<=end 落在区间内部即冲突
+    for before in inserts:
+        if any(start < before <= end for start, end in ranges):
+            raise DatasetCrudError("row operations overlap")
 
 
 def _positive_int(value, name: str) -> int:

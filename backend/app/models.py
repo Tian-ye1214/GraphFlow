@@ -81,7 +81,6 @@ class Workflow(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     name: Mapped[str]
     graph_json: Mapped[str] = mapped_column(Text, default='{"nodes": [], "edges": []}')
-    is_template: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 

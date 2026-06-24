@@ -48,8 +48,13 @@ def _from_pdf(fp: Path) -> str:
 
 def _from_excel(fp: Path) -> str:
     import pandas as pd
-    df = pd.read_excel(fp)
-    return "\n\n".join(f"{col}:\n{df[col].to_string()}" for col in df.columns)
+    sheets = pd.read_excel(fp, sheet_name=None, dtype=object, keep_default_na=False)
+    parts = []
+    for sheet_name, df in sheets.items():
+        header = f"[Sheet: {sheet_name}]"
+        body = "\n\n".join(f"{col}:\n{df[col].to_string()}" for col in df.columns)
+        parts.append(f"{header}\n{body}")
+    return "\n\n".join(parts)
 
 
 def _from_docx(fp: Path) -> str:

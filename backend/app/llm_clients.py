@@ -32,25 +32,27 @@ def azure_v1_base_url(mc: ModelConfig) -> str:
 
 def make_chat_client(mc: ModelConfig) -> AsyncOpenAI | AsyncAzureOpenAI:
     api_key = decrypt_api_key(mc)
+    # max_retries=0：重试统一交给 services/llm.py 外层循环（带退避+日志+空内容重试）。
+    # 若此处也开 SDK 重试，会与外层相乘（3×约4=约12 次真实 HTTP），对降级端点放大请求量与延迟。
     if provider_name(mc) != "azure":
         return AsyncOpenAI(
             base_url=mc.base_url,
             api_key=api_key,
-            max_retries=3,
+            max_retries=0,
             http_client=httpx.AsyncClient(http2=True),
         )
     if azure_api_mode(mc) == "v1":
         return AsyncOpenAI(
             base_url=azure_v1_base_url(mc),
             api_key=api_key,
-            max_retries=3,
+            max_retries=0,
             http_client=httpx.AsyncClient(http2=True),
         )
     return AsyncAzureOpenAI(
         azure_endpoint=mc.base_url,
         api_key=api_key,
         api_version=getattr(mc, "api_version", None) or "",
-        max_retries=3,
+        max_retries=0,
         http_client=httpx.AsyncClient(http2=True),
     )
 

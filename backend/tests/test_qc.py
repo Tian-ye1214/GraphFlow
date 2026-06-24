@@ -152,3 +152,87 @@ async def test_qc_multi_model_metric_and_failures(auth_client, monkeypatch, sess
         assert reasons[0]["status"] == "pass" and reasons[1]["status"] == "failed"  # per-model 存 status
         sample = _json.loads(f.sample_json)
         assert "_qc_reason" not in sample and "_qc_per_model" not in sample
+
+
+async def test_qc_resume_does_not_double_count_metrics(auth_client, monkeypatch, session_factory):
+    """崩溃-续跑经过未完成的 QC 节点不重复累计 QcMetric/QcFailure。
+    回归:首轮 QcMetric 在回扫循环前落库、done 标记在循环后才写;若崩溃在中间窗口,resume 重跑本节点体
+    会再 INSERT 一条,污染 first_round_rate(可 >1)。修复=重算前按 (run_id,node_id) 幂等清旧指标/失败样本。"""
+    import asyncio as _aio
+    import json as _json
+
+    from sqlalchemy import select, update as _sa_update
+    from app.engine import runner
+    from app.engine.graph import parse_graph
+    from app.models import QcFailure, QcMetric, Run, RunRow
+    from app.services import llm as llm_mod
+
+    JSONL = ('{"q": "r0"}\n{"q": "r1"}\n{"q": "r2"}\n').encode("utf-8")
+    files = [("files", ("data.jsonl", JSONL, "application/octet-stream"))]
+    ds = await wait_ready(auth_client, (await auth_client.post(
+        "/api/datasets/upload", files=files)).json()[0]["id"])
+    mc = (await auth_client.post("/api/models", json={
+        "name": "judge", "model_name": "qwen", "base_url": "http://x/v1",
+        "api_key": "k", "default_params": {}})).json()
+    graph = {
+        "nodes": [
+            {"id": "in", "type": "input", "config": {"dataset_ids": [ds["id"]]}},
+            {"id": "gen", "type": "llm_synth", "config": {
+                "model_config_id": mc["id"], "user_prompt": "Q:{{q}}",
+                "output_column": "a", "concurrency": 4, "retries": 1}},
+            {"id": "qc", "type": "qc", "config": {
+                "judge_model_ids": [mc["id"]], "model_config_id": mc["id"],
+                "pass_k": 1, "user_prompt": "判断:{{a}}"}},
+        ],
+        "edges": [
+            {"source": "in", "target": "gen", "kind": "normal"},
+            {"source": "gen", "target": "qc", "kind": "normal"},
+        ],
+    }
+    wf = (await auth_client.post("/api/workflows", json={"name": "qc续跑"})).json()
+    await auth_client.put(f"/api/workflows/{wf['id']}", json={"graph": graph})
+
+    async def fake_chat(mc_, system, user, params=None, retries=3):
+        if params and params.get("json_mode"):
+            return _json.dumps({"status": "pass", "reason": "好"}), {"prompt_tokens": 1, "completion_tokens": 1}
+        return "答", {"prompt_tokens": 1, "completion_tokens": 1}
+
+    monkeypatch.setattr(llm_mod, "chat", fake_chat)
+
+    run_id = (await auth_client.post("/api/runs", json={"workflow_id": wf["id"]})).json()["id"]
+    for _ in range(200):
+        await _aio.sleep(0.05)
+        if (await auth_client.get(f"/api/runs/{run_id}")).json()["status"] in (
+                "completed", "failed", "cancelled"):
+            break
+
+    async with session_factory() as s:
+        user_id = (await s.get(Run, run_id)).user_id
+        metrics = (await s.execute(select(QcMetric).where(
+            QcMetric.run_id == run_id, QcMetric.node_id == "qc"))).scalars().all()
+        assert len(metrics) == 1 and metrics[0].total == 3 and metrics[0].first_round_pass == 3
+        gen_rows = (await s.execute(select(RunRow).where(
+            RunRow.run_id == run_id, RunRow.node_id == "gen").order_by(RunRow.row_idx))).scalars().all()
+        inputs = [r for rr in gen_rows for r in _json.loads(rr.data_json)]
+        # 模拟"崩溃在回扫窗口":再塞一条陈旧 QcMetric/QcFailure + 抹掉本节点 done 标记(强制重跑节点体)
+        s.add(QcMetric(run_id=run_id, node_id="qc", total=99, first_round_pass=99))
+        s.add(QcFailure(run_id=run_id, node_id="qc", trace_id="stale",
+                        sample_json="{}", reasons_json="[]"))
+        await s.execute(_sa_update(RunRow).where(
+            RunRow.run_id == run_id, RunRow.node_id == "qc", RunRow.row_idx == 0).values(status="pending"))
+        await s.commit()
+
+    g = parse_graph(graph)
+    qc_node = next(n for n in g.nodes if n.id == "qc")
+    await runner._run_qc_node(session_factory, run_id, user_id, g, qc_node, inputs,
+                             _aio.Semaphore(4), _aio.Event())
+
+    async with session_factory() as s:
+        metrics = (await s.execute(select(QcMetric).where(
+            QcMetric.run_id == run_id, QcMetric.node_id == "qc"))).scalars().all()
+        failures = (await s.execute(select(QcFailure).where(
+            QcFailure.run_id == run_id, QcFailure.node_id == "qc"))).scalars().all()
+    # 修复前:陈旧+新=2 条 QcMetric、陈旧 QcFailure 残留;修复后:幂等清旧 → QcMetric 1 条、QcFailure 0 条
+    assert len(metrics) == 1, f"QcMetric 重复累计:{[(m.total, m.first_round_pass) for m in metrics]}"
+    assert metrics[0].total == 3 and metrics[0].first_round_pass == 3
+    assert len(failures) == 0

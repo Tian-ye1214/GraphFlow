@@ -57,7 +57,8 @@ def _columns_from_rows(rows: list[dict]) -> list[str]:
 
 def _fit_budget(payload: dict, key: str = "rows") -> dict:
     """把 payload[key] 列表裁到序列化预算内，保证 json.dumps(payload) 完整可解析(不被 wrap_tools 20k 腰斩)。
-    先按条裁(报 omitted_<key>)，单/少数超宽条仍超预算则逐级收紧单格上限再裁(cells_truncated_to)。"""
+    先按条裁(报 omitted_<key>)，单/少数超宽条仍超预算则逐级收紧单格上限再裁(cells_truncated_to)。
+    若裁完 key 后整体仍超预算（兄弟 list 字段如 edges 体积大），逐步裁各兄弟 list 字段直至收敛。"""
     items = payload.get(key) or []
     kept, used = [], 0
     for r in items:
@@ -74,6 +75,21 @@ def _fit_budget(payload: dict, key: str = "rows") -> dict:
         limit //= 2
         out[key], _ = _safe_rows(out[key], limit)
         out["cells_truncated_to"] = limit
+    # Trim sibling list fields (e.g. edges) if the total payload is still oversized
+    sibling_keys = [k for k, v in out.items() if k != key and isinstance(v, list)]
+    for sib in sibling_keys:
+        if len(json.dumps(out, ensure_ascii=False)) <= MAX_PREVIEW_CHARS:
+            break
+        sib_items = out[sib]
+        # Binary-search trim: keep halving until within budget
+        cap = len(sib_items)
+        while cap > 0 and len(json.dumps(out, ensure_ascii=False)) > MAX_PREVIEW_CHARS:
+            cap = cap // 2
+            out[sib] = sib_items[:cap]
+        omitted_sib = len(sib_items) - len(out[sib])
+        if omitted_sib:
+            out[f"omitted_{sib}"] = omitted_sib
+            omitted = omitted or omitted_sib  # ensure hint is set
     if omitted:
         out[f"omitted_{key}"] = omitted
     if omitted or "cells_truncated_to" in out:

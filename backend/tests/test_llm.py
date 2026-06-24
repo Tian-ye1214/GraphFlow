@@ -150,3 +150,12 @@ async def test_thinking_custom_effort(monkeypatch):
     monkeypatch.setattr(llm, "_client", lambda _: fake)
     await llm.chat(mc(), "", "u", params={"reasoning_effort": "medium"})
     assert fake.last_kwargs["reasoning_effort"] == "medium"
+
+
+def test_make_chat_client_disables_sdk_retries():
+    """SDK 客户端 max_retries=0：重试只由 services/llm.py 外层循环负责（带退避/日志/空内容重试）。
+    回归：若此处也开 SDK 重试会与外层相乘（约 3×4≈12 次真实 HTTP），对降级端点放大请求量。"""
+    from app.llm_clients import make_chat_client
+    from app.models import ModelConfig
+    mc_ = ModelConfig(name="m", model_name="x", base_url="http://x/v1", provider="openai")
+    assert make_chat_client(mc_).max_retries == 0
