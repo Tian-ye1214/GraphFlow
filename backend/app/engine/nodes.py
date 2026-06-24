@@ -3,6 +3,8 @@ import json as _json
 import random
 import re
 
+import httpx
+
 from app.agent.prompts import load_prompt
 from app.services.trace import strip_trace_row
 from app.engine import pycode
@@ -221,14 +223,23 @@ async def run_llm_synth_row(config: dict, row: dict, mc: ModelConfig,
     return out_rows, usage_total
 
 
+_CONTENT_TYPES = {"json": "application/json", "form": "application/x-www-form-urlencoded", "raw": "text/plain"}
+
+
 async def run_http_fetch_row(config: dict, row: dict) -> tuple[list[dict], dict]:
-    """处理一条输入行：渲染 url/headers/body 后调接口，按 extract 的 JSON 路径提取落列。
-    返回 (输出行列表, 空 usage)。请求失败/响应非 JSON 抛异常由 runner 记为行失败（逐行隔离）。"""
+    """处理一条输入行：渲染 endpoint/params/headers/body 后调接口，按 extract 的 JSON 路径提取落列。
+    返回 (输出行列表, 空 usage)。请求失败/响应非 JSON 抛异常由 runner 记为行失败（逐行隔离）。
+    params(含 api_key)合并进查询串；body_format 决定 Content-Type（用户已在 headers 设置则不覆盖）。"""
     base = strip_internal(row)
     method = config.get("method", "GET")
-    url = render_template(config.get("url", ""), base)
+    endpoint = render_template(config.get("endpoint") or config.get("url", ""), base)
+    params = {k: render_template(str(v), base) for k, v in (config.get("params") or {}).items()}
+    url = str(httpx.URL(endpoint).copy_merge_params(params)) if params else endpoint
     headers = {k: render_template(str(v), base) for k, v in (config.get("headers") or {}).items()}
     body = render_template(config["body"], base) if config.get("body") else None
+    ct = _CONTENT_TYPES.get(config.get("body_format"))
+    if body and ct and not any(k.lower() == "content-type" for k in headers):
+        headers["Content-Type"] = ct
     status, text = await http.fetch(method, url, headers=headers, body=body,
                                     timeout=config.get("timeout", 30), retries=config.get("retries", 2))
     try:   # parse_constant：响应含非标准 NaN/Infinity 归一为 None，杜绝非法浮点落库致读行端点 500
@@ -238,7 +249,7 @@ async def run_http_fetch_row(config: dict, row: dict) -> tuple[list[dict], dict]
     extracted = {}
     for col, path in (config.get("extract") or {}).items():
         v = json_path_get(data, path)
-        extracted[col] = "" if v is None else v   # 字段缺失→空串（同 render 缺失语义），非缺失保原类型
+        extracted[col] = "" if v is None else v   # 字段缺失→空串，非缺失保原类型
     return [{**base, **extracted}], {}
 
 

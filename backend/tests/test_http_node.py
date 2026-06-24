@@ -140,6 +140,55 @@ async def test_http_node_resume_skips_done(session_factory, monkeypatch):
     assert len(calls) == 2                                 # 只跑未完成的两行
 
 
+async def test_http_fetch_merges_params_with_apikey(monkeypatch):
+    seen = {}
+    async def fake_fetch(method, url, headers=None, body=None, timeout=30, retries=2):
+        seen.update(url=url, headers=headers, body=body)
+        return 200, json.dumps({"v": 1})
+    monkeypatch.setattr("app.services.http.fetch", fake_fetch)
+    cfg = {"method": "GET", "endpoint": "http://api/{{city}}",
+           "params": {"api_key": "SECRET", "q": "{{city}}"}, "extract": {"v": "v"}}
+    out, _ = await nodes.run_http_fetch_row(cfg, {"city": "bj"})
+    assert seen["url"].startswith("http://api/bj?")          # endpoint 渲染
+    assert "api_key=SECRET" in seen["url"] and "q=bj" in seen["url"]  # params 合并(含 api_key)+模板渲染
+    assert out == [{"city": "bj", "v": 1}]
+
+
+async def test_http_fetch_body_format_sets_content_type(monkeypatch):
+    seen = {}
+    async def fake_fetch(method, url, headers=None, body=None, timeout=30, retries=2):
+        seen.update(headers=headers, body=body)
+        return 200, "{}"
+    monkeypatch.setattr("app.services.http.fetch", fake_fetch)
+    cfg = {"method": "POST", "endpoint": "http://api", "body": '{"a":1}', "body_format": "json", "extract": {}}
+    await nodes.run_http_fetch_row(cfg, {})
+    assert seen["headers"]["Content-Type"] == "application/json"
+    assert seen["body"] == '{"a":1}'
+
+
+async def test_http_fetch_user_content_type_wins(monkeypatch):
+    seen = {}
+    async def fake_fetch(method, url, headers=None, body=None, timeout=30, retries=2):
+        seen.update(headers=headers)
+        return 200, "{}"
+    monkeypatch.setattr("app.services.http.fetch", fake_fetch)
+    cfg = {"method": "POST", "endpoint": "http://api", "body": "x", "body_format": "json",
+           "headers": {"Content-Type": "text/plain"}, "extract": {}}
+    await nodes.run_http_fetch_row(cfg, {})
+    assert seen["headers"]["Content-Type"] == "text/plain"   # 用户显式设置不被覆盖
+
+
+async def test_http_fetch_legacy_url_still_works(monkeypatch):
+    seen = {}
+    async def fake_fetch(method, url, headers=None, body=None, timeout=30, retries=2):
+        seen.update(url=url)
+        return 200, json.dumps({"v": 9})
+    monkeypatch.setattr("app.services.http.fetch", fake_fetch)
+    out, _ = await nodes.run_http_fetch_row({"url": "http://api/{{q}}", "extract": {"v": "v"}}, {"q": "z"})
+    assert seen["url"] == "http://api/z"                     # 无 params 时 endpoint=url 原样
+    assert out == [{"q": "z", "v": 9}]
+
+
 @pytest.mark.parametrize("bad_cfg, kw", [
     ({"endpoint": {"bad": 1}}, "endpoint"),
     ({"url": {"bad": 1}}, "endpoint"),                 # 旧 url 走兼容，仍按 endpoint 报
