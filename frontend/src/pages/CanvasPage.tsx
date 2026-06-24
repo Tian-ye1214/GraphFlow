@@ -3,7 +3,7 @@ import { Alert, Button, Drawer, Input, Space, message } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   Background, Controls, ReactFlow, ReactFlowProvider, addEdge,
-  useEdgesState, useNodesState, type Connection, type Edge, type Node,
+  useEdgesState, useNodesState, useReactFlow, type Connection, type Edge, type Node,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { api } from '../api/client'
@@ -13,6 +13,7 @@ import { nodeTypes } from '../canvas/nodeTypes'
 import { NODE_LABELS, RESCAN_EDGE, fromFlow, toFlow, displayName } from '../canvas/serialize'
 import { useEvents } from '../api/events'
 import { graphFingerprint } from '../canvas/fingerprint'
+import { nodeDropPosition } from '../canvas/layout'
 
 function nextId(type: string, existing: Node[]): string {
   for (let i = 1; ; i++) {
@@ -31,6 +32,8 @@ function Canvas() {
   const selected = nodes.find((n) => n.id === selectedId) ?? null
   const [cliChanged, setCliChanged] = useState(false)
   const baseline = useRef('')
+  const rf = useReactFlow()
+  const flowWrap = useRef<HTMLDivElement>(null)
 
   const load = useCallback(async () => {
     const w = await api.get<Workflow>(`/api/workflows/${id}`)
@@ -73,11 +76,17 @@ function Canvas() {
   }, [nodes, edges, id])
 
   const addNode = (type: keyof typeof NODE_LABELS) =>
-    setNodes((ns) => [...ns, {
-      id: nextId(type, ns), type,
-      position: { x: 80 + ns.length * 50, y: 80 + ns.length * 40 },
-      data: { config: {} },
-    }])
+    setNodes((ns) => {
+      const rect = flowWrap.current?.getBoundingClientRect()
+      const center = rect
+        ? rf.screenToFlowPosition({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 })
+        : { x: 200, y: 200 }
+      return [...ns, {
+        id: nextId(type, ns), type,
+        position: nodeDropPosition(center, ns.length),
+        data: { config: {} },
+      }]
+    })
 
   const save = async () => {
     const graph = fromFlow(nodes, edges)
@@ -103,7 +112,7 @@ function Canvas() {
     setNodes((ns) => ns.map((n) => (n.id === selectedId ? { ...n, data: { ...n.data, label } } : n)))
 
   return (
-    <div style={{ height: 'calc(100vh - 48px)', position: 'relative' }}>
+    <div ref={flowWrap} style={{ height: 'calc(100vh - 48px)', position: 'relative' }}>
       {cliChanged && (
         <Alert
           type="info" showIcon style={{ marginBottom: 8 }}
