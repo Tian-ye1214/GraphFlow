@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Button, Input, Popconfirm, Space, message } from 'antd'
+import { Button, Collapse, Input, Popconfirm, Space, message } from 'antd'
 import ReactMarkdown from 'react-markdown'
 import { api } from '../api/client'
 import type { PromptDetail, PromptSummary } from '../api/types'
@@ -71,8 +71,9 @@ export default function PromptsPage() {
           </div>
         ))}
       </div>
-      <div style={{ flex: 1, overflow: 'auto' }}>
-        <Space style={{ marginBottom: 8 }} wrap>
+      <div style={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
+        {/* 1. 顶部工具栏 */}
+        <Space style={{ marginBottom: 12 }} wrap>
           <Input placeholder="名称" value={name} onChange={(e) => setName(e.target.value)} style={{ width: 220 }} />
           <Input placeholder="描述" value={desc} onChange={(e) => setDesc(e.target.value)} style={{ width: 280 }} />
           <Button type="primary" onClick={() => void save()}>{sel ? '保存（新版本）' : '保存'}</Button>
@@ -85,35 +86,45 @@ export default function PromptsPage() {
             </Popconfirm>
           )}
         </Space>
-        <div style={{ display: 'flex', gap: 12 }}>
+        {/* 2. 编辑 | 预览（预览固定高滚动窗口） */}
+        <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
           <div style={{ flex: 1 }}>
             <div style={{ color: '#666', marginBottom: 4 }}>正文（用 {'{{列名}}'} 引用数据列）</div>
             <Input.TextArea rows={18} value={body} onChange={(e) => setBody(e.target.value)} />
-            <div style={{ color: '#888', fontSize: 12, marginTop: 4 }}>
-              声明变量：{vars.length ? vars.map((v) => `{{${v}}}`).join('、') : '（无）'}
-            </div>
           </div>
-          <div style={{ flex: 1, border: '1px solid #eee', borderRadius: 4, padding: 12, overflow: 'auto' }}>
+          <div style={{ flex: 1, border: '1px solid #eee', borderRadius: 4, padding: 12,
+                        height: 432, overflow: 'auto' }}>
             <ReactMarkdown>{body}</ReactMarkdown>
           </div>
         </div>
-        {sel && (
-          <div style={{ marginTop: 12 }}>
-            <div style={{ fontWeight: 600, marginBottom: 4 }}>版本历史</div>
-            {sel.versions.slice().reverse().map((v) => (
-              <Space key={v.version} style={{ display: 'flex', marginBottom: 4 }}>
-                <span>v{v.version}</span>
-                <span style={{ color: '#999' }}>{v.created_at.slice(0, 19)}</span>
-                <a onClick={() => void rollback(v.version)}>回滚到此版</a>
-              </Space>
-            ))}
-            {sel.used_by.length > 0 && (
-              <div style={{ marginTop: 8, color: '#d4380d', fontSize: 12 }}>
-                被引用：{sel.used_by.map((u) => `${u.workflow_name}/${u.node_id}(${u.slot})`).join('、')}
-              </div>
-            )}
-          </div>
-        )}
+        {/* 3. 折叠元信息：变量 / 版本历史 / 被引用 */}
+        <Collapse defaultActiveKey={['vars']} items={[
+          { key: 'vars', label: '变量', children: (
+            <div style={{ color: '#888', fontSize: 12 }}>
+              {vars.length ? vars.map((v) => `{{${v}}}`).join('、') : '（无）'}
+            </div>
+          ) },
+          ...(sel ? [
+            { key: 'versions', label: '版本历史', children: (
+              <>
+                {sel.versions.slice().reverse().map((v) => (
+                  <Space key={v.version} style={{ display: 'flex', marginBottom: 4 }}>
+                    <span>v{v.version}</span>
+                    <span style={{ color: '#999' }}>{v.created_at.slice(0, 19)}</span>
+                    <a onClick={() => void rollback(v.version)}>回滚到此版</a>
+                  </Space>
+                ))}
+              </>
+            ) },
+            { key: 'usedby', label: `被引用（${sel.used_by.length}）`, children: (
+              sel.used_by.length > 0
+                ? <div style={{ color: '#d4380d', fontSize: 12 }}>
+                    {sel.used_by.map((u) => `${u.workflow_name}/${u.node_id}(${u.slot})`).join('、')}
+                  </div>
+                : <div style={{ color: '#999', fontSize: 12 }}>暂无引用</div>
+            ) },
+          ] : []),
+        ]} />
       </div>
     </div>
   )
