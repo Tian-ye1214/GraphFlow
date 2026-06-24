@@ -545,6 +545,22 @@ def test_redact_secrets_deep_value_under_sensitive_key_no_500():
     assert red == [{"node_id": "h", "field": "authorization"}]
 
 
+def test_redact_http_params_and_endpoint():
+    from app.services.workflow_package import redact_secrets
+    graph = {"nodes": [{"id": "f", "type": "http_fetch", "config": {
+        "endpoint": "http://api?token=SECRET",
+        "params": {"api_key": "KKK", "q": "hi", "tpl": "{{x}}"},
+    }}], "edges": []}
+    reds = redact_secrets(graph)
+    cfg = graph["nodes"][0]["config"]
+    assert cfg["params"]["api_key"] == "***REDACTED***"      # 敏感键值打码
+    assert cfg["params"]["q"] == "hi"                         # 非敏感保留
+    assert cfg["params"]["tpl"] == "{{x}}"                    # 模板值放行
+    assert "token=***REDACTED***" in cfg["endpoint"]          # endpoint 查询串脱敏
+    fields = {r["field"] for r in reds}
+    assert "params.api_key" in fields
+
+
 def test_parse_manifest_deep_json_is_packageerror(tmp_path):
     deep = "[" * 3000 + "1" + "]" * 3000          # 3000 层数组：json.loads 抛 RecursionError
     raw = ('{"kind":"%s","schema_version":1,'

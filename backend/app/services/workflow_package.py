@@ -143,7 +143,8 @@ def _redact_url(url, node_id, redactions):
 
 
 def redact_secrets(graph_dict):
-    """脱敏 http_fetch 节点的 headers / url / body 里的固化凭据，返回 [{node_id, field}]。
+    """脱敏 http_fetch 节点的 headers / url / endpoint / params / body 里的固化凭据，返回 [{node_id, field}]。
+    params 字典中匹配敏感键名的值打码，登记 field=params.<k>；endpoint 按 URL 脱敏（同 url）。
     模板值（含 {{）与非敏感项放行。原地改 graph_dict。"""
     redactions = []
     for node in graph_dict.get("nodes", []):
@@ -159,6 +160,14 @@ def redact_secrets(graph_dict):
                 if _SENSITIVE.search(str(k)) and _is_secret_value(headers[k]):
                     headers[k] = REDACTED        # 非字符串(int/list/dict)敏感头也整体打码
                     redactions.append({"node_id": nid, "field": str(k)})
+        params = cfg.get("params")
+        if isinstance(params, dict):
+            for k in list(params):
+                if _SENSITIVE.search(str(k)) and _is_secret_value(params[k]):
+                    params[k] = REDACTED
+                    redactions.append({"node_id": nid, "field": f"params.{k}"})
+        if isinstance(cfg.get("endpoint"), str):
+            cfg["endpoint"] = _redact_url(cfg["endpoint"], nid, redactions)
         if isinstance(cfg.get("url"), str):
             cfg["url"] = _redact_url(cfg["url"], nid, redactions)
         body = cfg.get("body")
