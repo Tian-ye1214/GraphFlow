@@ -97,7 +97,7 @@ function Canvas() {
   }
 
   const updateConfig = (config: Record<string, any>) =>
-    setNodes((ns) => ns.map((n) => (n.id === selectedId ? { ...n, data: { config } } : n)))
+    setNodes((ns) => ns.map((n) => (n.id === selectedId ? { ...n, data: { ...n.data, config } } : n)))
 
   const updateLabel = (label: string) =>
     setNodes((ns) => ns.map((n) => (n.id === selectedId ? { ...n, data: { ...n.data, label } } : n)))
