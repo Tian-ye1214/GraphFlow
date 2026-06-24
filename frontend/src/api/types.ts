@@ -23,7 +23,7 @@ export interface WorkflowSummary { id: number; name: string; updated_at: string 
 
 export interface GraphNode {
   id: string; type: 'input' | 'llm_synth' | 'auto_process' | 'output' | 'qc' | 'http_fetch'
-  position: { x: number; y: number }; config: Record<string, any>
+  position: { x: number; y: number }; config: Record<string, any>; label?: string
 }
 export interface GraphEdge { source: string; target: string; kind: 'normal' | 'rescan' }
 export interface WorkflowGraph { nodes: GraphNode[]; edges: GraphEdge[] }

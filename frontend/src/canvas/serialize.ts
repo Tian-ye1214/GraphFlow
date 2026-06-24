@@ -13,10 +13,14 @@ export const NODE_LABELS: Record<GraphNode['type'], string> = {
 // 回扫边的视觉样式（橙色虚线 + 流动），CanvasPage 新建边与 toFlow 加载边共用
 export const RESCAN_EDGE = { animated: true, style: { stroke: '#fa8c16', strokeDasharray: '6 3' } }
 
+export function displayName(label: string | undefined, id: string): string {
+  return (label && label.trim()) ? label : id
+}
+
 export function toFlow(graph: WorkflowGraph): { nodes: Node[]; edges: Edge[] } {
   return {
     nodes: graph.nodes.map((n) => ({
-      id: n.id, type: n.type, position: n.position, data: { config: n.config },
+      id: n.id, type: n.type, position: n.position, data: { config: n.config, label: n.label },
     })),
     edges: graph.edges.map((e, i) => ({
       id: `e${i}_${e.source}_${e.target}`, source: e.source, target: e.target,
@@ -29,12 +33,16 @@ export function toFlow(graph: WorkflowGraph): { nodes: Node[]; edges: Edge[] } {
 
 export function fromFlow(nodes: Node[], edges: Edge[]): WorkflowGraph {
   return {
-    nodes: nodes.map((n) => ({
-      id: n.id,
-      type: n.type as GraphNode['type'],
-      position: { x: n.position.x, y: n.position.y },
-      config: ((n.data as { config?: Record<string, any> })?.config) ?? {},
-    })),
+    nodes: nodes.map((n) => {
+      const label = (n.data as { label?: string })?.label
+      return {
+        id: n.id,
+        type: n.type as GraphNode['type'],
+        position: { x: n.position.x, y: n.position.y },
+        config: ((n.data as { config?: Record<string, any> })?.config) ?? {},
+        ...(label && label.trim() ? { label } : {}),
+      }
+    }),
     edges: edges.map((e) => ({
       source: e.source, target: e.target,
       kind: (((e.data as { kind?: GraphEdge['kind'] })?.kind) ?? 'normal') as GraphEdge['kind'],
