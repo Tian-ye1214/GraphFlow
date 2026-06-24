@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Alert, Button, Drawer, Space, message } from 'antd'
+import { Alert, Button, Drawer, Input, Space, message } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   Background, Controls, ReactFlow, ReactFlowProvider, addEdge,
@@ -10,7 +10,7 @@ import { api } from '../api/client'
 import type { Workflow } from '../api/types'
 import NodeConfigForm from '../canvas/forms/NodeConfigForm'
 import { nodeTypes } from '../canvas/nodeTypes'
-import { NODE_LABELS, RESCAN_EDGE, fromFlow, toFlow } from '../canvas/serialize'
+import { NODE_LABELS, RESCAN_EDGE, fromFlow, toFlow, displayName } from '../canvas/serialize'
 import { useEvents } from '../api/events'
 import { graphFingerprint } from '../canvas/fingerprint'
 
@@ -99,6 +99,9 @@ function Canvas() {
   const updateConfig = (config: Record<string, any>) =>
     setNodes((ns) => ns.map((n) => (n.id === selectedId ? { ...n, data: { config } } : n)))
 
+  const updateLabel = (label: string) =>
+    setNodes((ns) => ns.map((n) => (n.id === selectedId ? { ...n, data: { ...n.data, label } } : n)))
+
   return (
     <div style={{ height: 'calc(100vh - 48px)', position: 'relative' }}>
       {cliChanged && (
@@ -141,17 +144,27 @@ function Canvas() {
         </div>
       )}
       <Drawer
-        title={selected ? `${NODE_LABELS[selected.type as keyof typeof NODE_LABELS]}（${selected.id}）` : ''}
+        title={selected
+          ? `${NODE_LABELS[selected.type as keyof typeof NODE_LABELS]}（${displayName((selected.data as any)?.label, selected.id)}）`
+          : ''}
         open={!!selected} onClose={() => setSelectedId(null)} width={440} mask={false}
       >
         {selected && (
-          <NodeConfigForm
-            type={selected.type!}
-            config={(selected.data as { config: Record<string, any> }).config}
-            onChange={updateConfig}
-            workflowId={Number(id)}
-            nodeId={selected.id}
-          />
+          <>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ color: '#666', marginBottom: 4 }}>显示名（仅画布展示，不改节点 id <code>{selected.id}</code>）</div>
+              <Input value={(selected.data as { label?: string })?.label ?? ''}
+                     placeholder={selected.id}
+                     onChange={(e) => updateLabel(e.target.value)} />
+            </div>
+            <NodeConfigForm
+              type={selected.type!}
+              config={(selected.data as { config: Record<string, any> }).config}
+              onChange={updateConfig}
+              workflowId={Number(id)}
+              nodeId={selected.id}
+            />
+          </>
         )}
       </Drawer>
     </div>
