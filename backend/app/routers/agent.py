@@ -366,7 +366,7 @@ class NodeAssistIn(BaseModel):
 @router.post("/node-assist")
 async def node_assist(body: NodeAssistIn, user: User = Depends(get_current_user),
                       session: AsyncSession = Depends(get_session)):
-    if body.node_type not in ("llm_synth", "qc"):
+    if body.node_type not in ("llm_synth", "qc", "http_fetch"):
         raise HTTPException(status_code=422, detail="该节点类型不支持助手")
     wf = await session.get(Workflow, body.workflow_id)
     if wf is None or wf.user_id != user.id:

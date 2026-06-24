@@ -54,6 +54,7 @@ async def generate_code(model, instruction: str, columns: list[str], current_cod
 NODE_ASSIST_INSTRUCTIONS = {
     "llm_synth": load_prompt("node_assist_llm_synth.md"),
     "qc": load_prompt("node_assist_qc.md"),
+    "http_fetch": load_prompt("node_assist_http_fetch.md"),
 }
 
 

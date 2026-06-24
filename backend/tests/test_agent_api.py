@@ -245,3 +245,26 @@ async def test_node_assist_guards(auth_client, monkeypatch):
         "workflow_id": wf["id"], "node_id": "llm_synth_1", "node_type": "llm_synth",
         "instruction": "翻译", "model_config_id": 999999})
     assert r5.status_code == 422
+
+
+async def test_node_assist_allows_http_fetch(auth_client, monkeypatch):
+    from app.agent import codegen
+
+    async def fake_cfg(model, node_type, instruction, columns, current_config=None,
+                       preview_tools=None, params=None, history=None):
+        return {"reply": "已配置", "config": {
+            "method": "GET", "endpoint": "http://api",
+            "params": {"api_key": "x"}, "extract": {"v": "data.v"}}}
+
+    monkeypatch.setattr(codegen, "generate_node_config", fake_cfg)
+    wf = (await auth_client.post("/api/workflows", json={"name": "w_http"})).json()
+    mc = (await auth_client.post("/api/models", json={
+        "name": "m_http", "model_name": "x", "base_url": "http://x", "api_key": "k"})).json()
+    r = await auth_client.post("/api/agent/node-assist", json={
+        "workflow_id": wf["id"], "node_id": "http_fetch_1", "node_type": "http_fetch",
+        "instruction": "配置天气接口", "model_config_id": mc["id"],
+        "current_config": {}, "history": []})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["config"]["endpoint"] == "http://api"
+    assert body["reply"] == "已配置"
