@@ -128,30 +128,34 @@ function hasColRef(text: any, col: string): boolean {
 }
 
 // 三态循环的纯函数：返回切换某列引用态后的新 config。
-// 关键修复：移除 {{列}} 引用时，作用于「真正含该占位的字段」（http_fetch 搜 url→body→headers），
-// 而非盲目写 url——否则 body/headers 引用没被清掉，url 反被注入用户没写的 {{列}}。
+// 关键修复：移除 {{列}} 引用时，作用于「真正含该占位的字段」
+// （http_fetch 搜 endpoint→url→body→headers→params，口径与上方 refText 一致），
+// 而非盲目写默认字段——否则其它字段引用没被清掉，默认字段反被注入用户没写的 {{列}}。
 export function cycleColRef(type: string, config: Record<string, any>, col: string): Record<string, any> {
   const dropped: string[] = config.drop_columns ?? []
   if (dropped.includes(col)) {
     return { ...config, drop_columns: dropped.filter((c) => c !== col) }
   }
-  // 全新插入（灰→绿）落到默认字段即可
-  const insertField = type === 'http_fetch' ? 'url' : 'user_prompt'
+  // 全新插入（灰→绿）落到默认字段即可。http_fetch 默认 endpoint，旧链路仅有 url 时沿用 url。
+  const insertField = type === 'http_fetch'
+    ? (config.endpoint === undefined && config.url !== undefined ? 'url' : 'endpoint')
+    : 'user_prompt'
   // 移除（绿→红）：找到真正持有该占位的字段
   if (type === 'http_fetch') {
-    const headers: Record<string, any> = config.headers ?? {}
-    const headerKey = Object.keys(headers).find((k) => hasColRef(headers[k], col))
-    if (hasColRef(config.url, col)) {
-      return { ...config, url: toggleColRef(config.url ?? '', col), drop_columns: [...dropped, col] }
+    for (const f of ['endpoint', 'url', 'body'] as const) {
+      if (hasColRef(config[f], col)) {
+        return { ...config, [f]: toggleColRef(config[f] ?? '', col), drop_columns: [...dropped, col] }
+      }
     }
-    if (hasColRef(config.body, col)) {
-      return { ...config, body: toggleColRef(config.body ?? '', col), drop_columns: [...dropped, col] }
-    }
-    if (headerKey !== undefined) {
-      return {
-        ...config,
-        headers: { ...headers, [headerKey]: toggleColRef(headers[headerKey] ?? '', col) },
-        drop_columns: [...dropped, col],
+    for (const bag of ['headers', 'params'] as const) {
+      const obj: Record<string, any> = config[bag] ?? {}
+      const k = Object.keys(obj).find((key) => hasColRef(obj[key], col))
+      if (k !== undefined) {
+        return {
+          ...config,
+          [bag]: { ...obj, [k]: toggleColRef(obj[k] ?? '', col) },
+          drop_columns: [...dropped, col],
+        }
       }
     }
     // 未被任何字段引用：灰→绿，插入默认字段
@@ -364,7 +368,10 @@ function NodeAssist({ nodeType, workflowId, nodeId, config, onApply }: {
     if (!modelSel || !workflowId || !nodeId) return
     void sendAssist(key, {
       workflow_id: workflowId, node_id: nodeId, node_type: nodeType, model_config_id: modelSel,
-      current_config: config, params: withThinkingParamDefaults(config.params),
+      // http_fetch 的 config.params 是 HTTP 查询参数（含 api_key），不是模型思考参数；
+      // 别把它当模型参数透传，否则会把查询参数（甚至密钥）混进模型调用。
+      current_config: config,
+      params: withThinkingParamDefaults(nodeType === 'http_fetch' ? {} : config.params),
     })
   }
   return (

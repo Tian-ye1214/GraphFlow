@@ -72,6 +72,46 @@ describe('cycleColRef http_fetch field resolution (L15)', () => {
   })
 })
 
+// I1 回归：http 节点重构成 endpoint/params/body 后，三态循环只搜 url/body/headers，
+// 漏掉 endpoint 与 params——引用活在这两处时点击绿→红清不掉，反把 {{列}} 注入默认字段。
+// 修复后搜索口径与 refText 一致：endpoint→url→body→headers→params。
+describe('cycleColRef http_fetch endpoint/params resolution (I1)', () => {
+  it('removes an endpoint reference from endpoint, never injecting into url', () => {
+    const config = { method: 'GET', endpoint: 'https://api.example.com/{{city}}', drop_columns: [] }
+
+    const next = cycleColRef('http_fetch', config, 'city')
+
+    expect(next.endpoint).toBe('https://api.example.com/')
+    expect(next.url).toBeUndefined()
+    expect(next.drop_columns).toEqual(['city'])
+  })
+
+  it('removes a params-only reference from that params value', () => {
+    const config = {
+      method: 'GET',
+      endpoint: 'https://api.example.com/search',
+      params: { city: '{{c}}', api_key: 'secret' },
+      drop_columns: [],
+    }
+
+    const next = cycleColRef('http_fetch', config, 'c')
+
+    expect(next.endpoint).toBe('https://api.example.com/search')
+    expect(next.params).toEqual({ city: '', api_key: 'secret' })
+    expect(next.drop_columns).toEqual(['c'])
+  })
+
+  it('inserts a fresh reference into endpoint when endpoint is the configured field', () => {
+    const config = { method: 'GET', endpoint: 'https://api.example.com', drop_columns: [] }
+
+    const next = cycleColRef('http_fetch', config, 'x')
+
+    expect(next.endpoint).toBe('https://api.example.com{{x}}')
+    expect(next.url).toBeUndefined()
+    expect(next.drop_columns ?? []).toEqual([])
+  })
+})
+
 describe('cycleColRef llm field resolution', () => {
   it('green to red removes the prompt reference and drops the column', () => {
     const config = { user_prompt: 'answer {{q}}', drop_columns: [] }
