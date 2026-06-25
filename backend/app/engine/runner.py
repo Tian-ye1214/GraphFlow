@@ -674,15 +674,46 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
 
 
 async def _prepare_qc_nodes(session_factory, user_id, graph: Graph, middle) -> dict:
-    """预解析链上各 qc 节点的判定模型/pass_k/列名（Task 6 起用）。无 qc 时返回空。"""
-    return {}
+    """预解析链上各 qc 节点的判定模型/pass_k(钳)/列名（生成循环每批复用，避免反复查库）。"""
+    ctx: dict[str, dict] = {}
+    async with session_factory() as s:
+        for node in middle:
+            if node.type != "qc":
+                continue
+            cfg = node.config
+            judge_ids = cfg.get("judge_model_ids") or (
+                [cfg["model_config_id"]] if cfg.get("model_config_id") else [])
+            jmcs = [await s.get(ModelConfig, jid) for jid in judge_ids]
+            if not jmcs or any(m is None or m.user_id != user_id for m in jmcs):
+                raise ValueError(f"质检节点 {node.id}: 判定模型配置不存在")
+            try:
+                pass_k = int(cfg.get("pass_k", 1))
+            except (TypeError, ValueError):
+                pass_k = 1
+            ctx[node.id] = {
+                "jmcs": jmcs, "pass_k": max(1, min(pass_k, len(jmcs))),
+                "status_col": cfg.get("status_column") or "qc_status",
+                "feedback_col": cfg.get("feedback_column") or "qc_feedback"}
+    return ctx
 
 
 async def _run_chain_middle(session_factory, run_id, user_id, node: Node, rows, row_idx,
                             qc_ctx, user_sem, cancel_event) -> list[dict]:
-    """生成循环中间节点（本批）：auto_process 走 barrier，qc 走判定（Task 6）。返回本批产出行。"""
+    """生成循环中间节点（本批）：auto_process→barrier，qc→判定一轮(通过累积、不通过淘汰由外层循环补生成)。
+    返回本批产出行。qc 本批通过行落 RunRow(供 readback/观测)，首轮通过计入 QcMetric(first_round_rate 聚合)。"""
     if node.type == "auto_process":
         await _run_barrier_node(session_factory, run_id, user_id, node, rows, row_idx=row_idx)
+        return await _batch_outputs(session_factory, run_id, node.id, row_idx, row_idx + 1)
+    if node.type == "qc":
+        c = qc_ctx[node.id]
+        passed, _failed, usage, first_pass = await _qc_judge_batch(
+            session_factory, run_id, user_id, node, rows, c["jmcs"], c["pass_k"],
+            c["status_col"], c["feedback_col"], user_sem, cancel_event)
+        await _write_unit(session_factory, run_id, node.id, row_idx, "done", passed, "",
+                          usage=usage, drop=node.config.get("drop_columns"))
+        async with session_factory() as s:
+            s.add(QcMetric(run_id=run_id, node_id=node.id, total=len(rows), first_round_pass=first_pass))
+            await s.commit()
         return await _batch_outputs(session_factory, run_id, node.id, row_idx, row_idx + 1)
     raise ValueError(f"无输入生成链暂不支持中间节点类型: {node.type}")
 
