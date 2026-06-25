@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 from contextlib import nullcontext
 from datetime import datetime, timezone
 
@@ -428,6 +429,15 @@ def _resolve_output_count(graph: Graph, node: Node) -> int | None:
         if cnode.type == "output":
             return cnode.config.get("count") or None
         cur = child
+
+
+def _gen_batch_size(gap: int, fanout: int, accepted: int, generated: int) -> int:
+    """无输入生成循环：本批生成多少种子行。按缺口 gap、扇出、已观测通过率(接收/已生成候选)估算——
+    产率越低本批越大，缺口越小越收敛。yield 钳到 [0.2,1.0]：上界防首批过量、下界防极低产率单批暴量(≤5×缺口)。
+    至少 1 行，防 ceil(gap/fanout) 因扇出大而归零导致死循环。"""
+    y = (accepted / generated) if generated > 0 else 1.0
+    y = min(1.0, max(0.2, y))
+    return max(1, -(-gap // fanout) if y >= 1.0 else math.ceil(gap / fanout / y))
 
 
 async def _run_llm_node(session_factory, run_id, user_id, graph: Graph, node: Node, inputs,
