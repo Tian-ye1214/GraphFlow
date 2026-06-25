@@ -124,6 +124,14 @@ async def _execute(run_id, session_factory, user_sem, cancel_event):
     await _resolve_prompt_refs(session_factory, graph, user_id)
     await _log(session_factory, run_id, "", "运行开始")
 
+    chain = _generation_chain(graph)                  # 无输入生成链？否则 None 走单遍 topo
+    if chain is not None:
+        if cancel_event.is_set():
+            return await _finish(session_factory, run_id, "cancelled")
+        await _run_generation_loop(session_factory, run_id, user_id, graph, chain, user_sem, cancel_event)
+        return await _finish(session_factory, run_id,
+                             "cancelled" if cancel_event.is_set() else "completed")
+
     for node in topo_order(graph):
         if cancel_event.is_set():
             return await _finish(session_factory, run_id, "cancelled")
@@ -663,3 +671,93 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
                       usage=usage, qc_round=rounds, drop=cfg.get("drop_columns"))
     await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="done",
                           total=len(inputs), done=len(passed), failed=len(inputs) - len(passed))
+
+
+async def _prepare_qc_nodes(session_factory, user_id, graph: Graph, middle) -> dict:
+    """预解析链上各 qc 节点的判定模型/pass_k/列名（Task 6 起用）。无 qc 时返回空。"""
+    return {}
+
+
+async def _run_chain_middle(session_factory, run_id, user_id, node: Node, rows, row_idx,
+                            qc_ctx, user_sem, cancel_event) -> list[dict]:
+    """生成循环中间节点（本批）：auto_process 走 barrier，qc 走判定（Task 6）。返回本批产出行。"""
+    if node.type == "auto_process":
+        await _run_barrier_node(session_factory, run_id, user_id, node, rows, row_idx=row_idx)
+        return await _batch_outputs(session_factory, run_id, node.id, row_idx, row_idx + 1)
+    raise ValueError(f"无输入生成链暂不支持中间节点类型: {node.type}")
+
+
+async def _finalize_chain_states(session_factory, run_id, user_id, nodes_) -> None:
+    """生成循环收尾：按落库 RunRow 给链上各节点补写累计状态（逐行节点=成功/失败行数；barrier/qc=展平行数）。"""
+    for n in nodes_:
+        flat = await _node_outputs(session_factory, run_id, n.id)
+        async with session_factory() as s:
+            failed = (await s.execute(select(func.count()).select_from(RunRow).where(
+                RunRow.run_id == run_id, RunRow.node_id == n.id, RunRow.status == "failed"))).scalar()
+        await _set_node_state(session_factory, run_id, n.id, user_id=user_id, status="done",
+                              total=len(flat) + failed, done=len(flat), failed=failed)
+
+
+async def _run_generation_loop(session_factory, run_id, user_id, graph: Graph, chain: list[Node],
+                               user_sem, cancel_event) -> None:
+    """无输入生成链执行：持续分批生成空种子→流过链路→累积「到达输出前」的接收行，达 output.count 即停。
+    不设预算上限；cancel_event 置位即停（已接收行保留，输出未写）。仅在 _execute 确认是生成链时调用。"""
+    start, output = chain[0], chain[-1]
+    middle = chain[1:-1]                               # auto_process / qc（Task 6/7 接入）
+    target = output.config["count"]
+    validate_node_config_shape(start)                 # fanout_n 等配置错误→整 run failed 点名
+    mc = None
+    if start.type == "llm_synth":
+        async with session_factory() as s:
+            mc = await s.get(ModelConfig, start.config.get("model_config_id"))
+        if mc is None or mc.user_id != user_id:
+            raise ValueError(f"节点 {start.id}: 模型配置不存在")
+    fanout = start.config.get("fanout_n", 1) if start.type == "llm_synth" else 1
+    qc_ctx = await _prepare_qc_nodes(session_factory, user_id, graph, middle)
+
+    # 断点续跑：各节点行号游标 = 已落 RunRow 最大 row_idx+1；已接收 = 输出前末节点已落 done 行
+    written: dict[str, int] = {}
+    async with session_factory() as s:
+        for n in chain:
+            mx = (await s.execute(select(func.max(RunRow.row_idx)).where(
+                RunRow.run_id == run_id, RunRow.node_id == n.id))).scalar()
+            written[n.id] = (mx + 1) if mx is not None else 0
+    last_pre = middle[-1] if middle else start
+    accepted = await _node_outputs(session_factory, run_id, last_pre.id, include_trace=True)
+    generated = len(await _node_outputs(session_factory, run_id, start.id, include_trace=True))
+
+    while len(accepted) < target and not cancel_event.is_set():
+        gap = target - len(accepted)
+        batch_len = _gen_batch_size(gap, fanout, len(accepted), generated)
+        seeds = attach_root_trace([{} for _ in range(batch_len)], run_id=run_id, node_id=start.id)
+        base = written[start.id]
+        if start.type == "llm_synth":
+            await _run_per_row_node(
+                session_factory, run_id, user_id, start, seeds, cancel_event,
+                row_coro=lambda i, rs=seeds: nodes.run_llm_synth_row(start.config, rs[i], mc, user_sem),
+                log_source="synth", row_base=base)
+        else:
+            await _run_per_row_node(
+                session_factory, run_id, user_id, start, seeds, cancel_event,
+                row_coro=lambda i, rs=seeds: nodes.run_http_fetch_row(start.config, rs[i]),
+                row_base=base)
+        rows = await _batch_outputs(session_factory, run_id, start.id, base, base + len(seeds))
+        written[start.id] += len(seeds)
+        generated += len(rows)
+        for node in middle:                            # 逐个中间节点处理本批
+            if cancel_event.is_set():
+                return
+            rows = await _run_chain_middle(session_factory, run_id, user_id, node,
+                                           rows, written[node.id], qc_ctx, user_sem, cancel_event)
+            written[node.id] += 1
+        accepted.extend(rows)
+        await _set_node_state(session_factory, run_id, output.id, user_id=user_id, status="running",
+                              total=target, done=min(len(accepted), target), failed=0)
+
+    if cancel_event.is_set():
+        return
+    await _run_barrier_node(session_factory, run_id, user_id, output,
+                            accepted[:target], row_idx=written[output.id])
+    await _finalize_chain_states(session_factory, run_id, user_id, chain[:-1])
+    await _set_node_state(session_factory, run_id, output.id, user_id=user_id, status="done",
+                          total=target, done=min(len(accepted), target), failed=0)
