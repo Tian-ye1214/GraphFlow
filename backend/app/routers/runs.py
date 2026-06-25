@@ -1,24 +1,28 @@
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Literal
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import delete as sa_delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.background import BackgroundTask
 
 from app.auth import get_current_user
 from app.config import settings
 from app.db import get_session, get_session_factory
 from app.events import publish
+from app.engine.columns import ordered_union
 from app.engine.graph import GraphError, descendants, parse_graph, validate_graph
 from app.engine.manager import manager
 from app.models import (ModelCallLog, QcFailure, QcMetric, Run, RunLog,
                         RunNodeState, RunRow, User, Workflow, WorkflowVersion)
 from app.routers.workflows import get_owned_workflow
-from app.services.export import export_rows
+from app.services.export import aiter_csv, aiter_jsonl, write_xlsx
 from app.services.run_artifacts import read_output_ref_rows
 from app.services.run_service import (purge_run_rows, unlink_run_exports,
                                       validate_graph_resource_ownership)
@@ -431,8 +435,23 @@ async def export_run(run_id: int, node_id: str | None = None,
     recs = (await session.execute(
         select(RunRow).where(RunRow.run_id == run.id, RunRow.node_id == node_id,
                              RunRow.status == "done").order_by(RunRow.row_idx))).scalars().all()
-    filename = f"run{run.id}_{Path(node_id).name}.{format}"
-    path = await asyncio.to_thread(
-        export_rows, _flatten(recs, settings.data_dir), format,
-        settings.data_dir / "exports" / filename)
-    return FileResponse(path, filename=filename)
+    rows = _flatten(recs, settings.data_dir)
+    base = f"run{run.id}_{Path(node_id).name}"   # Path(...).name 去掉 node_id 里的路径穿越
+    if format == "jsonl":                          # 流式响应：不经整文件 materialize、不落临时盘
+        return StreamingResponse(aiter_jsonl(rows), media_type="application/x-ndjson",
+                                 headers=_attachment(f"{base}.jsonl"))
+    if format == "csv":
+        columns = ordered_union([list(r) for r in rows])
+        return StreamingResponse(aiter_csv(rows, columns), media_type="text/csv; charset=utf-8",
+                                 headers=_attachment(f"{base}.csv"))
+    columns = ordered_union([list(r) for r in rows])   # xlsx 须落盘：write_only 内存有界，BackgroundTask 回收
+    path = settings.data_dir / "exports" / f"{uuid4().hex[:8]}_{base}.xlsx"
+    await asyncio.to_thread(write_xlsx, rows, columns, path)
+    return FileResponse(
+        path, filename=f"{base}.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        background=BackgroundTask(os.unlink, path))
+
+
+def _attachment(filename: str) -> dict:
+    return {"Content-Disposition": f'attachment; filename="{filename}"'}

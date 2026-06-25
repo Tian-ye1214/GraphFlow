@@ -234,6 +234,13 @@ async def upload(
             raise HTTPException(
                 status_code=422,
                 detail=f"{original_name} 过大（Excel 上限 {limit_mb}MB），请导出为 CSV 上传")
+        # .json 数组形整文件读内存再 json.loads，不可流式 → 超限直接 422（jsonl 真流式不受此限）。
+        if suffix == ".json" and size > settings.max_json_upload_bytes:
+            file_path.unlink(missing_ok=True)
+            limit_mb = settings.max_json_upload_bytes // (1024 * 1024)
+            raise HTTPException(
+                status_code=422,
+                detail=f"{original_name} 过大（JSON 上限 {limit_mb}MB），请改用 JSONL 逐行格式上传")
         if shutil.disk_usage(settings.data_dir).free < size * 2:
             file_path.unlink(missing_ok=True)
             raise HTTPException(status_code=422, detail="磁盘空间不足，无法导入该文件")

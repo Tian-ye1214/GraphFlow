@@ -1,4 +1,6 @@
+import asyncio
 import json
+import shutil
 from collections import defaultdict
 from collections.abc import Iterable
 from pathlib import Path
@@ -11,6 +13,7 @@ from app.services.dataset_store import (
     SHARD_SIZE,
     _iter_dataset_rows,
     _write_shards,
+    dataset_root,
     dump_manifest,
     ensure_dataset_materialized,
     visible_total,
@@ -59,29 +62,38 @@ async def apply_dataset_operations(
         total_rows_including_header=0,
     )
     session.add(new_ds)
-    await session.flush()
+    await session.commit()           # 短事务：占位行落库即释放 SQLite 写锁，不持锁跨文件写
 
-    rows = _apply_row_plan(source, data_dir, plan)
-    manifest, columns, row_count = _write_shards(
-        rows,
-        data_dir=data_dir,
-        user_id=user_id,
-        dataset_id=new_ds.id,
-        version=version,
-        shard_size=SHARD_SIZE,
-        columns=plan["columns"],
-        header_row=source.header_row,
-        data_start_row=source.data_start_row,
-    )
-    manifest["original_format"] = source.original_format
+    # 逐行读源分片→改写→写新分片是同步重活：移出事件循环(asyncio.to_thread)，否则大数据集编辑
+    # 期整台异步服务对所有租户卡死、写锁还被持到落盘结束（与上传摄入 ingest_manager 同款范式）。
+    header_row, data_start_row = source.header_row, source.data_start_row
+    original_format = source.original_format
+
+    def _materialize():
+        return _write_shards(
+            _apply_row_plan(source, data_dir, plan),
+            data_dir=data_dir, user_id=user_id, dataset_id=new_ds.id, version=version,
+            shard_size=SHARD_SIZE, columns=plan["columns"],
+            header_row=header_row, data_start_row=data_start_row)
+
+    try:
+        manifest, columns, row_count = await asyncio.to_thread(_materialize)
+    except Exception:
+        # 写分片失败：清孤儿分片 + 删占位行，恢复「失败不留版本行」语义（不留 importing 僵尸）
+        shutil.rmtree(dataset_root(data_dir, user_id, new_ds.id, version).parent,
+                      ignore_errors=True)
+        await session.delete(new_ds)
+        await session.commit()
+        raise
+    manifest["original_format"] = original_format
     manifest["version_of_dataset_id"] = root_id
     new_ds.manifest_json = dump_manifest(manifest)
     new_ds.columns_json = json.dumps(columns, ensure_ascii=False)
     new_ds.row_count = row_count
     new_ds.imported_rows = row_count
-    new_ds.total_rows_including_header = visible_total(row_count, source.header_row)
+    new_ds.total_rows_including_header = visible_total(row_count, header_row)
     new_ds.status = "ready"
-    await session.commit()
+    await session.commit()           # 第二个短事务：定稿 ready
     return new_ds
 
 

@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     # 大文件摄入护栏：openpyxl 解析超大 xlsx 必 OOM，源 xlsx/xls 超此字节直接 422（引导转 CSV）；
     # CSV/JSONL 走真流式无此限。后台摄入全局并发上限，避免多个大文件解析互相踩+撑爆线程池。
     max_excel_upload_bytes: int = 200 * 1024 * 1024
+    # .json（数组形）整文件读进内存再 json.loads（不可流式），超此字节直接 422（引导转 JSONL 逐行）。
+    max_json_upload_bytes: int = 200 * 1024 * 1024
     ingest_concurrency: int = 2
 
     @property
