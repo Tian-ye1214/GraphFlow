@@ -182,6 +182,18 @@ async def _node_outputs(session_factory, run_id, node_id, *, include_trace: bool
     return out if include_trace else strip_trace_rows(out)
 
 
+async def _batch_outputs(session_factory, run_id, node_id, lo: int, hi: int) -> list[dict]:
+    """读回某节点 row_idx ∈ [lo, hi) 的 done 行并展平（含 trace，用于生成循环链式衔接）。"""
+    async with session_factory() as s:
+        recs = (await s.execute(select(RunRow).where(
+            RunRow.run_id == run_id, RunRow.node_id == node_id, RunRow.status == "done",
+            RunRow.row_idx >= lo, RunRow.row_idx < hi).order_by(RunRow.row_idx))).scalars().all()
+    out: list[dict] = []
+    for r in recs:
+        out.extend(json.loads(r.data_json))
+    return out
+
+
 async def _node_inputs(session_factory, run_id, graph: Graph, node: Node) -> list[dict]:
     parents = upstream_ids(graph, node.id)
     branches = [await _node_outputs(session_factory, run_id, uid, include_trace=True) for uid in parents]
@@ -267,10 +279,10 @@ async def _set_node_state(session_factory, run_id, node_id, *, user_id, status, 
             data={"node_id": node_id, "status": status, "total": total, "done": done, "failed": failed})
 
 
-async def _run_barrier_node(session_factory, run_id, user_id, node: Node, inputs):
+async def _run_barrier_node(session_factory, run_id, user_id, node: Node, inputs, *, row_idx: int = 0):
     async with session_factory() as s:
         rec = (await s.execute(select(RunRow).where(
-            RunRow.run_id == run_id, RunRow.node_id == node.id, RunRow.row_idx == 0
+            RunRow.run_id == run_id, RunRow.node_id == node.id, RunRow.row_idx == row_idx
         ))).scalar_one_or_none()
     if rec is not None and rec.status == "done":
         await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="done", total=1, done=1, failed=0)
@@ -279,10 +291,10 @@ async def _run_barrier_node(session_factory, run_id, user_id, node: Node, inputs
     try:
         out = await _barrier_output(session_factory, user_id, node, inputs, run_id=run_id)
     except Exception as e:
-        await _write_unit(session_factory, run_id, node.id, 0, "failed", [], str(e))
+        await _write_unit(session_factory, run_id, node.id, row_idx, "failed", [], str(e))
         await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="failed", total=1, done=0, failed=1)
         raise
-    await _write_unit(session_factory, run_id, node.id, 0, "done", out, "",
+    await _write_unit(session_factory, run_id, node.id, row_idx, "done", out, "",
                       drop=node.config.get("drop_columns"))
     await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="done", total=1, done=1, failed=0)
 
@@ -327,20 +339,22 @@ async def _barrier_output(session_factory, user_id, node: Node, inputs, run_id: 
 
 
 async def _run_per_row_node(session_factory, run_id, user_id, node: Node, inputs, cancel_event,
-                            *, row_coro, log_source=None, max_output_rows=None):
+                            *, row_coro, log_source=None, max_output_rows=None, row_base: int = 0):
     """逐行隔离节点（llm_synth / http_fetch）的公共脚手架：断点续跑（跳过已 done/failed 的行）、
     节点内并发、硬中断、逐行成败计数与落库、收尾置节点终态——这套语义必须两类节点完全一致。
-    差异只在 row_coro（产生第 idx 行结果的协程，返回 (out_rows, usage)）与 log_source（模型日志归因来源；
+    差异只在 row_coro（产生第 i 行结果的协程，返回 (out_rows, usage)）与 log_source（模型日志归因来源；
     http 无模型调用故为 None）。节点特有的 config 预校验由各包装函数在调用本函数前完成。
     max_output_rows（output 节点 count）：产量封顶——最多处理 ceil(count/fanout) 个输入行就停，
-    省大模型调用；按「累计已尝试输入行(done+failed)」算，使断点续跑跨次不超额、淘汰不补（多少要多少）。"""
+    省大模型调用；按「累计已尝试输入行(done+failed)」算，使断点续跑跨次不超额、淘汰不补（多少要多少）。
+    row_base：本批写入的 row_idx 偏移（输入下标 i → row_idx=row_base+i）；无输入生成循环按批传不同 base 不撞键，
+    默认 0 即单遍路径行为不变。"""
     cfg = node.config
     async with session_factory() as s:
         existing = (await s.execute(select(RunRow.row_idx, RunRow.status).where(
             RunRow.run_id == run_id, RunRow.node_id == node.id))).all()
     done_idx = {idx for idx, st in existing if st == "done"}
     failed_idx = {idx for idx, st in existing if st == "failed"}
-    todo = [i for i in range(len(inputs)) if i not in done_idx and i not in failed_idx]
+    todo = [i for i in range(len(inputs)) if (row_base + i) not in done_idx and (row_base + i) not in failed_idx]
     total = len(inputs)
     if max_output_rows is not None:
         fanout = cfg.get("fanout_n", 1)             # 合法性已由 validate_node_config_shape 保证（≥1 int）
@@ -352,27 +366,27 @@ async def _run_per_row_node(session_factory, run_id, user_id, node: Node, inputs
                           total=total, done=done_count, failed=failed_count)
     node_sem = asyncio.Semaphore(cfg.get("concurrency", 4))
 
-    async def work(idx: int):
+    async def work(i: int):
         nonlocal done_count, failed_count
         async with node_sem:
             if cancel_event.is_set():
                 return
-            trace_id = row_trace_id(inputs[idx])
+            trace_id = row_trace_id(inputs[i])
             ctx = (log_context(run_id=run_id, node_id=node.id, user_id=user_id,
                                source=log_source, trace_id=trace_id)
                    if log_source else nullcontext())
             try:
                 with ctx:
-                    out_rows, usage = await _cancellable(row_coro(idx), cancel_event)
+                    out_rows, usage = await _cancellable(row_coro(i), cancel_event)
             except asyncio.CancelledError:
                 return  # 硬中断：在途请求已 abort，该行不落库（保持 pending）
             except Exception as e:
-                await _write_unit(session_factory, run_id, node.id, idx, "failed", [], str(e),
+                await _write_unit(session_factory, run_id, node.id, row_base + i, "failed", [], str(e),
                                   trace_id=trace_id)
                 failed_count += 1
             else:
-                out_rows = attach_child_trace(inputs[idx], out_rows, node_id=node.id, row_idx=idx)
-                await _write_unit(session_factory, run_id, node.id, idx, "done", out_rows, "",
+                out_rows = attach_child_trace(inputs[i], out_rows, node_id=node.id, row_idx=row_base + i)
+                await _write_unit(session_factory, run_id, node.id, row_base + i, "done", out_rows, "",
                                   usage=usage, drop=cfg.get("drop_columns"))
                 done_count += 1
             await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running",
