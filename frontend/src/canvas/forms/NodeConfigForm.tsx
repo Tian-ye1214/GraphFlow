@@ -167,6 +167,31 @@ export function cycleColRef(type: string, config: Record<string, any>, col: stri
   return { ...config, [insertField]: toggleColRef(config[insertField] ?? '', col) }
 }
 
+// 与后端 workflow_package.REDACTED 一致：喂给助手的 current_config 里的密钥被脱敏成此占位。
+export const REDACTED_MARKER = '***REDACTED***'
+
+// 应用助手返回的配置补丁：浅合并后，把 params/headers 里被模型回显的 ***REDACTED*** 占位
+// 还原为本地现有真实值——避免脱敏标记覆盖用户真实 api_key/鉴权头（无本地值则丢弃该键）。
+export function applyAssistPatch(config: Record<string, any>, patch: Record<string, any>): Record<string, any> {
+  const merged: Record<string, any> = { ...config, ...patch }
+  for (const bag of ['params', 'headers'] as const) {
+    const m = merged[bag]
+    if (m && typeof m === 'object' && !Array.isArray(m)) {
+      const orig: Record<string, any> = config[bag] ?? {}
+      const restored: Record<string, any> = {}
+      for (const k of Object.keys(m)) {
+        if (m[k] === REDACTED_MARKER) {
+          if (k in orig) restored[k] = orig[k]   // 还原真实密钥；无本地值则丢弃占位
+        } else {
+          restored[k] = m[k]
+        }
+      }
+      merged[bag] = restored
+    }
+  }
+  return merged
+}
+
 function MissingColsWarning({ text, inputCols }: { text: string; inputCols: string[] }) {
   const miss = missingCols(text, inputCols)
   if (miss.length === 0) return null
@@ -828,7 +853,7 @@ function HttpFetchForm({ config, onChange, workflowId, nodeId, inputCols }: Form
   return (
     <>
       <NodeAssist nodeType="http_fetch" workflowId={workflowId} nodeId={nodeId} config={config}
-                  onApply={(c) => onChange({ ...config, ...c })} />
+                  onApply={(c) => onChange(applyAssistPatch(config, c))} />
       <Collapse activeKey={collapse.activeKey} onChange={collapse.onChange} items={[
         { key: 'req', label: '请求', children: (
           <>

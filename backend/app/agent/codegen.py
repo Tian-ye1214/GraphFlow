@@ -1,6 +1,7 @@
 """智能处理操作的代码生成：临时单 Agent（零工具、请求级生命周期）+ 仅采上游列名（不跑数、不预览）。
 节点助手为多轮：前端每轮带该节点 history，后端无状态跑一轮。"""
 import json
+from copy import deepcopy
 
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
@@ -10,6 +11,7 @@ from app.agent.prompts import load_prompt
 from app.engine.columns import propagate_columns, resolve_dataset_cols
 from app.engine.graph import parse_graph
 from app.models import Workflow
+from app.services.workflow_package import redact_secrets
 
 INSTRUCTIONS = load_prompt("codegen_system.md")
 
@@ -58,6 +60,15 @@ NODE_ASSIST_INSTRUCTIONS = {
 }
 
 
+def _redact_config_secrets(node_type: str, config: dict) -> dict:
+    """脱敏 current_config 里的固化凭据（http_fetch 的 params.api_key / 鉴权头 / endpoint 查询串 / body），
+    再喂给模型——否则密钥值会进模型输入并被 ModelCallLog 持久化（可经 model-logs 查到）。
+    复用导出脱敏逻辑；作用于副本，不动调用方原 config。非 http_fetch 节点无密钥、原样返回。"""
+    safe = deepcopy(config)
+    redact_secrets({"nodes": [{"id": "", "type": node_type, "config": safe}]})
+    return safe
+
+
 def _to_history(history: list[dict] | None) -> list:
     msgs = []
     for h in history or []:
@@ -81,8 +92,9 @@ async def generate_node_config(model, node_type: str, instruction: str, columns:
     agent = create_agent(model, preview_tools or [], NODE_ASSIST_INSTRUCTIONS[node_type], params=params)
     prompt = _user_prompt(instruction, columns)
     if current_config:
+        safe_config = _redact_config_secrets(node_type, current_config)
         prompt += ("\n\n现有节点配置（请在此基础上增量修改，保留已有提示词中的处理，"
-                   "不要丢失之前的需求）：\n" + json.dumps(current_config, ensure_ascii=False))
+                   "不要丢失之前的需求）：\n" + json.dumps(safe_config, ensure_ascii=False))
     try:
         result = await agent.run(prompt, message_history=_to_history(history))
     except UnexpectedModelBehavior:   # 空/不可用补全：多轮对话降级为本轮不产配置（config=None），不崩 500

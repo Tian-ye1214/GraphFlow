@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cycleColRef } from './NodeConfigForm'
+import { applyAssistPatch, cycleColRef, REDACTED_MARKER } from './NodeConfigForm'
 
 // L15 回归：http_fetch 三态循环只改 url，导致只在 body/headers 引用的列被点击时
 // 把用户从未写过的 {{列}} 注入到 URL。修复后移除引用要作用于真正持有占位的字段。
@@ -109,6 +109,54 @@ describe('cycleColRef http_fetch endpoint/params resolution (I1)', () => {
     expect(next.endpoint).toBe('https://api.example.com{{x}}')
     expect(next.url).toBeUndefined()
     expect(next.drop_columns ?? []).toEqual([])
+  })
+})
+
+// 后端把喂给助手的 current_config 里的密钥脱敏成 ***REDACTED***（防密钥进模型输入/日志）。
+// 助手可能把该占位回显进返回配置，浅合并 onApply 会用占位覆盖用户真实 api_key/鉴权头——
+// applyAssistPatch 在合并后把 params/headers 里的占位还原为本地真实值（无本地值则丢弃该键）。
+describe('applyAssistPatch restores redacted secrets on apply', () => {
+  it('restores a redacted params.api_key from the live config', () => {
+    const config = { method: 'GET', params: { city: '{{c}}', api_key: 'realkey' } }
+    const patch = { params: { city: '{{c}}', api_key: REDACTED_MARKER, lang: 'en' } }
+
+    const merged = applyAssistPatch(config, patch)
+
+    expect(merged.params).toEqual({ city: '{{c}}', api_key: 'realkey', lang: 'en' })
+  })
+
+  it('restores a redacted Authorization header from the live config', () => {
+    const config = { headers: { Authorization: 'Bearer realtoken' } }
+    const patch = { headers: { Authorization: REDACTED_MARKER } }
+
+    const merged = applyAssistPatch(config, patch)
+
+    expect(merged.headers).toEqual({ Authorization: 'Bearer realtoken' })
+  })
+
+  it('drops a redacted key that has no live value to restore', () => {
+    const config = { params: { city: '{{c}}' } }
+    const patch = { params: { api_key: REDACTED_MARKER } }
+
+    const merged = applyAssistPatch(config, patch)
+
+    expect(merged.params).toEqual({})
+  })
+
+  it('merges normally when no marker is present', () => {
+    const config = { method: 'GET', params: { api_key: 'realkey' } }
+    const patch = { endpoint: 'https://x/y', params: { api_key: 'realkey', city: '{{c}}' } }
+
+    const merged = applyAssistPatch(config, patch)
+
+    expect(merged).toEqual({ method: 'GET', endpoint: 'https://x/y', params: { api_key: 'realkey', city: '{{c}}' } })
+  })
+
+  it('is a plain shallow merge for non-http configs (no params/headers)', () => {
+    const config = { user_prompt: 'old', output_column: 'q_en' }
+    const patch = { user_prompt: 'new' }
+
+    expect(applyAssistPatch(config, patch)).toEqual({ user_prompt: 'new', output_column: 'q_en' })
   })
 })
 
