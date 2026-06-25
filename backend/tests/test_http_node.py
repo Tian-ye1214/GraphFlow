@@ -322,3 +322,50 @@ async def test_http_poll_then_explode(monkeypatch):
     out, _ = await nodes.run_http_fetch_row(cfg, {})
     assert calls["n"] == 2
     assert out == [{"x": 1}, {"x": 2}]
+
+
+DATA_SOURCE_GRAPH = {
+    "nodes": [
+        {"id": "src", "type": "http_fetch",
+         "config": {"url": "http://api/list", "records_path": "items", "extract": {"name": "name"}}},
+        {"id": "out", "type": "output", "config": {}},
+    ],
+    "edges": [{"source": "src", "target": "out", "kind": "normal"}],
+}
+
+
+async def test_http_data_source_explodes_into_dataset(session_factory, monkeypatch):
+    """无 input 节点：http_fetch 作起始数据源，触发一次取数→展开成多行→流到 output。"""
+    async def fake_fetch(method, url, headers=None, body=None, timeout=30, retries=2):
+        return 200, json.dumps({"items": [{"name": "x"}, {"name": "y"}, {"name": "z"}]})
+
+    monkeypatch.setattr("app.services.http.fetch", fake_fetch)
+    run_id = await make_run(session_factory, graph=DATA_SOURCE_GRAPH)
+    await run_it(session_factory, run_id)
+    run = await get_run(session_factory, run_id)
+    assert run.status == "completed"
+    out = await runner._node_outputs(session_factory, run_id, "out")
+    assert len(out) == 3
+    assert {r["name"] for r in out} == {"x", "y", "z"}
+
+
+async def test_http_data_source_single_object(session_factory, monkeypatch):
+    """无 records_path 的起始 http_fetch：取一次单对象 → 单行。"""
+    graph = {
+        "nodes": [
+            {"id": "src", "type": "http_fetch", "config": {"url": "http://api", "extract": {"v": "val"}}},
+            {"id": "out", "type": "output", "config": {}},
+        ],
+        "edges": [{"source": "src", "target": "out", "kind": "normal"}],
+    }
+
+    async def fake_fetch(method, url, headers=None, body=None, timeout=30, retries=2):
+        return 200, json.dumps({"val": 7})
+
+    monkeypatch.setattr("app.services.http.fetch", fake_fetch)
+    run_id = await make_run(session_factory, graph=graph)
+    await run_it(session_factory, run_id)
+    run = await get_run(session_factory, run_id)
+    assert run.status == "completed"
+    out = await runner._node_outputs(session_factory, run_id, "out")
+    assert out == [{"v": 7}]

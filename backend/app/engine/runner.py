@@ -204,6 +204,9 @@ async def _batch_outputs(session_factory, run_id, node_id, lo: int, hi: int) -> 
 
 async def _node_inputs(session_factory, run_id, graph: Graph, node: Node) -> list[dict]:
     parents = upstream_ids(graph, node.id)
+    if not parents and node.type == "http_fetch":
+        # 无上游的 http_fetch = 起始数据源：喂一个带 root trace 的空种子，触发一次取数（否则 0 行 no-op）
+        return attach_root_trace([{}], run_id=run_id, node_id=node.id)
     branches = [await _node_outputs(session_factory, run_id, uid, include_trace=True) for uid in parents]
     if len(branches) <= 1:
         return branches[0] if branches else []
@@ -485,8 +488,8 @@ def _gen_batch_size(gap: int, fanout: int, accepted: int, generated: int) -> int
 
 def _generation_chain(graph: Graph) -> list[Node] | None:
     """无输入生成链检测/校验。无「无普通入边的生成节点」→ None(走单遍 topo)。
-    有 → 要求整图是单一线性链 start(llm/http)→…→output(count≥1)：否则点名 ValueError(整 run failed)。"""
-    gen_types = {"llm_synth", "http_fetch"}
+    有 → 要求整图是单一线性链 start(llm_synth)→…→output(count≥1)：否则点名 ValueError(整 run failed)。"""
+    gen_types = {"llm_synth"}   # http_fetch 无输入时走 topo 作数据源（一次取数+展开），不进生成循环
     starts = [n for n in graph.nodes if n.type in gen_types and not upstream_ids(graph, n.id)]
     if not starts:
         return None
@@ -773,13 +776,11 @@ async def _run_generation_loop(session_factory, run_id, user_id, graph: Graph, c
     middle = chain[1:-1]                               # auto_process / qc（Task 6/7 接入）
     target = output.config["count"]
     validate_node_config_shape(start)                 # fanout_n 等配置错误→整 run failed 点名
-    mc = None
-    if start.type == "llm_synth":
-        async with session_factory() as s:
-            mc = await s.get(ModelConfig, start.config.get("model_config_id"))
-        if mc is None or mc.user_id != user_id:
-            raise ValueError(f"节点 {start.id}: 模型配置不存在")
-    fanout = start.config.get("fanout_n", 1) if start.type == "llm_synth" else 1
+    async with session_factory() as s:
+        mc = await s.get(ModelConfig, start.config.get("model_config_id"))
+    if mc is None or mc.user_id != user_id:
+        raise ValueError(f"节点 {start.id}: 模型配置不存在")
+    fanout = start.config.get("fanout_n", 1)
     qc_ctx = await _prepare_qc_nodes(session_factory, user_id, graph, middle)
 
     # 断点续跑：各节点行号游标 = 已落 RunRow 最大 row_idx+1；已接收 = 输出前末节点已落 done 行
@@ -800,16 +801,10 @@ async def _run_generation_loop(session_factory, run_id, user_id, graph: Graph, c
             base = written[start.id]
             # start=base：各批种子的 root trace 按全局行号生成，跨批不撞（否则每批从 0 起 trace 碰撞）
             seeds = attach_root_trace([{} for _ in range(batch_len)], run_id=run_id, node_id=start.id, start=base)
-            if start.type == "llm_synth":
-                await _run_per_row_node(
-                    session_factory, run_id, user_id, start, seeds, cancel_event,
-                    row_coro=lambda i, rs=seeds: nodes.run_llm_synth_row(start.config, rs[i], mc, user_sem),
-                    log_source="synth", row_base=base, finalize_state=False)
-            else:
-                await _run_per_row_node(
-                    session_factory, run_id, user_id, start, seeds, cancel_event,
-                    row_coro=lambda i, rs=seeds: nodes.run_http_fetch_row(start.config, rs[i]),
-                    row_base=base, finalize_state=False)
+            await _run_per_row_node(
+                session_factory, run_id, user_id, start, seeds, cancel_event,
+                row_coro=lambda i, rs=seeds: nodes.run_llm_synth_row(start.config, rs[i], mc, user_sem),
+                log_source="synth", row_base=base, finalize_state=False)
             rows = await _batch_outputs(session_factory, run_id, start.id, base, base + len(seeds))
             written[start.id] += len(seeds)
             generated += len(rows)
