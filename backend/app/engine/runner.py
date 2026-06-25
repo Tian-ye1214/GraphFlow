@@ -813,8 +813,9 @@ async def _run_generation_loop(session_factory, run_id, user_id, graph: Graph, c
 
     if cancel_event.is_set():
         return
-    await _run_barrier_node(session_factory, run_id, user_id, output,
-                            accepted[:target], row_idx=written[output.id])
+    # 输出是单一终态 barrier，恒写 row_idx=0：与单遍 output 一致、且 resume 时 _run_barrier_node 据此幂等跳过，
+    # 不会因 written 游标推进到 1 而再写一条 → _node_outputs 翻倍。
+    await _run_barrier_node(session_factory, run_id, user_id, output, accepted[:target], row_idx=0)
     await _finalize_chain_states(session_factory, run_id, user_id, chain[:-1])
     await _set_node_state(session_factory, run_id, output.id, user_id=user_id, status="done",
                           total=target, done=min(len(accepted), target), failed=0)
