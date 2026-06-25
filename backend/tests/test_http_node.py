@@ -197,6 +197,11 @@ async def test_http_fetch_legacy_url_still_works(monkeypatch):
     ({"endpoint": "http://x", "body_format": "xml"}, "body_format"),
     ({"endpoint": "http://x", "headers": ["a"]}, "headers"),
     ({"endpoint": "http://x", "extract": ["a"]}, "extract"),
+    ({"endpoint": "http://x", "poll_status_path": ["bad"]}, "poll_status_path"),
+    ({"endpoint": "http://x", "poll_status_path": "status"}, "poll_until"),  # 配了路径却没完成值
+    ({"endpoint": "http://x", "poll_interval": -1}, "poll_interval"),
+    ({"endpoint": "http://x", "poll_max_attempts": 0}, "poll_max_attempts"),
+    ({"endpoint": "http://x", "records_path": {"bad": 1}}, "records_path"),
 ])
 async def test_http_node_dirty_config_fails_run_named(session_factory, monkeypatch, bad_cfg, kw):
     """脏草稿 config(非字符串 endpoint/body、非 dict params/headers/extract、非法 body_format)是节点配置错误，

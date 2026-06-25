@@ -432,6 +432,20 @@ def validate_node_config_shape(node: Node) -> None:
             raise ValueError(f"http_fetch 节点 {node.id}: headers 必须为对象，当前为 {type(cfg.get('headers')).__name__}")
         if cfg.get("extract") is not None and not isinstance(cfg.get("extract"), dict):
             raise ValueError(f"http_fetch 节点 {node.id}: extract 必须为对象，当前为 {type(cfg.get('extract')).__name__}")
+        psp = cfg.get("poll_status_path")
+        if psp is not None and not isinstance(psp, str):
+            raise ValueError(f"http_fetch 节点 {node.id}: poll_status_path 必须为字符串，当前为 {type(psp).__name__}")
+        if psp and cfg.get("poll_until") is None:
+            raise ValueError(f"http_fetch 节点 {node.id}: 配了 poll_status_path 就必须配 poll_until（完成状态值）")
+        pi = cfg.get("poll_interval")
+        if pi is not None and (isinstance(pi, bool) or not isinstance(pi, (int, float)) or pi < 0):
+            raise ValueError(f"http_fetch 节点 {node.id}: poll_interval 必须为 ≥0 的数字，当前为 {pi!r}")
+        pa = cfg.get("poll_max_attempts")
+        if pa is not None and (isinstance(pa, bool) or not isinstance(pa, int) or pa < 1):
+            raise ValueError(f"http_fetch 节点 {node.id}: poll_max_attempts 必须为 ≥1 的整数，当前为 {pa!r}")
+        rp = cfg.get("records_path")
+        if rp is not None and not isinstance(rp, str):
+            raise ValueError(f"http_fetch 节点 {node.id}: records_path 必须为字符串，当前为 {type(rp).__name__}")
 
 
 def _resolve_output_count(graph: Graph, node: Node) -> int | None:
