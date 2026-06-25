@@ -38,14 +38,16 @@ def strip_trace_json(data_json: str) -> list[dict]:
     return strip_trace_rows(json.loads(data_json or "[]"))
 
 
-def attach_root_trace(rows: list[dict], *, run_id: int, node_id: str) -> list[dict]:
+def attach_root_trace(rows: list[dict], *, run_id: int, node_id: str, start: int = 0) -> list[dict]:
+    """给根行打 trace。start：全局起始行号——无输入生成循环按批生成时传本节点已生成行的游标，
+    使各批种子的 root trace 唯一不撞（否则每批都从 0 起会让不同批的同序行 trace 碰撞、诊断串行）。"""
     traced: list[dict] = []
     for i, row in enumerate(rows):
         if not isinstance(row, dict):
             traced.append(row)
             continue
         out = deepcopy(row)
-        out.setdefault(TRACE_ID_KEY, make_root_trace_id(run_id, node_id, i))
+        out.setdefault(TRACE_ID_KEY, make_root_trace_id(run_id, node_id, start + i))
         out.setdefault(PARENT_TRACE_ID_KEY, "")
         traced.append(out)
     return traced

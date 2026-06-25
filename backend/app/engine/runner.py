@@ -757,33 +757,37 @@ async def _run_generation_loop(session_factory, run_id, user_id, graph: Graph, c
     accepted = await _node_outputs(session_factory, run_id, last_pre.id, include_trace=True)
     generated = len(await _node_outputs(session_factory, run_id, start.id, include_trace=True))
 
-    while len(accepted) < target and not cancel_event.is_set():
-        gap = target - len(accepted)
-        batch_len = _gen_batch_size(gap, fanout, len(accepted), generated)
-        seeds = attach_root_trace([{} for _ in range(batch_len)], run_id=run_id, node_id=start.id)
-        base = written[start.id]
-        if start.type == "llm_synth":
-            await _run_per_row_node(
-                session_factory, run_id, user_id, start, seeds, cancel_event,
-                row_coro=lambda i, rs=seeds: nodes.run_llm_synth_row(start.config, rs[i], mc, user_sem),
-                log_source="synth", row_base=base)
-        else:
-            await _run_per_row_node(
-                session_factory, run_id, user_id, start, seeds, cancel_event,
-                row_coro=lambda i, rs=seeds: nodes.run_http_fetch_row(start.config, rs[i]),
-                row_base=base)
-        rows = await _batch_outputs(session_factory, run_id, start.id, base, base + len(seeds))
-        written[start.id] += len(seeds)
-        generated += len(rows)
-        for node in middle:                            # 逐个中间节点处理本批
-            if cancel_event.is_set():
-                return
-            rows = await _run_chain_middle(session_factory, run_id, user_id, node,
-                                           rows, written[node.id], qc_ctx, user_sem, cancel_event)
-            written[node.id] += 1
-        accepted.extend(rows)
-        await _set_node_state(session_factory, run_id, output.id, user_id=user_id, status="running",
-                              total=target, done=min(len(accepted), target), failed=0)
+    try:
+        while len(accepted) < target and not cancel_event.is_set():
+            gap = target - len(accepted)
+            batch_len = _gen_batch_size(gap, fanout, len(accepted), generated)
+            base = written[start.id]
+            # start=base：各批种子的 root trace 按全局行号生成，跨批不撞（否则每批从 0 起 trace 碰撞）
+            seeds = attach_root_trace([{} for _ in range(batch_len)], run_id=run_id, node_id=start.id, start=base)
+            if start.type == "llm_synth":
+                await _run_per_row_node(
+                    session_factory, run_id, user_id, start, seeds, cancel_event,
+                    row_coro=lambda i, rs=seeds: nodes.run_llm_synth_row(start.config, rs[i], mc, user_sem),
+                    log_source="synth", row_base=base)
+            else:
+                await _run_per_row_node(
+                    session_factory, run_id, user_id, start, seeds, cancel_event,
+                    row_coro=lambda i, rs=seeds: nodes.run_http_fetch_row(start.config, rs[i]),
+                    row_base=base)
+            rows = await _batch_outputs(session_factory, run_id, start.id, base, base + len(seeds))
+            written[start.id] += len(seeds)
+            generated += len(rows)
+            for node in middle:                            # 逐个中间节点处理本批
+                if cancel_event.is_set():
+                    return
+                rows = await _run_chain_middle(session_factory, run_id, user_id, node,
+                                               rows, written[node.id], qc_ctx, user_sem, cancel_event)
+                written[node.id] += 1
+            accepted.extend(rows)
+            await _set_node_state(session_factory, run_id, output.id, user_id=user_id, status="running",
+                                  total=target, done=min(len(accepted), target), failed=0)
+    except asyncio.CancelledError:
+        return  # 硬中断（如质检批在途被取消）：已接收行保留，输出不写；_execute 据 cancel_event 落 cancelled
 
     if cancel_event.is_set():
         return
