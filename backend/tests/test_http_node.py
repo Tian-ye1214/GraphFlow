@@ -266,3 +266,54 @@ async def test_http_poll_non_json_treated_as_not_ready(monkeypatch):
     out, _ = await nodes.run_http_fetch_row(cfg, {"id": "1"})
     assert calls["n"] == 2
     assert out == [{"id": "1", "v": 1}]
+
+
+async def test_http_explode_records_to_rows(monkeypatch):
+    """配了 records_path：数组每元素出一行，extract 相对元素取值，base 列并入每行。"""
+    async def fake_fetch(method, url, headers=None, body=None, timeout=30, retries=2):
+        return 200, json.dumps({"items": [{"name": "a", "age": 1}, {"name": "b", "age": 2}]})
+
+    monkeypatch.setattr("app.services.http.fetch", fake_fetch)
+    cfg = {"url": "http://x", "records_path": "items", "extract": {"who": "name", "yr": "age"}}
+    out, _ = await nodes.run_http_fetch_row(cfg, {"src": "S"})
+    assert out == [{"src": "S", "who": "a", "yr": 1}, {"src": "S", "who": "b", "yr": 2}]
+
+
+async def test_http_explode_empty_array_zero_rows(monkeypatch):
+    """records_path 指向空数组：产 0 行（合法，本次取数无记录），不算失败。"""
+    async def fake_fetch(method, url, headers=None, body=None, timeout=30, retries=2):
+        return 200, json.dumps({"items": []})
+
+    monkeypatch.setattr("app.services.http.fetch", fake_fetch)
+    cfg = {"url": "http://x", "records_path": "items", "extract": {"who": "name"}}
+    out, _ = await nodes.run_http_fetch_row(cfg, {"src": "S"})
+    assert out == []
+
+
+async def test_http_explode_non_array_raises(monkeypatch):
+    """records_path 未指向数组：抛 ValueError（含 records_path），由 runner 记为行/run 失败。"""
+    async def fake_fetch(method, url, headers=None, body=None, timeout=30, retries=2):
+        return 200, json.dumps({"items": {"not": "a list"}})
+
+    monkeypatch.setattr("app.services.http.fetch", fake_fetch)
+    cfg = {"url": "http://x", "records_path": "items", "extract": {}}
+    with pytest.raises(ValueError, match="records_path"):
+        await nodes.run_http_fetch_row(cfg, {})
+
+
+async def test_http_poll_then_explode(monkeypatch):
+    """轮询 + 展开组合：poll 到 done 后把数组展开成多行。"""
+    calls = {"n": 0}
+
+    async def fake_fetch(method, url, headers=None, body=None, timeout=30, retries=2):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            return 200, json.dumps({"status": "pending"})
+        return 200, json.dumps({"status": "done", "rows": [{"x": 1}, {"x": 2}]})
+
+    monkeypatch.setattr("app.services.http.fetch", fake_fetch)
+    cfg = {"url": "http://x", "poll_status_path": "status", "poll_until": "done",
+           "poll_interval": 0, "poll_max_attempts": 5, "records_path": "rows", "extract": {"x": "x"}}
+    out, _ = await nodes.run_http_fetch_row(cfg, {})
+    assert calls["n"] == 2
+    assert out == [{"x": 1}, {"x": 2}]

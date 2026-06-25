@@ -158,6 +158,15 @@ def json_path_get(obj, path: str):
     return cur
 
 
+def _http_extract(obj, extract: dict) -> dict:
+    """按 extract（输出列名 → JSON 路径）从 obj 取值落列；缺失→空串，非缺失保原类型。"""
+    out = {}
+    for col, path in extract.items():
+        v = json_path_get(obj, path)
+        out[col] = "" if v is None else v
+    return out
+
+
 # 运行期注入的内部 QC 簿记列：渲染/判定/落库前剔除。只剔这两个确切键——
 # 用旧的 startswith("_qc") 会把用户同前缀列（如 _qc_score）一并静默吃掉。
 _QC_INTERNAL_KEYS = ("_qc_reason", "_qc_per_model")
@@ -273,11 +282,14 @@ async def run_http_fetch_row(config: dict, row: dict) -> tuple[list[dict], dict]
     if body and ct and not any(k.lower() == "content-type" for k in headers):
         headers["Content-Type"] = ct
     data = await _http_poll(config, method, url, headers, body)
-    extracted = {}
-    for col, path in (config.get("extract") or {}).items():
-        v = json_path_get(data, path)
-        extracted[col] = "" if v is None else v   # 字段缺失→空串，非缺失保原类型
-    return [{**base, **extracted}], {}
+    extract = config.get("extract") or {}
+    records_path = config.get("records_path")
+    if records_path:
+        arr = json_path_get(data, records_path)
+        if not isinstance(arr, list):
+            raise ValueError(f"records_path '{records_path}' 未指向数组（实际 {type(arr).__name__}）")
+        return [{**base, **_http_extract(el, extract)} for el in arr], {}
+    return [{**base, **_http_extract(data, extract)}], {}
 
 
 async def run_qc_judge_row(config: dict, row: dict, mcs: list[ModelConfig], pass_k: int,
