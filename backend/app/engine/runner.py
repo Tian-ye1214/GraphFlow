@@ -519,6 +519,32 @@ async def _run_http_node(session_factory, run_id, user_id, node: Node, inputs, c
         row_coro=lambda idx: nodes.run_http_fetch_row(cfg, inputs[idx]))
 
 
+async def _qc_judge_batch(session_factory, run_id, user_id, node: Node, rows, jmcs, pass_k,
+                          status_col, feedback_col, user_sem, cancel_event):
+    """一轮 K-of-N 质检判定（单点，供单遍 QC 与无输入生成循环共用）。
+    返回 (通过行, 不通过行, usage 汇总, 通过数)。逐行隔离、硬中断沿用。"""
+    cfg = node.config
+    sem = asyncio.Semaphore(cfg.get("concurrency", 4))
+
+    async def judge(row):
+        async with sem:
+            with log_context(run_id=run_id, node_id=node.id, user_id=user_id,
+                             source="qc", trace_id=row_trace_id(row)):
+                return await _cancellable(
+                    nodes.run_qc_judge_row(cfg, row, jmcs, pass_k, user_sem), cancel_event)
+
+    usage = nodes.zero_usage()
+    passed, failed = [], []
+    for row, (ok, reason, u, per_model) in zip(rows, await asyncio.gather(*[judge(r) for r in rows])):
+        nodes.add_usage(usage, u)
+        if ok:
+            passed.append({**nodes.strip_qc_internal(row), status_col: "pass", feedback_col: ""})
+        else:
+            failed.append({**row, status_col: "failed", feedback_col: reason,
+                           "_qc_reason": reason, "_qc_per_model": per_model})
+    return passed, failed, usage, len(passed)
+
+
 async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Node, inputs,
                        user_sem, cancel_event):
     """质检节点：N 个判定模型 K-of-N 判定；不通过行带原因经 rescan 回扫重生，最多 max_rounds 轮。
@@ -574,23 +600,11 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
     def fold(u):
         nodes.add_usage(usage, u)
 
-    sem = asyncio.Semaphore(cfg.get("concurrency", 4))
-
     async def judge_all(rows):
-        async def judge(row):
-            async with sem:
-                with log_context(run_id=run_id, node_id=node.id, user_id=user_id,
-                                 source="qc", trace_id=row_trace_id(row)):
-                    return await _cancellable(
-                        nodes.run_qc_judge_row(cfg, row, jmcs, pass_k, user_sem), cancel_event)
-        passed_, failed_ = [], []
-        for row, (ok, reason, u, per_model) in zip(rows, await asyncio.gather(*[judge(r) for r in rows])):
-            fold(u)
-            if ok:
-                passed_.append({**nodes.strip_qc_internal(row), status_col: "pass", feedback_col: ""})
-            else:
-                failed_.append({**row, status_col: "failed", feedback_col: reason,
-                                "_qc_reason": reason, "_qc_per_model": per_model})
+        passed_, failed_, u, _ = await _qc_judge_batch(
+            session_factory, run_id, user_id, node, rows, jmcs, pass_k,
+            status_col, feedback_col, user_sem, cancel_event)
+        fold(u)
         return passed_, failed_
 
     try:
