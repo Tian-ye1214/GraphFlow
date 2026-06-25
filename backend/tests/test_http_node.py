@@ -214,3 +214,55 @@ async def test_http_node_dirty_config_fails_run_named(session_factory, monkeypat
     run = await get_run(session_factory, run_id)
     assert run.status == "failed"
     assert "fetch" in (run.error or "") and kw in (run.error or "")
+
+
+async def test_http_poll_until_status_done(monkeypatch):
+    """配了 poll_status_path：反复发同一请求，直到状态字段达 poll_until 才提取。"""
+    calls = {"n": 0}
+
+    async def fake_fetch(method, url, headers=None, body=None, timeout=30, retries=2):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return 200, json.dumps({"status": "pending"})
+        return 200, json.dumps({"status": "completed", "result": 42})
+
+    monkeypatch.setattr("app.services.http.fetch", fake_fetch)
+    cfg = {"url": "http://job", "poll_status_path": "status", "poll_until": "completed",
+           "poll_interval": 0, "poll_max_attempts": 10, "extract": {"r": "result"}}
+    out, _ = await nodes.run_http_fetch_row(cfg, {"id": "1"})
+    assert calls["n"] == 3
+    assert out == [{"id": "1", "r": 42}]
+
+
+async def test_http_poll_exhausts_attempts_raises(monkeypatch):
+    """状态恒不就绪：发满 poll_max_attempts 次后抛 ValueError（含「轮询」），由 runner 记为行/run 失败。"""
+    calls = {"n": 0}
+
+    async def fake_fetch(method, url, headers=None, body=None, timeout=30, retries=2):
+        calls["n"] += 1
+        return 200, json.dumps({"status": "pending"})
+
+    monkeypatch.setattr("app.services.http.fetch", fake_fetch)
+    cfg = {"url": "http://job", "poll_status_path": "status", "poll_until": "completed",
+           "poll_interval": 0, "poll_max_attempts": 3, "extract": {"r": "result"}}
+    with pytest.raises(ValueError, match="轮询"):
+        await nodes.run_http_fetch_row(cfg, {"id": "1"})
+    assert calls["n"] == 3
+
+
+async def test_http_poll_non_json_treated_as_not_ready(monkeypatch):
+    """轮询期间非 JSON 响应（如 202 空体）视为「未就绪」继续轮询，而非立刻失败。"""
+    calls = {"n": 0}
+
+    async def fake_fetch(method, url, headers=None, body=None, timeout=30, retries=2):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            return 202, "Accepted"
+        return 200, json.dumps({"status": "completed", "v": 1})
+
+    monkeypatch.setattr("app.services.http.fetch", fake_fetch)
+    cfg = {"url": "http://job", "poll_status_path": "status", "poll_until": "completed",
+           "poll_interval": 0, "poll_max_attempts": 5, "extract": {"v": "v"}}
+    out, _ = await nodes.run_http_fetch_row(cfg, {"id": "1"})
+    assert calls["n"] == 2
+    assert out == [{"id": "1", "v": 1}]

@@ -226,9 +226,41 @@ async def run_llm_synth_row(config: dict, row: dict, mc: ModelConfig,
 _CONTENT_TYPES = {"json": "application/json", "form": "application/x-www-form-urlencoded", "raw": "text/plain"}
 
 
+async def _http_poll(config: dict, method: str, url: str, headers: dict, body):
+    """取一次 JSON（未配 poll_status_path）或轮询同一请求直到状态就绪（配了）。
+    轮询：第 1 次立即发，未就绪则 sleep(poll_interval) 再发，最多 poll_max_attempts 次。
+    非 JSON / 状态字段缺失在轮询时视为「未就绪」；耗尽次数抛 ValueError（取数失败、点名）。
+    错误文案只含 method/url/status——不含 headers/body（防 token 外泄）。"""
+    timeout = config.get("timeout", 30)
+    retries = config.get("retries", 2)
+    status_path = config.get("poll_status_path")
+    if not status_path:                                   # 同步接口：发一次，非 JSON 即抛（现行行为）
+        status, text = await http.fetch(method, url, headers=headers, body=body,
+                                        timeout=timeout, retries=retries)
+        try:
+            return _json.loads(text, parse_constant=lambda _v: None)
+        except (ValueError, TypeError):
+            raise ValueError(f"接口响应非 JSON，无法提取（HTTP {status} {url}）")
+    until = str(config.get("poll_until"))
+    interval = config.get("poll_interval", 2)
+    attempts = config.get("poll_max_attempts", 30)
+    for attempt in range(attempts):
+        status, text = await http.fetch(method, url, headers=headers, body=body,
+                                        timeout=timeout, retries=retries)
+        try:
+            data = _json.loads(text, parse_constant=lambda _v: None)
+        except (ValueError, TypeError):
+            data = None                                   # 轮询中非 JSON = 未就绪
+        if data is not None and str(json_path_get(data, status_path)) == until:
+            return data
+        if attempt < attempts - 1:
+            await asyncio.sleep(interval)                 # 取消期间 _cancellable 中止 → 行 pending、resume 重轮
+    raise ValueError(f"轮询 {attempts} 次仍未达完成状态 '{until}'（HTTP {method} {url}）")
+
+
 async def run_http_fetch_row(config: dict, row: dict) -> tuple[list[dict], dict]:
-    """处理一条输入行：渲染 endpoint/params/headers/body 后调接口，按 extract 的 JSON 路径提取落列。
-    返回 (输出行列表, 空 usage)。请求失败/响应非 JSON 抛异常由 runner 记为行失败（逐行隔离）。
+    """处理一条输入行：渲染 endpoint/params/headers/body 后调接口（可轮询），按 extract 的 JSON 路径提取落列。
+    返回 (输出行列表, 空 usage)。请求失败/响应非 JSON/轮询超时抛异常由 runner 记为行失败（逐行隔离）。
     params(含 api_key)合并进查询串；body_format 决定 Content-Type（用户已在 headers 设置则不覆盖）。"""
     base = strip_internal(row)
     method = config.get("method", "GET")
@@ -240,12 +272,7 @@ async def run_http_fetch_row(config: dict, row: dict) -> tuple[list[dict], dict]
     ct = _CONTENT_TYPES.get(config.get("body_format"))
     if body and ct and not any(k.lower() == "content-type" for k in headers):
         headers["Content-Type"] = ct
-    status, text = await http.fetch(method, url, headers=headers, body=body,
-                                    timeout=config.get("timeout", 30), retries=config.get("retries", 2))
-    try:   # parse_constant：响应含非标准 NaN/Infinity 归一为 None，杜绝非法浮点落库致读行端点 500
-        data = _json.loads(text, parse_constant=lambda _v: None)
-    except (ValueError, TypeError):
-        raise ValueError(f"接口响应非 JSON，无法提取（HTTP {status} {url}）")
+    data = await _http_poll(config, method, url, headers, body)
     extracted = {}
     for col, path in (config.get("extract") or {}).items():
         v = json_path_get(data, path)
