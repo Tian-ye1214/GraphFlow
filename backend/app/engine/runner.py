@@ -347,7 +347,8 @@ async def _barrier_output(session_factory, user_id, node: Node, inputs, run_id: 
 
 
 async def _run_per_row_node(session_factory, run_id, user_id, node: Node, inputs, cancel_event,
-                            *, row_coro, log_source=None, max_output_rows=None, row_base: int = 0):
+                            *, row_coro, log_source=None, max_output_rows=None, row_base: int = 0,
+                            finalize_state: bool = True):
     """逐行隔离节点（llm_synth / http_fetch）的公共脚手架：断点续跑（跳过已 done/failed 的行）、
     节点内并发、硬中断、逐行成败计数与落库、收尾置节点终态——这套语义必须两类节点完全一致。
     差异只在 row_coro（产生第 i 行结果的协程，返回 (out_rows, usage)）与 log_source（模型日志归因来源；
@@ -355,7 +356,9 @@ async def _run_per_row_node(session_factory, run_id, user_id, node: Node, inputs
     max_output_rows（output 节点 count）：产量封顶——最多处理 ceil(count/fanout) 个输入行就停，
     省大模型调用；按「累计已尝试输入行(done+failed)」算，使断点续跑跨次不超额、淘汰不补（多少要多少）。
     row_base：本批写入的 row_idx 偏移（输入下标 i → row_idx=row_base+i）；无输入生成循环按批传不同 base 不撞键，
-    默认 0 即单遍路径行为不变。"""
+    默认 0 即单遍路径行为不变。total 恒按「全表已落(done+failed)+本批 todo」算，使生成循环跨批累加时 done≤total 不越界。
+    finalize_state=False：收尾不置节点 done（保持 running）——供生成循环 start 节点用，避免每批 done↔running 抖动，
+    终态由 _finalize_chain_states 统一落定。"""
     cfg = node.config
     async with session_factory() as s:
         existing = (await s.execute(select(RunRow.row_idx, RunRow.status).where(
@@ -363,12 +366,12 @@ async def _run_per_row_node(session_factory, run_id, user_id, node: Node, inputs
     done_idx = {idx for idx, st in existing if st == "done"}
     failed_idx = {idx for idx, st in existing if st == "failed"}
     todo = [i for i in range(len(inputs)) if (row_base + i) not in done_idx and (row_base + i) not in failed_idx]
-    total = len(inputs)
     if max_output_rows is not None:
         fanout = cfg.get("fanout_n", 1)             # 合法性已由 validate_node_config_shape 保证（≥1 int）
         max_input = -(-max_output_rows // fanout)   # ceil：产量预算换算成最多处理的输入行数
         todo = todo[:max(0, max_input - len(done_idx) - len(failed_idx))]
-        total = len(done_idx) + len(failed_idx) + len(todo)
+    # total 含历史已落行：单遍 fresh 时 = len(inputs)（与原行为一致）；生成循环跨批时随批累加，恒 done≤total
+    total = len(done_idx) + len(failed_idx) + len(todo)
     done_count, failed_count = len(done_idx), len(failed_idx)
     await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running",
                           total=total, done=done_count, failed=failed_count)
@@ -401,7 +404,7 @@ async def _run_per_row_node(session_factory, run_id, user_id, node: Node, inputs
                                   total=total, done=done_count, failed=failed_count)
 
     await asyncio.gather(*[work(i) for i in todo])
-    if not cancel_event.is_set():
+    if finalize_state and not cancel_event.is_set():
         await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="done",
                               total=total, done=done_count, failed=failed_count)
 
@@ -453,6 +456,10 @@ def _resolve_output_count(graph: Graph, node: Node) -> int | None:
         cur = child
 
 
+_GEN_BATCH_CAP = 500   # 无输入生成循环单批种子上限：防大 count 一次性建 count 个种子+协程致 OOM/事件循环停摆。
+                       # 只钳「单批」不钳总量——循环跨批继续逼近 count，与「不设预算、人工停」不冲突。
+
+
 def _gen_batch_size(gap: int, fanout: int, accepted: int, generated: int) -> int:
     """无输入生成循环：本批生成多少种子行。按缺口 gap、扇出、已观测通过率(接收/已生成候选)估算——
     产率越低本批越大，缺口越小越收敛。yield 钳到 [0.2,1.0]：上界防首批过量、下界防极低产率单批暴量(≤5×缺口)。
@@ -469,8 +476,10 @@ def _generation_chain(graph: Graph) -> list[Node] | None:
     starts = [n for n in graph.nodes if n.type in gen_types and not upstream_ids(graph, n.id)]
     if not starts:
         return None
+    # 有 input 节点 = 普通工作流：即便存在游离/无父的生成节点，也按单遍 topo 跑（它 _node_inputs=[] → 0 行 no-op）。
+    # 不报错——否则正常 input 工作流里一个编辑遗留的未连生成节点会把整 run 误判为「混用」而失败（回归）。
     if any(n.type == "input" for n in graph.nodes):
-        raise ValueError("无输入起始的生成链不能与 input 节点混用（请删去 input 节点或为生成节点接入上游）")
+        return None
     if len(starts) > 1:
         raise ValueError("无输入起始的生成链只能有一个起始节点")
     normal = [e for e in graph.edges if e["kind"] == "normal"]
@@ -553,6 +562,24 @@ async def _qc_judge_batch(session_factory, run_id, user_id, node: Node, rows, jm
     return passed, failed, usage, len(passed)
 
 
+def _qc_upstream_cols(graph: Graph, node: Node) -> set[str]:
+    """该 qc 节点上游所有 qc 节点的 status/feedback 列名集合——链式 QC→QC 透传的 qc 列允许被本节点覆盖刷新，
+    豁免出撞名校验；只对真正的用户/其它数据列撞名报错。"""
+    anc = ancestors(graph, node.id)
+    return {c for n in graph.nodes if n.id in anc and n.type == "qc"
+            for c in ((n.config.get("status_column") or "qc_status"),
+                      (n.config.get("feedback_column") or "qc_feedback"))}
+
+
+def _assert_qc_cols_no_collision(node: Node, rows, upstream_qc_cols, status_col, feedback_col) -> None:
+    """质检状态/反馈列名撞输入已有用户数据列 → 写回会静默覆盖原始数据：整 run failed 点名。
+    单遍 QC 与无输入生成循环两路共用此单点，行为一致（避免循环路径静默吃掉用户列）。"""
+    existing_cols = {k for r in rows for k in nodes.strip_qc_internal(r)} - upstream_qc_cols
+    for col in (status_col, feedback_col):
+        if col in existing_cols:
+            raise ValueError(f"质检节点 {node.id}: 输出列 {col} 与输入已有列同名，将覆盖原始数据，请改用其他列名")
+
+
 async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Node, inputs,
                        user_sem, cancel_event):
     """质检节点：N 个判定模型 K-of-N 判定；不通过行带原因经 rescan 回扫重生，最多 max_rounds 轮。
@@ -583,16 +610,8 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
         pass_k = 1
     pass_k = max(1, min(pass_k, len(jmcs)))
     # 状态/反馈列名撞输入已有数据列 → 写回时会静默覆盖用户原始列(对照 rename 撞列已 raise)：整 run failed 点名。
-    # 但上游 QC 节点产出的同名 qc 列允许被本节点覆盖刷新（链式 QC→QC 是合法拓扑、qc 列会透传下来），
-    # 只对真正的用户/其它数据列撞名报错。
-    anc = ancestors(graph, node.id)
-    upstream_qc_cols = {c for n in graph.nodes if n.id in anc and n.type == "qc"
-                        for c in ((n.config.get("status_column") or "qc_status"),
-                                  (n.config.get("feedback_column") or "qc_feedback"))}
-    existing_cols = {k for r in inputs for k in nodes.strip_qc_internal(r)} - upstream_qc_cols
-    for col in (status_col, feedback_col):
-        if col in existing_cols:
-            raise ValueError(f"质检节点 {node.id}: 输出列 {col} 与输入已有列同名，将覆盖原始数据，请改用其他列名")
+    # 单点 _assert_qc_cols_no_collision 与生成循环共用，行为一致。
+    _assert_qc_cols_no_collision(node, inputs, _qc_upstream_cols(graph, node), status_col, feedback_col)
     await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running",
                           total=len(inputs), done=0, failed=0)
     # 续跑幂等：清掉本节点上一次（崩溃前）已落的 QC 指标/失败样本，否则崩溃-resume 重跑本节点体
@@ -674,7 +693,7 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
 
 
 async def _prepare_qc_nodes(session_factory, user_id, graph: Graph, middle) -> dict:
-    """预解析链上各 qc 节点的判定模型/pass_k(钳)/列名（生成循环每批复用，避免反复查库）。"""
+    """预解析链上各 qc 节点的判定模型/pass_k(钳)/列名/上游 qc 列（生成循环每批复用，避免反复查库）。"""
     ctx: dict[str, dict] = {}
     async with session_factory() as s:
         for node in middle:
@@ -693,7 +712,8 @@ async def _prepare_qc_nodes(session_factory, user_id, graph: Graph, middle) -> d
             ctx[node.id] = {
                 "jmcs": jmcs, "pass_k": max(1, min(pass_k, len(jmcs))),
                 "status_col": cfg.get("status_column") or "qc_status",
-                "feedback_col": cfg.get("feedback_column") or "qc_feedback"}
+                "feedback_col": cfg.get("feedback_column") or "qc_feedback",
+                "upstream_qc_cols": _qc_upstream_cols(graph, node)}
     return ctx
 
 
@@ -706,6 +726,8 @@ async def _run_chain_middle(session_factory, run_id, user_id, node: Node, rows, 
         return await _batch_outputs(session_factory, run_id, node.id, row_idx, row_idx + 1)
     if node.type == "qc":
         c = qc_ctx[node.id]
+        # 与单遍 QC 一致：状态/反馈列撞用户生成列即整 run failed 点名，不静默覆盖（首个非空批即拦下）
+        _assert_qc_cols_no_collision(node, rows, c["upstream_qc_cols"], c["status_col"], c["feedback_col"])
         passed, _failed, usage, first_pass = await _qc_judge_batch(
             session_factory, run_id, user_id, node, rows, c["jmcs"], c["pass_k"],
             c["status_col"], c["feedback_col"], user_sem, cancel_event)
@@ -760,7 +782,7 @@ async def _run_generation_loop(session_factory, run_id, user_id, graph: Graph, c
     try:
         while len(accepted) < target and not cancel_event.is_set():
             gap = target - len(accepted)
-            batch_len = _gen_batch_size(gap, fanout, len(accepted), generated)
+            batch_len = min(_gen_batch_size(gap, fanout, len(accepted), generated), _GEN_BATCH_CAP)
             base = written[start.id]
             # start=base：各批种子的 root trace 按全局行号生成，跨批不撞（否则每批从 0 起 trace 碰撞）
             seeds = attach_root_trace([{} for _ in range(batch_len)], run_id=run_id, node_id=start.id, start=base)
@@ -768,12 +790,12 @@ async def _run_generation_loop(session_factory, run_id, user_id, graph: Graph, c
                 await _run_per_row_node(
                     session_factory, run_id, user_id, start, seeds, cancel_event,
                     row_coro=lambda i, rs=seeds: nodes.run_llm_synth_row(start.config, rs[i], mc, user_sem),
-                    log_source="synth", row_base=base)
+                    log_source="synth", row_base=base, finalize_state=False)
             else:
                 await _run_per_row_node(
                     session_factory, run_id, user_id, start, seeds, cancel_event,
                     row_coro=lambda i, rs=seeds: nodes.run_http_fetch_row(start.config, rs[i]),
-                    row_base=base)
+                    row_base=base, finalize_state=False)
             rows = await _batch_outputs(session_factory, run_id, start.id, base, base + len(seeds))
             written[start.id] += len(seeds)
             generated += len(rows)
