@@ -440,6 +440,49 @@ def _gen_batch_size(gap: int, fanout: int, accepted: int, generated: int) -> int
     return max(1, -(-gap // fanout) if y >= 1.0 else math.ceil(gap / fanout / y))
 
 
+def _generation_chain(graph: Graph) -> list[Node] | None:
+    """无输入生成链检测/校验。无「无普通入边的生成节点」→ None(走单遍 topo)。
+    有 → 要求整图是单一线性链 start(llm/http)→…→output(count≥1)：否则点名 ValueError(整 run failed)。"""
+    gen_types = {"llm_synth", "http_fetch"}
+    starts = [n for n in graph.nodes if n.type in gen_types and not upstream_ids(graph, n.id)]
+    if not starts:
+        return None
+    if any(n.type == "input" for n in graph.nodes):
+        raise ValueError("无输入起始的生成链不能与 input 节点混用（请删去 input 节点或为生成节点接入上游）")
+    if len(starts) > 1:
+        raise ValueError("无输入起始的生成链只能有一个起始节点")
+    normal = [e for e in graph.edges if e["kind"] == "normal"]
+    by_id = {n.id: n for n in graph.nodes}
+    chain: list[Node] = []
+    seen: set[str] = set()
+    cur = starts[0]
+    while True:
+        chain.append(cur)
+        seen.add(cur.id)
+        children = [e["target"] for e in normal if e["source"] == cur.id]
+        if cur.type == "output":
+            if children:
+                raise ValueError(f"无输入生成链的输出节点 {cur.id} 不能有下游")
+            break
+        if len(children) != 1:
+            raise ValueError(f"无输入生成链必须是单链：节点 {cur.id} 的下游不是恰好一个")
+        child = by_id[children[0]]
+        if len([e for e in normal if e["target"] == child.id]) != 1:
+            raise ValueError(f"无输入生成链必须是单链：节点 {child.id} 有多个上游（不支持合并）")
+        if child.id in seen:
+            raise ValueError("无输入生成链不能包含环")
+        cur = child
+    out = chain[-1]
+    if out.type != "output":
+        raise ValueError("无输入生成链必须以输出节点结尾")
+    if len(chain) != len(graph.nodes):
+        raise ValueError("无输入生成链含未连入主链的游离节点")
+    count = out.config.get("count")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise ValueError(f"无输入起始的生成链必须在输出节点设置接收数量（count≥1），当前为 {count!r}")
+    return chain
+
+
 async def _run_llm_node(session_factory, run_id, user_id, graph: Graph, node: Node, inputs,
                         user_sem, cancel_event):
     cfg = node.config
