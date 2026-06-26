@@ -69,7 +69,7 @@ async def test_goal_rejects_empty_text(auth_client, mc_id, no_goal):
     assert no_goal == []
 
 
-async def test_goal_rejects_running_session(auth_client, mc_id, no_goal):
+async def test_goal_queues_running_session(auth_client, mc_id, no_goal):
 
     r = await auth_client.post("/api/agent/sessions", json={"model_config_id": mc_id})
     sid = r.json()["id"]
@@ -98,7 +98,8 @@ async def test_goal_rejects_running_session(auth_client, mc_id, no_goal):
 
     r = await auth_client.post(f"/api/agent/sessions/{sid}/goal",
                                json={"workflow_id": wf_id, "goal_text": "提升到 90%"})
-    assert r.status_code == 409
+    assert r.status_code == 200
+    assert no_goal == [(sid, 1, wf_id, "提升到 90%")]
 
 
 async def test_goal_rejects_nonowned_workflow(auth_client, mc_id, no_goal):
@@ -129,7 +130,8 @@ async def test_goal_success_with_qc_workflow(auth_client, mc_id, no_goal):
     r = await auth_client.post(f"/api/agent/sessions/{sid}/goal",
                                json={"workflow_id": wf_id, "goal_text": "提升到 90%"})
     assert r.status_code == 200
-    assert r.json() == {"ok": True}
+    assert r.json()["ok"] is True
+    assert r.json()["queued"] is False
     # submit_goal was called with correct args
     assert len(no_goal) == 1
     assert no_goal[0] == (sid, 1, wf_id, "提升到 90%")

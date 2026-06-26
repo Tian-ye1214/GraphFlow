@@ -1,10 +1,21 @@
 import asyncio
+from collections import deque
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.engine.runner import execute_run
 from app.models import Run, User
+
+
+@dataclass
+class RunJob:
+    user_id: int
+    capacity: int
+    session_factory: async_sessionmaker
+    prepare: Callable[[], Awaitable[bool]] | None = None
 
 
 class RunManager:
@@ -15,6 +26,8 @@ class RunManager:
         self.cancel_events: dict[int, asyncio.Event] = {}
         self.done_events: dict[int, asyncio.Event] = {}
         self.tasks: dict[int, asyncio.Task] = {}
+        self.queues: dict[int, deque[RunJob]] = {}
+        self.active: set[int] = set()
 
     def user_sem(self, user_id: int, capacity: int) -> asyncio.Semaphore:
         # 连同容量缓存：容量变化时重建信号量，使 max_llm_concurrency 配置变更下一次提交即生效
@@ -24,27 +37,61 @@ class RunManager:
             self.user_sems[user_id] = (capacity, asyncio.Semaphore(capacity))
         return self.user_sems[user_id][1]
 
-    def submit(self, run_id: int, user_id: int, capacity: int,
-               session_factory: async_sessionmaker) -> None:
-        ev = asyncio.Event()
-        done = asyncio.Event()
-        self.cancel_events[run_id] = ev
-        self.done_events[run_id] = done
-        task = asyncio.create_task(
-            execute_run(run_id, session_factory, self.user_sem(user_id, capacity), ev))
-        self.tasks[run_id] = task
+    def _enqueue(self, run_id: int, job: RunJob) -> dict:
+        queue = self.queues.setdefault(run_id, deque())
+        running = run_id in self.tasks and not self.tasks[run_id].done()
+        position = len(queue) + (1 if run_id in self.active else 0)
+        queue.append(job)
+        if not running:
+            self.done_events[run_id] = asyncio.Event()
+            self.tasks[run_id] = asyncio.create_task(self._drain(run_id))
+        return {"queued": position > 0, "position": position}
 
-        def _on_done(_):
-            done.set()
+    def submit(self, run_id: int, user_id: int, capacity: int,
+               session_factory: async_sessionmaker) -> dict:
+        return self._enqueue(run_id, RunJob(user_id, capacity, session_factory))
+
+    def submit_prepared(self, run_id: int, user_id: int, capacity: int,
+                        session_factory: async_sessionmaker,
+                        prepare: Callable[[], Awaitable[bool]]) -> dict:
+        return self._enqueue(run_id, RunJob(user_id, capacity, session_factory, prepare))
+
+    async def _drain(self, run_id: int) -> None:
+        try:
+            while self.queues.get(run_id):
+                job = self.queues[run_id].popleft()
+                ev = asyncio.Event()
+                self.cancel_events[run_id] = ev
+                should_run = True
+                self.active.add(run_id)
+                try:
+                    if job.prepare is not None:
+                        should_run = await job.prepare()
+                    if should_run and not ev.is_set():
+                        await execute_run(
+                            run_id,
+                            job.session_factory,
+                            self.user_sem(job.user_id, job.capacity),
+                            ev,
+                        )
+                finally:
+                    self.active.discard(run_id)
+                self.cancel_events.pop(run_id, None)
+        finally:
+            done = self.done_events.get(run_id)
+            if done is not None:
+                done.set()
             self._cleanup(run_id)
-        task.add_done_callback(_on_done)
 
     def _cleanup(self, run_id: int) -> None:
         self.cancel_events.pop(run_id, None)
         self.done_events.pop(run_id, None)
         self.tasks.pop(run_id, None)
+        self.queues.pop(run_id, None)
+        self.active.discard(run_id)
 
     def cancel(self, run_id: int) -> None:
+        self.queues.get(run_id, deque()).clear()
         ev = self.cancel_events.get(run_id)
         if ev:
             ev.set()

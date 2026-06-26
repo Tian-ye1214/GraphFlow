@@ -148,8 +148,6 @@ async def post_message(sid: int, body: MessageIn,
                        user: User = Depends(get_current_user),
                        session: AsyncSession = Depends(get_session)):
     sess = await _get_owned(sid, user, session)
-    if sess.status == "running":
-        raise HTTPException(status_code=409, detail="回合进行中")
     text = body.text.strip()
     if not text:
         raise HTTPException(status_code=422, detail="消息不能为空")
@@ -163,8 +161,8 @@ async def post_message(sid: int, body: MessageIn,
     sess.status = "running"
     await session.commit()
     publish(user.id, "agent", sid, kind="message")
-    turn_manager.submit(sid, user.id, text)
-    return {"ok": True}
+    result = turn_manager.submit(sid, user.id, text) or {"queued": False, "position": 0}
+    return {"ok": True, **result}
 
 
 @router.post("/sessions/{sid}/stop")
@@ -242,8 +240,6 @@ async def _build_run_diagnosis_prompt(session: AsyncSession, run: Run) -> str:
 async def diagnose_run(sid: int, body: DiagnoseRunIn, user: User = Depends(get_current_user),
                        session: AsyncSession = Depends(get_session)):
     sess = await _get_owned(sid, user, session)
-    if sess.status == "running":
-        raise HTTPException(status_code=409, detail="回合进行中")
     run = await session.get(Run, body.run_id)
     if run is None or run.user_id != user.id:
         raise HTTPException(status_code=404, detail="运行不存在")
@@ -254,16 +250,14 @@ async def diagnose_run(sid: int, body: DiagnoseRunIn, user: User = Depends(get_c
     sess.status = "running"
     await session.commit()
     publish(user.id, "agent", sid, kind="message")
-    turn_manager.submit(sid, user.id, text)
-    return {"ok": True}
+    result = turn_manager.submit(sid, user.id, text) or {"queued": False, "position": 0}
+    return {"ok": True, **result}
 
 
 @router.post("/sessions/{sid}/goal")
 async def start_goal(sid: int, body: GoalIn, user: User = Depends(get_current_user),
                      session: AsyncSession = Depends(get_session)):
     sess = await _get_owned(sid, user, session)
-    if sess.status == "running":
-        raise HTTPException(status_code=409, detail="回合进行中")
     text = body.goal_text.strip()
     if not text:
         raise HTTPException(status_code=422, detail="目标不能为空")
@@ -278,8 +272,8 @@ async def start_goal(sid: int, body: GoalIn, user: User = Depends(get_current_us
     sess.status = "running"
     await session.commit()
     publish(user.id, "agent", sid, kind="message")
-    turn_manager.submit_goal(sid, user.id, body.workflow_id, text)
-    return {"ok": True}
+    result = turn_manager.submit_goal(sid, user.id, body.workflow_id, text) or {"queued": False, "position": 0}
+    return {"ok": True, **result}
 
 
 @router.delete("/sessions")

@@ -27,8 +27,10 @@ def patch_chat(monkeypatch, fn=None):
 
 
 async def setup_workflow(client) -> int:
+    from conftest import wait_ready
     files = [("files", ("种子.jsonl", JSONL, "application/octet-stream"))]
     ds = (await client.post("/api/datasets/upload", files=files)).json()[0]
+    ds = await wait_ready(client, ds["id"])
     mc = (await client.post("/api/models", json={
         "name": "m", "model_name": "qwen", "base_url": "http://x/v1",
         "api_key": "k", "default_params": {}})).json()
@@ -58,7 +60,7 @@ async def test_run_end_to_end(auth_client, monkeypatch):
     gen_state = next(s for s in detail["node_states"] if s["node_id"] == "gen")
     assert gen_state == {"node_id": "gen", "status": "done", "total": 3, "done": 3, "failed": 0}
     rows = (await auth_client.get(f"/api/runs/{run_id}/rows?node_id=out")).json()
-    assert rows["total"] == 1  # 批级节点 1 个工作单元
+    assert rows["total"] == 3
     assert len(rows["rows"]) == 3 and rows["rows"][0]["a"] == "答[Q:问0]"
     exp = await auth_client.get(f"/api/runs/{run_id}/export?format=jsonl")
     assert exp.status_code == 200
@@ -66,6 +68,45 @@ async def test_run_end_to_end(auth_client, monkeypatch):
     assert len(lines) == 3 and lines[0]["a"] == "答[Q:问0]"
     listed = (await auth_client.get("/api/runs")).json()
     assert listed[0]["workflow_name"] == "流"
+
+
+async def test_input_output_run_writes_logical_rows(auth_client, session_factory):
+    from sqlalchemy import func, select
+    from app.models import RunRow
+
+    jsonl = "\n".join(json.dumps({"q": f"问{i}"}, ensure_ascii=False) for i in range(30)).encode("utf-8")
+    ds = (await auth_client.post(
+        "/api/datasets/upload",
+        files=[("files", ("big.jsonl", jsonl, "application/octet-stream"))],
+    )).json()[0]
+    from conftest import wait_ready
+    ds = await wait_ready(auth_client, ds["id"])
+    wf = (await auth_client.post("/api/workflows", json={"name": "直通流"})).json()
+    graph = {
+        "nodes": [
+            {"id": "in", "type": "input", "config": {"dataset_ids": [ds["id"]]}},
+            {"id": "out", "type": "output", "config": {}},
+        ],
+        "edges": [{"source": "in", "target": "out", "kind": "normal"}],
+    }
+    await auth_client.put(f"/api/workflows/{wf['id']}", json={"graph": graph})
+    run_id = (await auth_client.post("/api/runs", json={"workflow_id": wf["id"]})).json()["id"]
+    detail = await wait_run(auth_client, run_id)
+    assert detail["status"] == "completed"
+
+    async with session_factory() as s:
+        out_count = (await s.execute(select(func.count()).select_from(RunRow).where(
+            RunRow.run_id == run_id, RunRow.node_id == "out", RunRow.status == "done"
+        ))).scalar()
+        largest_payload = (await s.execute(select(func.max(func.length(RunRow.data_json))).where(
+            RunRow.run_id == run_id, RunRow.node_id == "out"
+        ))).scalar()
+
+    assert out_count == 30
+    assert largest_payload < len(jsonl)
+    rows = (await auth_client.get(f"/api/runs/{run_id}/rows?node_id=out&page=2&page_size=10")).json()
+    assert rows["total"] == 30
+    assert rows["rows"][0]["q"] == "问10"
 
 
 async def test_create_run_invalid_graph(auth_client):
@@ -399,8 +440,10 @@ async def test_rerun_failed_no_duplicate_qc_metric(auth_client, monkeypatch):
         return f"答[{user}]", {"prompt_tokens": 1, "completion_tokens": 1}
 
     patch_chat(monkeypatch, fn)
+    from conftest import wait_ready
     files = [("files", ("种子.jsonl", JSONL, "application/octet-stream"))]
     ds = (await auth_client.post("/api/datasets/upload", files=files)).json()[0]
+    ds = await wait_ready(auth_client, ds["id"])
     mc = (await auth_client.post("/api/models", json={
         "name": "m", "model_name": "q", "base_url": "http://x/v1",
         "api_key": "k", "default_params": {}})).json()

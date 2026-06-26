@@ -79,7 +79,7 @@ async def test_create_session_bad_model(auth_client, no_run):
     assert r.status_code == 422
 
 
-async def test_message_flow_and_409(auth_client, mc_id, no_run):
+async def test_message_flow_and_queue(auth_client, mc_id, no_run):
     sid = (await auth_client.post("/api/agent/sessions",
                                   json={"model_config_id": mc_id})).json()["id"]
     text = "帮我搭一个翻译流水线，把 q 列翻译成英文并跑起来"
@@ -91,7 +91,8 @@ async def test_message_flow_and_409(auth_client, mc_id, no_run):
     assert detail["title"] == text[:30]
     assert detail["messages"][0]["role"] == "user"
     r = await auth_client.post(f"/api/agent/sessions/{sid}/messages", json={"text": "再来"})
-    assert r.status_code == 409
+    assert r.status_code == 200
+    assert no_run == [(sid, 1, text), (sid, 1, "再来")]
 
 
 async def test_stop_endpoint(auth_client, mc_id, no_run):

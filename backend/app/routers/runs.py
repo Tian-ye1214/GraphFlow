@@ -1,4 +1,5 @@
-import asyncio
+import csv
+import io
 import json
 import os
 from pathlib import Path
@@ -7,6 +8,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, Response, StreamingResponse
+from openpyxl import Workbook
 from pydantic import BaseModel
 from sqlalchemy import delete as sa_delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,14 +18,14 @@ from app.auth import get_current_user
 from app.config import settings
 from app.db import get_session, get_session_factory
 from app.events import publish
-from app.engine.columns import ordered_union
 from app.engine.graph import GraphError, descendants, parse_graph, validate_graph
 from app.engine.manager import manager
 from app.models import (ModelCallLog, QcFailure, QcMetric, Run, RunLog,
                         RunNodeState, RunRow, User, Workflow, WorkflowVersion)
 from app.routers.workflows import get_owned_workflow
-from app.services.export import aiter_csv, aiter_jsonl, write_xlsx
-from app.services.run_artifacts import read_output_ref_rows
+from app.services.dataset_store import _jsonify_nested
+from app.services.run_artifacts import (count_output_ref_rows, iter_output_ref_rows,
+                                        read_output_ref_rows)
 from app.services.run_service import (purge_run_rows, unlink_run_exports,
                                       validate_graph_resource_ownership)
 from app.services.trace import (PARENT_TRACE_ID_KEY, row_trace_id, rows_matching_trace,
@@ -266,23 +268,74 @@ async def rerun_failed(run_id: int, node_id: str | None = None,
                        user: User = Depends(get_current_user),
                        session: AsyncSession = Depends(get_session)):
     run = await _get_owned_run(run_id, user, session)
-    if run.status not in ("completed", "failed", "cancelled"):
-        raise HTTPException(status_code=409, detail="运行尚未结束")
     ver = await session.get(WorkflowVersion, run.workflow_version_id)
     graph = parse_graph(ver.graph_json)
-    # 传 node_id：只重跑该节点及其下游 descendants 的失败行（scope 圈定范围）；不传：全部失败节点（原行为）。
-    scope: set[str] | None = None
+    scope = _rerun_scope(graph, node_id)
+    if run.status in ("completed", "failed", "cancelled"):
+        if not await _has_failed_rows(session, run.id, scope):
+            raise HTTPException(status_code=409, detail="没有失败行")
+        sf = get_session_factory()
+        await _prepare_rerun_failed(sf, run_id, node_id, user.id)
+        result = manager.submit(run.id, user.id, user.max_llm_concurrency, sf)
+        publish(user.id, "run", run.id)
+        return {"ok": True, **result}
+    elif run.status not in ("queued", "running"):
+        raise HTTPException(status_code=409, detail=f"当前状态 {run.status} 不可重跑")
+
+    sf = get_session_factory()
+
+    async def prepare() -> bool:
+        return await _prepare_rerun_failed(sf, run_id, node_id, user.id)
+
+    result = manager.submit_prepared(
+        run.id, user.id, user.max_llm_concurrency, sf, prepare)
+    publish(user.id, "run", run.id)
+    return {"ok": True, **result}
+
+
+def _rerun_scope(graph, node_id: str | None) -> set[str] | None:
     if node_id is not None:
         if node_id not in {n.id for n in graph.nodes}:
             raise HTTPException(status_code=404, detail="节点不在该运行的图中")
-        scope = {node_id} | descendants(graph, node_id)
+        return {node_id} | descendants(graph, node_id)
+    return None
+
+
+async def _has_failed_rows(session: AsyncSession, run_id: int, scope: set[str] | None) -> bool:
     failed_stmt = select(RunRow.node_id).where(
-        RunRow.run_id == run.id, RunRow.status == "failed").distinct()
+        RunRow.run_id == run_id, RunRow.status == "failed").distinct()
     if scope is not None:
         failed_stmt = failed_stmt.where(RunRow.node_id.in_(scope))
-    failed_nodes = (await session.execute(failed_stmt)).scalars().all()
-    if not failed_nodes:
-        raise HTTPException(status_code=409, detail="没有失败行")
+    return (await session.execute(failed_stmt.limit(1))).scalar_one_or_none() is not None
+
+
+async def _prepare_rerun_failed(session_factory, run_id: int, node_id: str | None,
+                                user_id: int) -> bool:
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        if run is None or run.user_id != user_id:
+            return False
+        ver = await session.get(WorkflowVersion, run.workflow_version_id)
+        graph = parse_graph(ver.graph_json)
+        scope = _rerun_scope(graph, node_id)
+        failed_stmt = select(RunRow.node_id).where(
+            RunRow.run_id == run.id, RunRow.status == "failed").distinct()
+        if scope is not None:
+            failed_stmt = failed_stmt.where(RunRow.node_id.in_(scope))
+        failed_nodes = (await session.execute(failed_stmt)).scalars().all()
+        if not failed_nodes:
+            session.add(RunLog(run_id=run.id, node_id="", message="队列重跑跳过：没有失败行"))
+            await session.commit()
+            publish(user_id, "run", run.id)
+            return False
+
+        await _reset_failed_rows_for_rerun(session, run, graph, scope, failed_nodes)
+        await session.commit()
+    publish(user_id, "run", run_id)
+    return True
+
+
+async def _reset_failed_rows_for_rerun(session: AsyncSession, run: Run, graph, scope, failed_nodes) -> None:
     reset_targets: set[str] = set()
     for nid in failed_nodes:
         reset_targets |= descendants(graph, nid)
@@ -306,10 +359,6 @@ async def rerun_failed(run_id: int, node_id: str | None = None,
     run.status = "queued"
     run.error = ""
     run.finished_at = None
-    await session.commit()
-    manager.submit(run.id, user.id, user.max_llm_concurrency, get_session_factory())
-    publish(user.id, "run", run.id)
-    return {"ok": True}
 
 
 def _flatten(recs: list[RunRow], data_dir: Path) -> list[dict]:
@@ -326,6 +375,122 @@ def _raw_rows_for_rec(rec: RunRow, data_dir: Path) -> list[dict]:
     if rec.output_ref:
         return read_output_ref_rows(rec.output_ref, data_dir)
     return json.loads(rec.data_json or "[]")
+
+
+def _rows_for_rec(rec: RunRow, data_dir: Path):
+    if rec.output_ref:
+        yield from iter_output_ref_rows(rec.output_ref, data_dir)
+    else:
+        yield from json.loads(rec.data_json or "[]")
+
+
+def _rec_row_count(rec: RunRow) -> int:
+    if rec.output_ref:
+        return count_output_ref_rows(rec.output_ref)
+    return len(json.loads(rec.data_json or "[]"))
+
+
+async def _logical_row_total(session: AsyncSession, run_id: int, node_id: str, status: str) -> int:
+    total = 0
+    last_idx = -1
+    while True:
+        recs = (await session.execute(select(RunRow).where(
+            RunRow.run_id == run_id,
+            RunRow.node_id == node_id,
+            RunRow.status == status,
+            RunRow.row_idx > last_idx,
+        ).order_by(RunRow.row_idx).limit(500))).scalars().all()
+        if not recs:
+            return total
+        for rec in recs:
+            last_idx = rec.row_idx
+            total += _rec_row_count(rec)
+
+
+async def _logical_rows_page(session: AsyncSession, run_id: int, node_id: str, status: str,
+                             offset: int, limit: int) -> list[dict]:
+    rows: list[dict] = []
+    skipped = 0
+    last_idx = -1
+    while True:
+        recs = (await session.execute(select(RunRow).where(
+            RunRow.run_id == run_id,
+            RunRow.node_id == node_id,
+            RunRow.status == status,
+            RunRow.row_idx > last_idx,
+        ).order_by(RunRow.row_idx).limit(500))).scalars().all()
+        if not recs:
+            return rows
+        for rec in recs:
+            last_idx = rec.row_idx
+            for row in _rows_for_rec(rec, settings.data_dir):
+                if skipped < offset:
+                    skipped += 1
+                    continue
+                rows.append(strip_trace_row(row))
+                if len(rows) >= limit:
+                    return rows
+    return rows
+
+
+async def _iter_done_rows(session_factory, run_id: int, node_id: str, *,
+                          batch_size: int = 500):
+    last_idx = -1
+    while True:
+        async with session_factory() as s:
+            recs = (await s.execute(select(RunRow).where(
+                RunRow.run_id == run_id,
+                RunRow.node_id == node_id,
+                RunRow.status == "done",
+                RunRow.row_idx > last_idx,
+            ).order_by(RunRow.row_idx).limit(batch_size))).scalars().all()
+        if not recs:
+            return
+        for rec in recs:
+            last_idx = rec.row_idx
+            for row in _rows_for_rec(rec, settings.data_dir):
+                yield strip_trace_row(row)
+
+
+async def _iter_columns(session_factory, run_id: int, node_id: str) -> list[str]:
+    columns: list[str] = []
+    seen: set[str] = set()
+    async for row in _iter_done_rows(session_factory, run_id, node_id):
+        for key in row:
+            if key not in seen:
+                seen.add(key)
+                columns.append(key)
+    return columns
+
+
+async def _aiter_jsonl_rows(rows):
+    async for row in rows:
+        yield json.dumps(row, ensure_ascii=False) + "\n"
+
+
+async def _aiter_csv_rows(rows, columns: list[str]):
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(columns)
+    async for row in rows:
+        writer.writerow([_jsonify_nested(row.get(col, "")) for col in columns])
+        if buf.tell() >= 64 * 1024:
+            yield buf.getvalue()
+            buf.seek(0)
+            buf.truncate(0)
+    if buf.tell():
+        yield buf.getvalue()
+
+
+async def _write_xlsx_rows(rows, columns: list[str], path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet("data")
+    ws.append(columns)
+    async for row in rows:
+        ws.append([_jsonify_nested(row.get(col, "")) for col in columns])
+    wb.save(path)
+    return path
 
 
 async def _model_logs_for_trace(session: AsyncSession, run_id: int, node_id: str,
@@ -407,16 +572,20 @@ async def run_rows(run_id: int, node_id: str, status: str = "done",
                    session: AsyncSession = Depends(get_session)):
     await _get_owned_run(run_id, user, session)
     base = (RunRow.run_id == run_id, RunRow.node_id == node_id, RunRow.status == status)
-    total = (await session.execute(
-        select(func.count()).select_from(RunRow).where(*base))).scalar()
-    recs = (await session.execute(
-        select(RunRow).where(*base).order_by(RunRow.row_idx)
-        .offset((page - 1) * page_size).limit(page_size))).scalars().all()
     if status == "failed":
+        total = (await session.execute(
+            select(func.count()).select_from(RunRow).where(*base))).scalar()
+        recs = (await session.execute(
+            select(RunRow).where(*base).order_by(RunRow.row_idx)
+            .offset((page - 1) * page_size).limit(page_size))).scalars().all()
         return {"total": total, "rows": [
             {"row_idx": r.row_idx, "trace_id": r.trace_id, "error": r.error,
              "attempt": r.attempt} for r in recs]}
-    return {"total": total, "rows": _flatten(recs, settings.data_dir)}
+    offset = (max(page, 1) - 1) * max(page_size, 0)
+    size = min(max(page_size, 0), 500)
+    total = await _logical_row_total(session, run_id, node_id, status)
+    return {"total": total,
+            "rows": await _logical_rows_page(session, run_id, node_id, status, offset, size)}
 
 
 @router.get("/{run_id}/export")
@@ -432,21 +601,21 @@ async def export_run(run_id: int, node_id: str | None = None,
         if not outputs:
             raise HTTPException(status_code=422, detail="工作流没有输出节点")
         node_id = outputs[0].id
-    recs = (await session.execute(
-        select(RunRow).where(RunRow.run_id == run.id, RunRow.node_id == node_id,
-                             RunRow.status == "done").order_by(RunRow.row_idx))).scalars().all()
-    rows = _flatten(recs, settings.data_dir)
     base = f"run{run.id}_{Path(node_id).name}"   # Path(...).name 去掉 node_id 里的路径穿越
     if format == "jsonl":                          # 流式响应：不经整文件 materialize、不落临时盘
-        return StreamingResponse(aiter_jsonl(rows), media_type="application/x-ndjson",
+        return StreamingResponse(
+            _aiter_jsonl_rows(_iter_done_rows(get_session_factory(), run.id, node_id)),
+            media_type="application/x-ndjson",
                                  headers=_attachment(f"{base}.jsonl"))
     if format == "csv":
-        columns = ordered_union([list(r) for r in rows])
-        return StreamingResponse(aiter_csv(rows, columns), media_type="text/csv; charset=utf-8",
+        columns = await _iter_columns(get_session_factory(), run.id, node_id)
+        return StreamingResponse(
+            _aiter_csv_rows(_iter_done_rows(get_session_factory(), run.id, node_id), columns),
+            media_type="text/csv; charset=utf-8",
                                  headers=_attachment(f"{base}.csv"))
-    columns = ordered_union([list(r) for r in rows])   # xlsx 须落盘：write_only 内存有界，BackgroundTask 回收
+    columns = await _iter_columns(get_session_factory(), run.id, node_id)
     path = settings.data_dir / "exports" / f"{uuid4().hex[:8]}_{base}.xlsx"
-    await asyncio.to_thread(write_xlsx, rows, columns, path)
+    await _write_xlsx_rows(_iter_done_rows(get_session_factory(), run.id, node_id), columns, path)
     return FileResponse(
         path, filename=f"{base}.xlsx",
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

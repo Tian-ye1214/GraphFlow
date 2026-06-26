@@ -10,6 +10,7 @@ import { extractConfirmDeletes, stripGoalMarkers } from './parse'
 import { roleLabel, ROLE_BG } from './chatPresentation'
 
 export const AGENT_ROLES = ['coordinator', 'manager', 'worker', 'compactor'] as const
+type QueueReply = { ok: boolean; queued?: boolean; position?: number }
 
 /** Find the index of the running tool entry that best matches a tool_end event. */
 export function findToolEndIndex(ts: AgentToolContent[], d: AgentToolContent): number {
@@ -145,8 +146,9 @@ export default function AgentDrawer() {
     const sid = sessionIdRef.current
     if (!sid || !text.trim()) return
     try {
-      await api.post(`/api/agent/sessions/${sid}/messages`, { text })
+      const r = await api.post<QueueReply>(`/api/agent/sessions/${sid}/messages`, { text })
       setInput('')
+      if (r.queued) message.info(`已加入队列（前方 ${r.position ?? 1} 个任务）`)
       await refreshDetail(sid)
     } catch (e) {
       message.error((e as Error).message)
@@ -154,7 +156,10 @@ export default function AgentDrawer() {
   }
 
   const stop = async () => {
-    if (sessionIdRef.current) await api.post(`/api/agent/sessions/${sessionIdRef.current}/stop`)
+    if (sessionIdRef.current) {
+      await api.post(`/api/agent/sessions/${sessionIdRef.current}/stop`)
+      message.success('已请求停止当前任务并清空队列')
+    }
   }
 
   const startGoal = async () => {
@@ -162,8 +167,9 @@ export default function AgentDrawer() {
     if (!sid || !goalText.trim() || !goalWf) { message.warning('选择工作流并填写目标'); return }
     try {
       setMetrics([])
-      await api.post(`/api/agent/sessions/${sid}/goal`, { workflow_id: goalWf, goal_text: goalText })
+      const r = await api.post<QueueReply>(`/api/agent/sessions/${sid}/goal`, { workflow_id: goalWf, goal_text: goalText })
       setGoalText('')
+      if (r.queued) message.info(`目标已加入队列（前方 ${r.position ?? 1} 个任务）`)
       await refreshDetail(sid)
     } catch (e) { message.error((e as Error).message) }
   }
@@ -206,7 +212,7 @@ export default function AgentDrawer() {
         <div style={{ background: ROLE_BG.assistant, borderRadius: 8, padding: '6px 10px' }}>
           <ReactMarkdown>{text}</ReactMarkdown>
           {commands.map((cmd) => (
-            <Button key={cmd} danger size="small" style={{ marginRight: 8 }} disabled={running}
+            <Button key={cmd} danger size="small" style={{ marginRight: 8 }}
                     onClick={() => void send(`确认：${cmd}`)}>
               确认删除：{cmd}
             </Button>
@@ -253,7 +259,7 @@ export default function AgentDrawer() {
           </Space>
         )}
         <div style={{ marginBottom: 8, fontSize: 12, color: '#999' }}>思考：xhigh（固定）</div>
-        {goalMode && detail && !running && (
+        {goalMode && detail && (
           <Space style={{ marginBottom: 8 }} wrap>
             <Select size="small" style={{ width: 160 }} placeholder="目标工作流"
                     value={goalWf} onChange={setGoalWf}
@@ -275,7 +281,7 @@ export default function AgentDrawer() {
           {running && (
             <Space style={{ marginBottom: 6 }}>
               <Tag color="processing">红莲正在工作…{goalRound > 0 && `目标进行中 · 第 ${goalRound} 轮`}</Tag>
-              {goalRound > 0 && <Button size="small" danger onClick={() => void stop()}>停止</Button>}
+              <Button size="small" danger onClick={() => void stop()}>停止并清空队列</Button>
             </Space>
           )}
         {metrics.length > 0 && (
@@ -288,7 +294,7 @@ export default function AgentDrawer() {
           </div>
         )}
           <Space.Compact style={{ width: '100%' }}>
-            <Input.TextArea autoSize={{ minRows: 1, maxRows: 4 }} value={input} disabled={running || !detail}
+            <Input.TextArea autoSize={{ minRows: 1, maxRows: 4 }} value={input} disabled={!detail}
                             onChange={(e) => setInput(e.target.value)}
                             onPressEnter={(e) => {
                               if (!e.shiftKey) {
@@ -297,7 +303,7 @@ export default function AgentDrawer() {
                               }
                             }}
                             placeholder={detail ? '让红莲帮你搭链路、配模型、跑数据…' : '先新建会话'} />
-            <Button type="primary" disabled={running || !detail} onClick={() => void send(input)}>发送</Button>
+            <Button type="primary" disabled={!detail} onClick={() => void send(input)}>发送</Button>
           </Space.Compact>
         </div>
       </Drawer>

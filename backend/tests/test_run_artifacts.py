@@ -84,3 +84,70 @@ async def test_run_rows_endpoint_reads_artifact_output(auth_client, session_fact
     r = await auth_client.get(f"/api/runs/{run_id}/rows?node_id=out")
     assert r.status_code == 200
     assert r.json()["rows"] == [{"q": "from-artifact"}]
+
+
+async def test_run_rows_endpoint_pages_artifact_logical_rows(auth_client, session_factory):
+    writer = ArtifactWriter(
+        settings.data_dir,
+        run_id=10,
+        node_id="out",
+        columns=["q"],
+        shard_size=10,
+    )
+    ref = writer.append(1, [{"q": "a"}, {"q": "b"}, {"q": "c"}])
+    writer.close()
+    async with session_factory() as s:
+        uid = (await s.execute(select(User.id).where(User.username == "tester"))).scalar_one()
+        wf = Workflow(user_id=uid, name="wf", graph_json='{"nodes":[],"edges":[]}')
+        s.add(wf)
+        await s.flush()
+        ver = WorkflowVersion(workflow_id=wf.id, version=1, graph_json=wf.graph_json)
+        s.add(ver)
+        await s.flush()
+        run = Run(user_id=uid, workflow_id=wf.id, workflow_version_id=ver.id, status="completed")
+        s.add(run)
+        await s.flush()
+        s.add(RunRow(run_id=run.id, node_id="out", row_idx=0, status="done", output_ref=ref))
+        await s.commit()
+        run_id = run.id
+
+    r = await auth_client.get(f"/api/runs/{run_id}/rows?node_id=out&page=1&page_size=2")
+    assert r.status_code == 200
+    assert r.json() == {"total": 3, "rows": [{"q": "a"}, {"q": "b"}]}
+
+
+async def test_export_streams_artifact_rows_without_flatten(auth_client, session_factory, monkeypatch):
+    from app.routers import runs as runs_router
+
+    writer = ArtifactWriter(
+        settings.data_dir,
+        run_id=11,
+        node_id="out",
+        columns=["q"],
+        shard_size=10,
+    )
+    ref = writer.append(1, [{"q": "a"}, {"q": "b"}])
+    writer.close()
+    async with session_factory() as s:
+        uid = (await s.execute(select(User.id).where(User.username == "tester"))).scalar_one()
+        graph_json = '{"nodes":[{"id":"out","type":"output","config":{}}],"edges":[]}'
+        wf = Workflow(user_id=uid, name="wf", graph_json=graph_json)
+        s.add(wf)
+        await s.flush()
+        ver = WorkflowVersion(workflow_id=wf.id, version=1, graph_json=graph_json)
+        s.add(ver)
+        await s.flush()
+        run = Run(user_id=uid, workflow_id=wf.id, workflow_version_id=ver.id, status="completed")
+        s.add(run)
+        await s.flush()
+        s.add(RunRow(run_id=run.id, node_id="out", row_idx=0, status="done", output_ref=ref))
+        await s.commit()
+        run_id = run.id
+
+    def fail_flatten(*_args, **_kwargs):
+        raise AssertionError("export must not flatten all rows before streaming")
+
+    monkeypatch.setattr(runs_router, "_flatten", fail_flatten)
+    r = await auth_client.get(f"/api/runs/{run_id}/export?node_id=out&format=jsonl")
+    assert r.status_code == 200
+    assert [line for line in r.text.strip().splitlines()] == ['{"q": "a"}', '{"q": "b"}']

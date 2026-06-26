@@ -10,6 +10,7 @@ import { STATUS_COLORS, STATUS_LABELS } from './RunsPage'
 import { fmtDuration, renderCell } from '../utils'
 
 const ACTIVE = ['queued', 'running']
+type QueueReply = { ok: boolean; queued?: boolean; position?: number }
 
 function compactJson(value: unknown) {
   return JSON.stringify(value, null, 2)
@@ -115,12 +116,8 @@ export default function RunDetailPage() {
         message.warning('请先创建或选择红莲会话')
         return
       }
-      if (sess.status === 'running') {
-        message.warning('当前红莲会话正在运行，请稍后再试')
-        return
-      }
-      await api.post(`/api/agent/sessions/${sess.id}/diagnose-run`, { run_id: Number(id) })
-      message.success('已提交给红莲诊断')
+      const r = await api.post<QueueReply>(`/api/agent/sessions/${sess.id}/diagnose-run`, { run_id: Number(id) })
+      message.success(r.queued ? `已加入红莲诊断队列（前方 ${r.position ?? 1} 个任务）` : '已提交给红莲诊断')
     } catch (e) {
       message.error(e instanceof Error ? e.message : '提交诊断失败')
     } finally {
@@ -197,9 +194,13 @@ export default function RunDetailPage() {
             <Button danger size="small">取消</Button>
           </Popconfirm>
         )}
-        {!isActive && hasFailed && (
+        {hasFailed && (
           <Button size="small" type="primary"
-                  onClick={async () => { await api.post(`/api/runs/${id}/rerun-failed`); message.success('失败行已重新入队'); await refresh() }}>
+                  onClick={async () => {
+                    const r = await api.post<QueueReply>(`/api/runs/${id}/rerun-failed`)
+                    message.success(r.queued ? `失败行已加入重跑队列（前方 ${r.position ?? 1} 个任务）` : '失败行已重新入队')
+                    await refresh()
+                  }}>
             重跑失败行
           </Button>
         )}
@@ -226,11 +227,11 @@ export default function RunDetailPage() {
                       status={s.failed > 0 ? 'exception' : s.status === 'done' ? 'success' : 'active'} />
             <div style={{ fontSize: 13 }}>{s.done}/{s.total}
               {s.failed > 0 && <span style={{ color: '#ff4d4f' }}>（失败 {s.failed}）</span>}</div>
-            {!isActive && s.failed > 0 && (
+            {s.failed > 0 && (
               <Button size="small" style={{ marginTop: 6 }}
                       onClick={async () => {
-                        await api.post(`/api/runs/${id}/rerun-failed?node_id=${encodeURIComponent(s.node_id)}`)
-                        message.success('该节点失败行已重新入队'); await refresh()
+                        const r = await api.post<QueueReply>(`/api/runs/${id}/rerun-failed?node_id=${encodeURIComponent(s.node_id)}`)
+                        message.success(r.queued ? `该节点失败行已加入重跑队列（前方 ${r.position ?? 1} 个任务）` : '该节点失败行已重新入队'); await refresh()
                       }}>
                 重跑本节点失败行
               </Button>
@@ -314,7 +315,7 @@ export default function RunDetailPage() {
           <Tabs
             items={[
               {
-                key: 'preview', label: `结果预览（${rows.total} 单元）`,
+                key: 'preview', label: `结果预览（${rows.total} 行）`,
                 children: <Table rowKey={(_, i) => String(i)} dataSource={rows.rows} columns={previewColumns}
                                  pagination={{ current: page, pageSize: 20, total: rows.total, onChange: setPage }}
                                  scroll={{ x: 'max-content' }} size="small" />,

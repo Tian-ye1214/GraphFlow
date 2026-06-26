@@ -374,7 +374,7 @@ async def test_barrier_crash_window_repairs_state(session_factory, monkeypatch):
     async with session_factory() as s:
         ns = (await s.execute(select(RunNodeState).where(
             RunNodeState.run_id == run_id, RunNodeState.node_id == "in"))).scalar_one()
-    assert ns.status == "done" and ns.done == 1
+    assert ns.status == "done" and ns.done == 3
 
 
 DIAMOND_GRAPH = {

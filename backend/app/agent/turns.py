@@ -2,6 +2,8 @@
 import asyncio
 import json
 import re
+from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic_ai.messages import ModelMessagesTypeAdapter
@@ -26,24 +28,77 @@ def session_dir(username: str, session_id: int) -> Path:
     return (settings.data_dir / "agent" / _safe(username) / str(session_id)).resolve()
 
 
+@dataclass
+class AgentJob:
+    kind: str
+    user_id: int
+    text: str = ""
+    workflow_id: int = 0
+
+
 class AgentTurnManager:
     def __init__(self):
         self.tasks: dict[int, asyncio.Task] = {}
+        self.queues: dict[int, deque[AgentJob]] = {}
+        self.active: set[int] = set()
         self.stop_flags: set[int] = set()
 
-    def submit(self, session_id: int, user_id: int, text: str) -> None:
+    def _enqueue(self, session_id: int, job: AgentJob) -> dict:
         self.stop_flags.discard(session_id)
-        task = asyncio.create_task(self._run_turn(session_id, user_id, text))
-        self.tasks[session_id] = task
-        task.add_done_callback(lambda _: self.tasks.pop(session_id, None))
+        queue = self.queues.setdefault(session_id, deque())
+        running = session_id in self.tasks and not self.tasks[session_id].done()
+        position = len(queue) + (1 if session_id in self.active else 0)
+        queue.append(job)
+        if not running:
+            self.tasks[session_id] = asyncio.create_task(self._drain(session_id))
+        return {"queued": position > 0, "position": position}
+
+    def submit(self, session_id: int, user_id: int, text: str) -> dict:
+        return self._enqueue(session_id, AgentJob(kind="turn", user_id=user_id, text=text))
 
     def request_stop(self, session_id: int) -> None:
         self.stop_flags.add(session_id)
+        queue = self.queues.get(session_id)
+        if not queue:
+            return
+        if session_id in self.active:
+            queue.clear()
+            return
+        first = queue.popleft()
+        queue.clear()
+        queue.append(first)
 
     def cancel(self, session_id: int) -> None:
+        self.queues.get(session_id, deque()).clear()
         task = self.tasks.get(session_id)
         if task:
             task.cancel()
+
+    async def _mark_idle(self, session_id: int) -> None:
+        async with get_session_factory()() as s:
+            sess = await s.get(AgentSession, session_id)
+            if sess is not None:
+                sess.status = "idle"
+                await s.commit()
+
+    async def _drain(self, session_id: int) -> None:
+        try:
+            while self.queues.get(session_id):
+                job = self.queues[session_id].popleft()
+                self.active.add(session_id)
+                try:
+                    if job.kind == "goal":
+                        await self._run_goal(session_id, job.user_id, job.workflow_id, job.text)
+                    else:
+                        await self._run_turn(session_id, job.user_id, job.text)
+                finally:
+                    self.active.discard(session_id)
+        finally:
+            self.tasks.pop(session_id, None)
+            self.queues.pop(session_id, None)
+            self.active.discard(session_id)
+            self.stop_flags.discard(session_id)
+            await self._mark_idle(session_id)
 
     def _make_emit(self, session_id: int, user_id: int):
         async def emit(kind: str, data=None):
@@ -87,7 +142,7 @@ class AgentTurnManager:
             sess = await s.get(AgentSession, session_id)
             if sess is not None:  # 会话可能在回合中被删除（任务被 cancel）
                 sess.history_json = ModelMessagesTypeAdapter.dump_json(history).decode()
-                sess.status = "idle"
+                sess.status = "running" if self.queues.get(session_id) else "idle"
                 await s.commit()
         publish(user_id, "agent", session_id, kind="turn_done")
 
@@ -122,11 +177,11 @@ class AgentTurnManager:
             await self._persist_and_finish(session_id, user_id, sf, history)
 
 
-    def submit_goal(self, session_id: int, user_id: int, workflow_id: int, goal_text: str) -> None:
-        self.stop_flags.discard(session_id)
-        task = asyncio.create_task(self._run_goal(session_id, user_id, workflow_id, goal_text))
-        self.tasks[session_id] = task
-        task.add_done_callback(lambda _: self.tasks.pop(session_id, None))
+    def submit_goal(self, session_id: int, user_id: int, workflow_id: int, goal_text: str) -> dict:
+        return self._enqueue(
+            session_id,
+            AgentJob(kind="goal", user_id=user_id, workflow_id=workflow_id, text=goal_text),
+        )
 
     async def _run_goal(self, session_id, user_id, workflow_id, goal_text):
         from app.agent import goal_loop as gl

@@ -65,6 +65,37 @@ async def test_normal_turn(monkeypatch, session_factory, sid):
         assert sess.status == "idle" and sess.history_json == "[]"
 
 
+async def test_same_session_turns_run_fifo(monkeypatch, sid):
+    active = {"count": 0, "max": 0}
+
+    class SlowSystem(FakeSystem):
+        async def run_turn(self, text, history):
+            active["count"] += 1
+            active["max"] = max(active["max"], active["count"])
+            try:
+                await asyncio.sleep(0.05)
+                self.calls.append(text)
+                return history, f"ok {text}"
+            finally:
+                active["count"] -= 1
+
+    fake = SlowSystem([])
+    tm = turns.AgentTurnManager()
+    monkeypatch.setattr(turns, "AgentSystem", lambda **kw: fake)
+
+    first = tm.submit(sid, 1, "第一条")
+    first_task = tm.tasks[sid]
+    second = tm.submit(sid, 1, "第二条")
+    second_task = tm.tasks[sid]
+
+    await asyncio.wait_for(asyncio.gather(first_task, second_task), 2)
+
+    assert first == {"queued": False, "position": 0}
+    assert second == {"queued": True, "position": 1}
+    assert active["max"] == 1
+    assert fake.calls == ["第一条", "第二条"]
+
+
 async def test_goal_auto_continue_until_done(monkeypatch, session_factory, sid):
     fake = FakeSystem(["a <!-- REDLOTUS_GOAL:CONTINUE -->",
                        "b <!-- REDLOTUS_GOAL:CONTINUE -->",

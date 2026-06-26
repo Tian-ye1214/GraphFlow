@@ -130,11 +130,10 @@ def iter_artifact_rows(manifest: dict, *, start_file_row: int | None = None,
                 yield file_row, item.get("data", {})
 
 
-def read_output_ref_rows(output_ref: str, data_dir: Path) -> list[dict]:
+def iter_output_ref_rows(output_ref: str, data_dir: Path):
     if not output_ref:
-        return []
+        return
     refs = json.loads(output_ref)
-    rows: list[dict] = []
     for ref in refs:
         path = Path(ref["path"])
         if not path.is_absolute():
@@ -148,7 +147,19 @@ def read_output_ref_rows(output_ref: str, data_dir: Path) -> list[dict]:
                 if line_no >= offset + count:
                     break
                 item = json.loads(line)
-                rows.append(item.get("data", {}))
+                yield item.get("data", {})
+
+
+def count_output_ref_rows(output_ref: str) -> int:
+    if not output_ref:
+        return 0
+    return sum(int(ref.get("count", 0)) for ref in json.loads(output_ref))
+
+
+def read_output_ref_rows(output_ref: str, data_dir: Path) -> list[dict]:
+    rows: list[dict] = []
+    for row in iter_output_ref_rows(output_ref, data_dir):
+        rows.append(row)
     return rows
 
 
