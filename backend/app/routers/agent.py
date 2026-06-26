@@ -405,7 +405,9 @@ async def node_assist(body: NodeAssistIn, user: User = Depends(get_current_user)
     try:
         r = await task
     except asyncio.CancelledError:
-        return {"reply": "（已打断）", "config": None, "sample_source": source, "cancelled": True}
+        if task.cancelled():   # 子任务被 stop 端点取消 → 返回已打断；若是本 handler 自身被取消(如服务关停)则不吞，重抛
+            return {"reply": "（已打断）", "config": None, "sample_source": source, "cancelled": True}
+        raise
     except ModelHTTPError as exc:
         _raise_model_http_error(exc, mc)
     finally:

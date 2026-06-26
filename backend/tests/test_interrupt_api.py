@@ -81,6 +81,7 @@ async def test_node_assist_stop_cancels_inflight(auth_client, monkeypatch):
     r1 = await asyncio.wait_for(post, 5)
     assert r1.status_code == 200
     assert r1.json()["cancelled"] is True
+    assert r1.json()["reply"] == "（已打断）"
     assert r1.json()["config"] is None
 
 
