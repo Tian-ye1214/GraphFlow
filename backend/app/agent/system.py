@@ -45,7 +45,13 @@ class AgentSystem:
         tk = AgentToolkit(self.workdir, state_file, self._confirm_delete,
                           session_factory=self._session_factory, user_id=self._user_id)
         sk = SkillsToolkit(self.skills_manager, state_file)
-        return tk.tools + sk.tools
+        tools = tk.tools + sk.tools
+        if self._session_factory is not None and self._user_id is not None:
+            from app.agent.catalog import make_catalog_tools
+            from app.agent.graph_tools import GraphToolkit
+            tools += GraphToolkit(self._session_factory, self._user_id).tools
+            tools += make_catalog_tools(self._session_factory, self._user_id)
+        return tools
 
     async def _compact(self, history: list, running_mc) -> list:
         if self._compactor_mc is None:

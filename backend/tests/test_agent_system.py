@@ -93,6 +93,36 @@ async def test_manager_three_phases(tmp_path):
     assert system.task_manager.is_all_completed()
 
 
+def test_make_tools_includes_graph_and_catalog(tmp_path):
+    """主 Agent 装配：有 session_factory+user_id 时工具集含图操作与目录工具。"""
+    echo = FunctionModel(lambda m, i: ModelResponse(parts=[TextPart("ok")]))
+    sysm = AgentSystem(models={"coordinator": echo, "manager": echo, "worker": echo},
+                       workdir=tmp_path, confirm_delete=False, emit=None,
+                       user_id=1, session_factory=lambda: None)
+    names = {getattr(t, "__name__", "") for t in sysm._make_tools(tmp_path / "s.json")}
+    assert {"add_node", "set_node_config", "connect_nodes", "show_workflow_graph",
+            "list_workflows", "list_user_models"} <= names
+
+
+async def test_turn_runs_with_graph_tools_attached(tmp_path):
+    """带 session_factory 时协调者 agent 能成功构建并跑通（图工具 schema 合法、无重名冲突）。"""
+    model = FunctionModel(lambda m, i: ModelResponse(parts=[TextPart("直答")]))
+    system = AgentSystem(models={"coordinator": model, "manager": model, "worker": model},
+                         workdir=tmp_path, confirm_delete=False, emit=None,
+                         user_id=1, session_factory=lambda: None)
+    _, output = await system.run_turn("你好", [])
+    assert output == "直答"
+
+
+def test_make_tools_without_session_omits_graph_tools(tmp_path):
+    """无 session/user（纯 e2e 测试构造）时不挂图工具，保持既有套件不破。"""
+    echo = FunctionModel(lambda m, i: ModelResponse(parts=[TextPart("ok")]))
+    sysm = AgentSystem(models={"coordinator": echo, "manager": echo, "worker": echo},
+                       workdir=tmp_path, confirm_delete=False, emit=None)
+    names = {getattr(t, "__name__", "") for t in sysm._make_tools(tmp_path / "s.json")}
+    assert "add_node" not in names and "list_workflows" not in names
+
+
 async def test_adhoc_worker_routing(tmp_path):
     (tmp_path / "cli.json").write_text("{}", encoding="utf-8")
 
