@@ -162,6 +162,13 @@ export default function AgentDrawer() {
     }
   }
 
+  const interrupt = async () => {
+    if (sessionIdRef.current) {
+      await api.post(`/api/agent/sessions/${sessionIdRef.current}/interrupt`)
+      message.success('已打断当前回合')
+    }
+  }
+
   const startGoal = async () => {
     const sid = sessionIdRef.current
     if (!sid || !goalText.trim() || !goalWf) { message.warning('选择工作流并填写目标'); return }
@@ -279,9 +286,10 @@ export default function AgentDrawer() {
         </div>
         <div style={{ position: 'absolute', bottom: 12, left: 16, right: 16 }}>
           {running && (
-            <Space style={{ marginBottom: 6 }}>
+            <Space style={{ marginBottom: 6 }} wrap>
               <Tag color="processing">红莲正在工作…{goalRound > 0 && `目标进行中 · 第 ${goalRound} 轮`}</Tag>
-              <Button size="small" danger onClick={() => void stop()}>停止并清空队列</Button>
+              <Button size="small" onClick={() => void stop()}>停止并清空队列</Button>
+              <Button size="small" danger type="primary" onClick={() => void interrupt()}>打断</Button>
             </Space>
           )}
         {metrics.length > 0 && (
