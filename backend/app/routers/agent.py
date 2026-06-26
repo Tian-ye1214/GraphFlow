@@ -1,3 +1,4 @@
+import asyncio
 import json
 import shutil
 
@@ -9,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent import codegen as codegen_mod
 from app.agent.codegen import gather_upstream_columns, generate_code
+from app.agent.node_assist import node_assist_registry
 from app.agent.catalog import make_catalog_tools
 from app.agent.data_preview import make_preview_tools
 from app.agent.node_info import make_node_info_tools
@@ -368,6 +370,7 @@ class NodeAssistIn(BaseModel):
     current_config: dict | None = None
     params: dict | None = None
     history: list[dict] = []
+    call_id: str = ""
 
 
 @router.post("/node-assist")
@@ -389,12 +392,35 @@ async def node_assist(body: NodeAssistIn, user: User = Depends(get_current_user)
                      + make_node_info_tools(get_session_factory(), user.id,
                                             body.workflow_id, body.node_id)
                      + make_catalog_tools(get_session_factory(), user.id))
-    try:
+    async def _run():
         with log_context(user_id=user.id, workflow_id=body.workflow_id,
                          node_id=body.node_id, source="assistant"):
-            r = await codegen_mod.generate_node_config(
+            return await codegen_mod.generate_node_config(
                 mc, body.node_type, body.instruction, columns, current_config=body.current_config,
                 preview_tools=preview_tools, params=body.params, history=body.history)
+
+    task = asyncio.create_task(_run())
+    if body.call_id:
+        node_assist_registry.register(body.call_id, user.id, task)
+    try:
+        r = await task
+    except asyncio.CancelledError:
+        return {"reply": "（已打断）", "config": None, "sample_source": source, "cancelled": True}
     except ModelHTTPError as exc:
         _raise_model_http_error(exc, mc)
+    finally:
+        node_assist_registry.discard(body.call_id)
+        if not task.done():
+            task.cancel()       # 兜底取消未完成子任务，防孤儿
     return {"reply": r["reply"], "config": r["config"], "sample_source": source}
+
+
+class NodeAssistStopIn(BaseModel):
+    call_id: str
+
+
+@router.post("/node-assist/stop")
+async def node_assist_stop(body: NodeAssistStopIn,
+                           user: User = Depends(get_current_user)):
+    node_assist_registry.cancel(body.call_id, user.id)
+    return {"ok": True}
