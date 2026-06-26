@@ -6,8 +6,6 @@ from pathlib import Path
 import httpx
 
 from app.cli import load_state
-# 图变更逻辑/常量单点在 graph_ops；client 仅为旧调用方(model.py)再导出仍需的项，避免重复定义。
-from app.services.graph_ops import _convert as convert, LLM_PARAM_KEYS  # noqa: F401
 
 NODE_LABELS = {"input": "输入", "llm_synth": "LLM 合成", "auto_process": "自动处理",
                "output": "输出", "qc": "质检", "http_fetch": "HTTP 取数"}

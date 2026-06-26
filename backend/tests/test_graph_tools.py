@@ -1,8 +1,9 @@
 import json
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from app.agent.graph_tools import GraphToolkit
-from app.models import Dataset, ModelConfig, User, Workflow
+from app.models import (Dataset, ModelCallLog, ModelConfig, Run, RunNodeState, RunRow,
+                        User, Workflow, WorkflowVersion)
 
 
 async def _seed(sf, graph=None):
@@ -165,3 +166,94 @@ async def test_workflow_columns_cross_tenant(session_factory):
     uid, wf_id = await _seed(sf)
     out = json.loads(await GraphToolkit(sf, uid + 999).workflow_columns(wf_id))
     assert out.get("error") == "workflow_not_found"
+
+
+# --- 对抗复审修复回归 ---
+
+async def test_set_node_config_bad_number_returns_error_not_raises(session_factory):
+    """畸形数值键(conc=非数字)走 int() 抛裸 ValueError，须被 _mutate 兜成错误串而非抛进框架。"""
+    sf = session_factory
+    g = {"nodes": [{"id": "g", "type": "llm_synth", "config": {}}], "edges": []}
+    uid, wf_id = await _seed(sf, g)
+    msg = await GraphToolkit(sf, uid).set_node_config(wf_id, "g", {"conc": "high"})
+    assert msg.startswith("Error")
+    # 失败不落库：config 未被部分写入
+    cfg = next(n for n in (await _graph(sf, wf_id))["nodes"] if n["id"] == "g")["config"]
+    assert cfg == {}
+
+
+async def test_add_node_op_bad_number_returns_error(session_factory):
+    sf = session_factory
+    g = {"nodes": [{"id": "p", "type": "auto_process", "config": {}}], "edges": []}
+    uid, wf_id = await _seed(sf, g)
+    msg = await GraphToolkit(sf, uid).add_node_op(wf_id, "p", "sample", ["abc"])
+    assert msg.startswith("Error")
+
+
+async def test_draft_graph_missing_nodes_key_returns_error(session_factory):
+    """草稿态图(经 PUT 存成缺 nodes 键)调写工具，KeyError 须兜成错误串不抛进框架。"""
+    sf = session_factory
+    uid, wf_id = await _seed(sf, {"edges": []})   # 真畸形：缺 nodes 键(非空 dict 不被 _seed 默认覆盖)
+    msg = await GraphToolkit(sf, uid).add_node(wf_id, "llm")
+    assert msg.startswith("Error")
+
+
+async def test_delete_workflow_cascades_children(session_factory):
+    """删工作流必须级联清子表(run/行/状态/日志/版本)零孤儿(复审揪出的批13回归)。"""
+    sf = session_factory
+    uid, wf_id = await _seed(sf)
+    async with sf() as s:
+        ver = WorkflowVersion(workflow_id=wf_id, version=1, graph_json="{}")
+        s.add(ver); await s.flush()
+        run = Run(user_id=uid, workflow_id=wf_id, workflow_version_id=ver.id, status="completed")
+        s.add(run); await s.flush()
+        s.add(RunRow(run_id=run.id, node_id="g", row_idx=0, status="done", data_json="[]"))
+        s.add(RunNodeState(run_id=run.id, node_id="g", status="done"))
+        s.add(ModelCallLog(user_id=uid, run_id=run.id, node_id="g", source="synth"))
+        s.add(ModelCallLog(user_id=uid, workflow_id=wf_id, node_id="g", source="assistant"))
+        await s.commit()
+        run_id = run.id
+    msg = await GraphToolkit(sf, uid).delete_workflow(wf_id)
+    assert "已删除" in msg
+    async with sf() as s:
+        assert await s.get(Workflow, wf_id) is None
+        for Model, where in ((Run, Run.workflow_id == wf_id),
+                             (RunRow, RunRow.run_id == run_id),
+                             (RunNodeState, RunNodeState.run_id == run_id),
+                             (WorkflowVersion, WorkflowVersion.workflow_id == wf_id),
+                             (ModelCallLog, ModelCallLog.workflow_id == wf_id),
+                             (ModelCallLog, ModelCallLog.run_id == run_id)):
+            cnt = (await s.execute(select(func.count()).select_from(Model).where(where))).scalar()
+            assert cnt == 0, f"{Model.__name__} 残留孤儿 {cnt}"
+
+
+async def test_delete_workflow_blocked_while_running(session_factory):
+    """有运行中的任务时删工作流应被拒(返回错误串)，工作流与数据保留。"""
+    sf = session_factory
+    uid, wf_id = await _seed(sf)
+    async with sf() as s:
+        ver = WorkflowVersion(workflow_id=wf_id, version=1, graph_json="{}")
+        s.add(ver); await s.flush()
+        s.add(Run(user_id=uid, workflow_id=wf_id, workflow_version_id=ver.id, status="running"))
+        await s.commit()
+    msg = await GraphToolkit(sf, uid).delete_workflow(wf_id)
+    assert "运行中" in msg
+    async with sf() as s:
+        assert await s.get(Workflow, wf_id) is not None   # 未删
+
+
+async def test_set_node_prompt_copy_from_library(session_factory):
+    """set_node_prompt mode=copy 从库复制最新版正文(复用 CatalogTools._latest_version)。"""
+    from app.models import Prompt, PromptVersion
+    sf = session_factory
+    g = {"nodes": [{"id": "g", "type": "llm_synth", "config": {}}], "edges": []}
+    uid, wf_id = await _seed(sf, g)
+    async with sf() as s:
+        p = Prompt(user_id=uid, name="模板", description=""); s.add(p); await s.flush()
+        s.add(PromptVersion(prompt_id=p.id, version=1, body="旧版", variables_json="[]"))
+        s.add(PromptVersion(prompt_id=p.id, version=2, body="最新版 {{q}}", variables_json="[]"))
+        pid = p.id
+        await s.commit()
+    await GraphToolkit(sf, uid).set_node_prompt(wf_id, "g", "user", library_ref=pid, mode="copy")
+    cfg = next(n for n in (await _graph(sf, wf_id))["nodes"] if n["id"] == "g")["config"]
+    assert cfg["user_prompt"] == "最新版 {{q}}"

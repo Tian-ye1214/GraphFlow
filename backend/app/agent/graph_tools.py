@@ -6,14 +6,16 @@ import json
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.agent.catalog import CatalogTools
 from app.agent.data_preview import _fit_budget
 from app.agent.node_info import _summarize_node
+from app.config import settings
 from app.engine.columns import propagate_columns, resolve_dataset_cols
 from app.engine.graph import GraphError, parse_graph, validate_graph
 from app.events import publish
-from app.models import Workflow
+from app.models import Run, Workflow
 from app.services import graph_ops as go
-from app.services.workflow_store import resolve_ref, update_workflow_graph
+from app.services.workflow_store import delete_workflow_full, resolve_ref, update_workflow_graph
 
 
 class GraphToolkit:
@@ -27,7 +29,7 @@ class GraphToolkit:
 
     async def _mutate(self, workflow_id: int, fn) -> str:
         """取属主工作流→对 graph dict 跑 fn(graph, session)（可 await）→落库+SSE。
-        fn 返回成功消息串；GraphOpError→错误串；非属主→「工作流不存在」。"""
+        fn 返回成功消息串；非属主→「工作流不存在」；fn 抛 Value/Key/Type/AttributeError→错误串(不抛框架，不落库)。"""
         async with self._sf() as s:
             wf = await self._owned(s, workflow_id)
             if wf is None:
@@ -35,7 +37,10 @@ class GraphToolkit:
             graph = json.loads(wf.graph_json)
             try:
                 msg = await fn(graph, s)
-            except go.GraphOpError as e:
+            # GraphOpError(ValueError子类)、数值键 int()/float() 的裸 ValueError、
+            # 草稿态/畸形图(缺 nodes 键/config 非 dict)的 Key/Type/AttributeError ——
+            # 一律转人话错误串返回，绝不抛进 pydantic-ai 框架（对齐 columns 端点的 422 降级）。
+            except (ValueError, KeyError, TypeError, AttributeError) as e:
                 return f"Error: {e}"
             await update_workflow_graph(s, wf, graph)
             return msg
@@ -69,7 +74,7 @@ class GraphToolkit:
             return f"已重命名工作流 #{workflow_id} -> {name}"
 
     async def delete_workflow(self, workflow_id: int) -> str:
-        """删除工作流（连带其运行记录由既有级联保证）。
+        """删除工作流（级联清运行记录/版本/日志/磁盘导出）。有运行中的任务则先取消。
         Parameters:
             workflow_id: 工作流 id
         """
@@ -77,9 +82,11 @@ class GraphToolkit:
             wf = await self._owned(s, workflow_id)
             if wf is None:
                 return "工作流不存在"
-            await s.delete(wf)
-            await s.commit()
-            publish(self._uid, "workflow", workflow_id)
+            runs = (await s.execute(
+                select(Run.id, Run.status).where(Run.workflow_id == wf.id))).all()
+            if any(st in ("queued", "running") for _, st in runs):
+                return "存在运行中的任务，请先取消再删除"
+            await delete_workflow_full(s, wf, settings.data_dir)   # 级联删除单点(同 REST)
             return f"已删除工作流 #{workflow_id}"
 
     async def add_node(self, workflow_id: int, node_type: str, node_id: str | None = None) -> str:
@@ -181,10 +188,7 @@ class GraphToolkit:
                 if mode == "ref":
                     cfg[f"{field}_ref"] = pid
                     return f"已将 {node_id} 的 {slot} 提示词设为引用库 #{pid}"
-                from app.models import PromptVersion
-                ver = (await s.execute(select(PromptVersion)
-                       .where(PromptVersion.prompt_id == pid)
-                       .order_by(PromptVersion.version.desc()).limit(1))).scalars().first()
+                ver = await CatalogTools._latest_version(s, pid)   # 复用单点，不再内联查询
                 cfg[field] = ver.body if ver else ""
                 cfg.pop(f"{field}_ref", None)
                 return f"已复制库提示词 #{pid} 到 {node_id} 的 {slot}"

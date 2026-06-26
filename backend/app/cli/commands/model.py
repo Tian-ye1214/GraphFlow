@@ -1,5 +1,6 @@
 """模型配置：model ls|add|set|rm|test。"""
-from app.cli.client import (Cli, die, parse_kv, convert, MODEL_KEYS, LLM_PARAM_KEYS)
+from app.cli.client import Cli, die, parse_kv, MODEL_KEYS
+from app.services.graph_ops import _convert as convert, LLM_PARAM_KEYS
 
 
 def cmd_model_ls(args):

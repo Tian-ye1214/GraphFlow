@@ -121,7 +121,7 @@ def cmd_op_ls(args):
     cli = Cli()
     node = graph_ops.find_node(cli.get_wf()["graph"], args.node_id)
     if node["type"] != "auto_process":
-        die(f"{args.node_id} 不是自动处理节点")
+        die(f"{args.node_id} 不是自动处理节点(auto_process)")   # 文案与 add_op/remove_op 一致
     for i, o in enumerate(node["config"].get("operations", []), 1):
         rest = {k: v for k, v in o.items() if k != "op"}
         print(f"{i}. {graph_ops.OP_LABELS[o['op']]} {json.dumps(rest, ensure_ascii=False)}")

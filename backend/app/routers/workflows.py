@@ -6,7 +6,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import delete as sa_delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.background import BackgroundTask
 
@@ -16,11 +16,10 @@ from app.db import get_session
 from app.engine.columns import propagate_columns, resolve_dataset_cols
 from app.engine.graph import GraphError, parse_graph, validate_graph
 from app.events import publish
-from app.models import ModelCallLog, Run, User, Workflow, WorkflowVersion
+from app.models import Run, User, Workflow
 from app.routers.datasets import _safe_filename
-from app.services.run_service import purge_run_rows, unlink_run_exports
 from app.services.workflow_package import export_package, import_package, PackageError
-from app.services.workflow_store import update_workflow_graph
+from app.services.workflow_store import delete_workflow_full, update_workflow_graph
 
 router = APIRouter(prefix="/api/workflows", tags=["workflows"])
 
@@ -131,17 +130,7 @@ async def delete_workflow(wf_id: int, user: User = Depends(get_current_user),
         select(Run.id, Run.status).where(Run.workflow_id == wf.id))).all()
     if any(st in ("queued", "running") for _, st in runs):
         raise HTTPException(status_code=409, detail="存在运行中的任务，请先取消再删除")
-    run_ids = [rid for rid, _ in runs]
-    # 级联清理子数据，否则版本/运行/行/日志/指标全成孤儿，run 还会脱离列表泄漏。
-    # 版本按 workflow_id 整体删（含没有 run 的草稿版本），故 purge 不带 version_ids。
-    await purge_run_rows(session, run_ids)
-    # 节点助手类日志（无 run、按 workflow 归属）一并清
-    await session.execute(sa_delete(ModelCallLog).where(ModelCallLog.workflow_id == wf.id))
-    await session.execute(sa_delete(WorkflowVersion).where(WorkflowVersion.workflow_id == wf.id))
-    await session.delete(wf)
-    await session.commit()
-    unlink_run_exports(run_ids, settings.data_dir)
-    publish(user.id, "workflow", wf_id)
+    await delete_workflow_full(session, wf, settings.data_dir)   # 级联删除单点
     return {"ok": True}
 
 
