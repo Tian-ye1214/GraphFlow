@@ -100,6 +100,9 @@ function replaceConv(s: NodeAssistState, conv: Conversation): Conversation[] {
   return s.conversations.map((c) => (c.id === conv.id ? conv : c))
 }
 
+const controllers = new Map<string, AbortController>()
+const callIds = new Map<string, string>()
+
 export async function sendAssist(key: string, payload: {
   workflow_id: number; node_id: string; node_type: string; model_config_id: number
   current_config: Record<string, any>; params: Record<string, any>
@@ -115,18 +118,35 @@ export async function sendAssist(key: string, payload: {
     messages: [...active.messages, { role: 'user', text }],
   }
   set(key, { ...cur, draft: '', pending: true, conversations: replaceConv(cur, withUser) })
+  const callId = newId()
+  const ctrl = new AbortController()
+  controllers.set(key, ctrl)
+  callIds.set(key, callId)
   try {
-    const r = await api.post<NodeAssistReply>('/api/agent/node-assist', { ...payload, instruction: text, history })
+    const r = await api.post<NodeAssistReply>('/api/agent/node-assist',
+      { ...payload, instruction: text, history, call_id: callId }, ctrl.signal)
     const c = getState(key)
     const a = c.conversations.find((x) => x.id === active.id)
     if (!a) { set(key, { ...c, pending: false }); return }
     set(key, { ...c, pending: false, conversations: replaceConv(c,
       { ...a, messages: [...a.messages, { role: 'assistant', text: r.reply, config: r.config ?? undefined }] }) })
   } catch (e) {
+    const aborted = (e as Error).name === 'AbortError'
     const c = getState(key)
     const a = c.conversations.find((x) => x.id === active.id)
     if (!a) { set(key, { ...c, pending: false }); return }
-    set(key, { ...c, pending: false, conversations: replaceConv(c,
-      { ...a, messages: [...a.messages, { role: 'assistant', text: '出错：' + (e as Error).message, error: true as const }] }) })
+    const bubble: AssistMsg = aborted
+      ? { role: 'assistant', text: '（已打断）' }
+      : { role: 'assistant', text: '出错：' + (e as Error).message, error: true as const }
+    set(key, { ...c, pending: false, conversations: replaceConv(c, { ...a, messages: [...a.messages, bubble] }) })
+  } finally {
+    controllers.delete(key)
+    callIds.delete(key)
   }
+}
+
+export function cancelAssist(key: string) {
+  const callId = callIds.get(key)
+  if (callId) void api.post('/api/agent/node-assist/stop', { call_id: callId }).catch(() => {})
+  controllers.get(key)?.abort()
 }

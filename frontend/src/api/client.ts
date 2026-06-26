@@ -23,8 +23,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   get: <T>(p: string) => request<T>(p),
-  post: <T>(p: string, body?: unknown) =>
-    request<T>(p, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) }),
+  post: <T>(p: string, body?: unknown, signal?: AbortSignal) =>
+    request<T>(p, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body), signal }),
   postForm: <T>(p: string, form: FormData) => request<T>(p, { method: 'POST', body: form }),
   put: <T>(p: string, body: unknown) => request<T>(p, { method: 'PUT', body: JSON.stringify(body) }),
   del: <T>(p: string) => request<T>(p, { method: 'DELETE' }),

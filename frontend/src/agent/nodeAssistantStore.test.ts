@@ -4,7 +4,7 @@ vi.mock('../api/client', () => ({ api: { post: vi.fn() } }))
 import { api } from '../api/client'
 import {
   setDraft, newConversation, switchConversation, sendAssist, activeConversation,
-  getState as readState,
+  cancelAssist, getState as readState,
 } from './nodeAssistantStore'
 
 beforeEach(() => { localStorage.clear(); vi.clearAllMocks() })
@@ -42,5 +42,44 @@ describe('nodeAssistantStore 多会话', () => {
     expect(s.conversations.length).toBe(1)
     expect(s.draft).toBe('x')
     expect(s.modelConfigId).toBe(3)
+  })
+
+  it('sendAssist 带 call_id 与 AbortSignal', async () => {
+    ;(api.post as any).mockResolvedValue({ reply: 'ok', config: null })
+    setDraft(KEY, 'hi')
+    await sendAssist(KEY, { workflow_id: 1, node_id: 'n1', node_type: 'llm_synth', model_config_id: 9, current_config: {}, params: {} })
+    const [url, body, signal] = (api.post as any).mock.calls[0]
+    expect(url).toBe('/api/agent/node-assist')
+    expect(typeof body.call_id).toBe('string')
+    expect(body.call_id.length).toBeGreaterThan(0)
+    expect(signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it('cancelAssist 调 stop 端点 + 中止在途请求，落「（已打断）」气泡', async () => {
+    let captured: AbortSignal | undefined
+    ;(api.post as any).mockImplementationOnce((_u: string, _b: any, signal: AbortSignal) => {
+      captured = signal
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          const e = new Error('aborted'); (e as any).name = 'AbortError'; reject(e)
+        })
+      })
+    })
+    setDraft(KEY, 'hi')
+    const p = sendAssist(KEY, { workflow_id: 1, node_id: 'n1', node_type: 'llm_synth', model_config_id: 9, current_config: {}, params: {} })
+    await Promise.resolve()
+    expect(readState(KEY).pending).toBe(true)
+    ;(api.post as any).mockResolvedValueOnce({ ok: true })   // stop 端点
+    cancelAssist(KEY)
+    await p
+    const stopCall = (api.post as any).mock.calls.find((c: any[]) => c[0] === '/api/agent/node-assist/stop')
+    expect(stopCall).toBeTruthy()
+    expect(stopCall[1].call_id.length).toBeGreaterThan(0)
+    expect(captured?.aborted).toBe(true)
+    const s = readState(KEY)
+    expect(s.pending).toBe(false)
+    const msgs = activeConversation(s).messages
+    expect(msgs[msgs.length - 1]).toMatchObject({ role: 'assistant', text: '（已打断）' })
+    expect(msgs[msgs.length - 1].error).toBeUndefined()
   })
 })
