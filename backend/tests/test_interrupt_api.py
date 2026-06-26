@@ -1,9 +1,5 @@
 import asyncio
 
-import pytest
-
-from app.agent.turns import AgentTurnManager
-
 
 class StubTM:
     def __init__(self, result):

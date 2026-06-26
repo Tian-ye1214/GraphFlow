@@ -10,9 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent import codegen as codegen_mod
 from app.agent.codegen import gather_upstream_columns, generate_code
-from app.agent.node_assist import node_assist_registry
 from app.agent.catalog import make_catalog_tools
 from app.agent.data_preview import make_preview_tools
+from app.agent.node_assist import node_assist_registry
 from app.agent.node_info import make_node_info_tools
 from app.agent.turns import session_dir, turn_manager
 from app.auth import get_current_user, make_session_cookie
