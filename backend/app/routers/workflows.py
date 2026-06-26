@@ -20,6 +20,7 @@ from app.models import ModelCallLog, Run, User, Workflow, WorkflowVersion
 from app.routers.datasets import _safe_filename
 from app.services.run_service import purge_run_rows, unlink_run_exports
 from app.services.workflow_package import export_package, import_package, PackageError
+from app.services.workflow_store import update_workflow_graph
 
 router = APIRouter(prefix="/api/workflows", tags=["workflows"])
 
@@ -115,9 +116,10 @@ async def update_workflow(wf_id: int, body: WorkflowUpdate, user: User = Depends
     if body.name is not None:
         wf.name = body.name
     if body.graph is not None:
-        wf.graph_json = json.dumps(body.graph, ensure_ascii=False)
-    await session.commit()
-    publish(user.id, "workflow", wf.id)
+        await update_workflow_graph(session, wf, body.graph)   # 落库+SSE 单点
+    else:
+        await session.commit()
+        publish(user.id, "workflow", wf.id)
     return _out(wf)
 
 
