@@ -32,18 +32,6 @@ def iter_csv(rows: Iterable[dict], columns: list[str]) -> Iterator[str]:
         yield buf.getvalue()
 
 
-async def aiter_jsonl(rows: Iterable[dict]):
-    """流式响应版：原生异步生成器。StreamingResponse 喂同步生成器要走线程池迭代，高负载下偶发空体；
-    异步生成器是 Starlette 的原生路径（与数据集导出 iter_jsonl_lines 一致），可靠。"""
-    for chunk in iter_jsonl(rows):
-        yield chunk
-
-
-async def aiter_csv(rows: Iterable[dict], columns: list[str]):
-    for chunk in iter_csv(rows, columns):
-        yield chunk
-
-
 def write_xlsx(rows: Iterable[dict], columns: list[str], path: Path) -> Path:
     """write_only 工作簿逐行 append：内存有界，不经 pandas DataFrame 整表副本。"""
     path.parent.mkdir(parents=True, exist_ok=True)

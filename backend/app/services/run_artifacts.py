@@ -5,7 +5,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Dataset
+from app.models import Dataset, RunRow
 from app.services.dataset_store import _write_shards, dump_manifest, visible_total
 
 ARTIFACT_SHARD_SIZE = 100_000
@@ -161,6 +161,35 @@ def read_output_ref_rows(output_ref: str, data_dir: Path) -> list[dict]:
     for row in iter_output_ref_rows(output_ref, data_dir):
         rows.append(row)
     return rows
+
+
+def rows_for_rec(rec, data_dir: Path):
+    """读出一条 RunRow 的逻辑行（内联 data_json 或溢出 artifact）——runner/runs 单点共用。"""
+    if rec.output_ref:
+        yield from iter_output_ref_rows(rec.output_ref, data_dir)
+    else:
+        yield from json.loads(rec.data_json or "[]")
+
+
+async def iter_node_done_rows(session_factory, run_id: int, node_id: str, *,
+                              data_dir: Path, batch_size: int = 500):
+    """按 row_idx keyset 分页流式读某节点全部 done 行（每批一独立 session，不跨 yield 持连接）。
+    runner._node_output_iter 与 runs._iter_done_rows 共用此单点。"""
+    last_idx = -1
+    while True:
+        async with session_factory() as s:
+            recs = (await s.execute(select(RunRow).where(
+                RunRow.run_id == run_id,
+                RunRow.node_id == node_id,
+                RunRow.status == "done",
+                RunRow.row_idx > last_idx,
+            ).order_by(RunRow.row_idx).limit(batch_size))).scalars().all()
+        if not recs:
+            return
+        for rec in recs:
+            last_idx = rec.row_idx
+            for row in rows_for_rec(rec, data_dir):
+                yield row
 
 
 async def register_artifact_as_dataset(

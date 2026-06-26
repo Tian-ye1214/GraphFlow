@@ -24,8 +24,8 @@ from app.models import (ModelCallLog, QcFailure, QcMetric, Run, RunLog,
                         RunNodeState, RunRow, User, Workflow, WorkflowVersion)
 from app.routers.workflows import get_owned_workflow
 from app.services.dataset_store import _jsonify_nested
-from app.services.run_artifacts import (count_output_ref_rows, iter_output_ref_rows,
-                                        read_output_ref_rows)
+from app.services.run_artifacts import (count_output_ref_rows, iter_node_done_rows,
+                                        read_output_ref_rows, rows_for_rec)
 from app.services.run_service import (purge_run_rows, unlink_run_exports,
                                       validate_graph_resource_ownership)
 from app.services.trace import (PARENT_TRACE_ID_KEY, row_trace_id, rows_matching_trace,
@@ -377,13 +377,6 @@ def _raw_rows_for_rec(rec: RunRow, data_dir: Path) -> list[dict]:
     return json.loads(rec.data_json or "[]")
 
 
-def _rows_for_rec(rec: RunRow, data_dir: Path):
-    if rec.output_ref:
-        yield from iter_output_ref_rows(rec.output_ref, data_dir)
-    else:
-        yield from json.loads(rec.data_json or "[]")
-
-
 def _rec_row_count(rec: RunRow) -> int:
     if rec.output_ref:
         return count_output_ref_rows(rec.output_ref)
@@ -423,33 +416,20 @@ async def _logical_rows_page(session: AsyncSession, run_id: int, node_id: str, s
             return rows
         for rec in recs:
             last_idx = rec.row_idx
-            for row in _rows_for_rec(rec, settings.data_dir):
+            for row in rows_for_rec(rec, settings.data_dir):
                 if skipped < offset:
                     skipped += 1
                     continue
                 rows.append(strip_trace_row(row))
                 if len(rows) >= limit:
                     return rows
-    return rows
 
 
 async def _iter_done_rows(session_factory, run_id: int, node_id: str, *,
                           batch_size: int = 500):
-    last_idx = -1
-    while True:
-        async with session_factory() as s:
-            recs = (await s.execute(select(RunRow).where(
-                RunRow.run_id == run_id,
-                RunRow.node_id == node_id,
-                RunRow.status == "done",
-                RunRow.row_idx > last_idx,
-            ).order_by(RunRow.row_idx).limit(batch_size))).scalars().all()
-        if not recs:
-            return
-        for rec in recs:
-            last_idx = rec.row_idx
-            for row in _rows_for_rec(rec, settings.data_dir):
-                yield strip_trace_row(row)
+    async for row in iter_node_done_rows(session_factory, run_id, node_id,
+                                         data_dir=settings.data_dir, batch_size=batch_size):
+        yield strip_trace_row(row)
 
 
 async def _iter_columns(session_factory, run_id: int, node_id: str) -> list[str]:

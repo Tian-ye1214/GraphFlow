@@ -17,8 +17,8 @@ from app.models import (Dataset, ModelConfig, Prompt, PromptVersion, QcFailure, 
                         RunLog, RunNodeState, RunRow, WorkflowVersion)
 from app.services.dataset_store import _iter_dataset_rows, ensure_dataset_materialized
 from app.services.model_log import forget_run, log_context, prune_run_model_logs
-from app.services.run_artifacts import (ArtifactWriter, iter_output_ref_rows,
-                                        register_artifact_as_dataset)
+from app.services.run_artifacts import (ArtifactWriter, iter_node_done_rows,
+                                        register_artifact_as_dataset, rows_for_rec)
 from app.services.trace import (TRACE_KEYS, attach_child_trace, attach_root_trace, row_trace_id,
                                 strip_trace_rows)
 
@@ -199,7 +199,7 @@ async def _node_outputs(session_factory, run_id, node_id, *, include_trace: bool
         )).scalars().all()
     out: list[dict] = []
     for r in recs:
-        out.extend(_rows_for_rec(r))
+        out.extend(rows_for_rec(r, settings.data_dir))
     return out if include_trace else strip_trace_rows(out)
 
 
@@ -211,15 +211,8 @@ async def _batch_outputs(session_factory, run_id, node_id, lo: int, hi: int) -> 
             RunRow.row_idx >= lo, RunRow.row_idx < hi).order_by(RunRow.row_idx))).scalars().all()
     out: list[dict] = []
     for r in recs:
-        out.extend(_rows_for_rec(r))
+        out.extend(rows_for_rec(r, settings.data_dir))
     return out
-
-
-def _rows_for_rec(rec: RunRow):
-    if rec.output_ref:
-        yield from iter_output_ref_rows(rec.output_ref, settings.data_dir)
-    else:
-        yield from json.loads(rec.data_json or "[]")
 
 
 async def _node_inputs(session_factory, run_id, graph: Graph, node: Node) -> list[dict]:
@@ -234,21 +227,8 @@ async def _node_inputs(session_factory, run_id, graph: Graph, node: Node) -> lis
 
 
 async def _node_output_iter(session_factory, run_id, node_id, *, include_trace: bool = True):
-    last_idx = -1
-    while True:
-        async with session_factory() as s:
-            recs = (await s.execute(select(RunRow).where(
-                RunRow.run_id == run_id,
-                RunRow.node_id == node_id,
-                RunRow.status == "done",
-                RunRow.row_idx > last_idx,
-            ).order_by(RunRow.row_idx).limit(500))).scalars().all()
-        if not recs:
-            return
-        for rec in recs:
-            last_idx = rec.row_idx
-            for row in _rows_for_rec(rec):
-                yield row if include_trace else strip_trace_rows([row])[0]
+    async for row in iter_node_done_rows(session_factory, run_id, node_id, data_dir=settings.data_dir):
+        yield row if include_trace else strip_trace_rows([row])[0]
 
 
 async def _node_input_iter(session_factory, run_id, graph: Graph, node: Node):
@@ -302,6 +282,10 @@ def _merge_branches(node_id: str, branches: list[list[dict]]) -> list[dict]:
 
 
 _INLINE_ROW_LIMIT = 1000
+
+# input/output 逐行落库时，进度态(RunNodeState)每 N 行才提交一次：进度态仅供 UI 进度条、续跑从不读它
+# （续跑读 RunRow.status），逐行提交纯属浪费（每行 1 个 WAL 事务+SSE）。收尾恒精确置终态，保证最终计数无误。
+_PROGRESS_EVERY = 200
 
 
 async def _write_unit(session_factory, run_id, node_id, row_idx, status, out_rows, error,
@@ -370,7 +354,7 @@ async def _run_barrier_node(session_factory, run_id, user_id, node: Node, inputs
         return  # 断点续跑：单元已完成；补写状态以修复「单元已写、状态未写」的崩溃窗口
     await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running", total=1, done=0, failed=0)
     try:
-        out = await _barrier_output(session_factory, user_id, node, inputs, run_id=run_id)
+        out = await _barrier_output(node, inputs)
     except Exception as e:
         await _write_unit(session_factory, run_id, node.id, row_idx, "failed", [], str(e))
         await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="failed", total=1, done=0, failed=1)
@@ -413,58 +397,21 @@ async def _run_input_node(session_factory, run_id, user_id, node: Node):
                 await _write_unit(session_factory, run_id, node.id, row_idx, "done", traced, "",
                                   file_row=row_idx + 1)
                 done += 1
-                await _set_node_state(session_factory, run_id, node.id, user_id=user_id,
-                                      status="running", total=total, done=done, failed=0)
+                if done % _PROGRESS_EVERY == 0:
+                    await _set_node_state(session_factory, run_id, node.id, user_id=user_id,
+                                          status="running", total=total, done=done, failed=0)
             row_idx += 1
     await _set_node_state(session_factory, run_id, node.id, user_id=user_id,
                           status="done", total=total, done=done, failed=0)
 
 
 async def _run_output_node(session_factory, run_id, user_id, node: Node, inputs):
-    cfg = node.config
-    limit = cfg.get("count") or len(inputs)
-    total = min(len(inputs), limit)
-    async with session_factory() as s:
-        existing = set((await s.execute(select(RunRow.row_idx).where(
-            RunRow.run_id == run_id, RunRow.node_id == node.id, RunRow.status == "done"
-        ))).scalars().all())
-    if len(existing) >= total:
-        await _set_node_state(session_factory, run_id, node.id, user_id=user_id,
-                              status="done", total=total, done=total, failed=0)
-        return
-    await _set_node_state(session_factory, run_id, node.id, user_id=user_id,
-                          status="running", total=total, done=len(existing), failed=0)
-    drop = set(cfg.get("drop_columns") or [])
-    writer = None
-    done = len(existing)
-    try:
-        if cfg.get("save_as_dataset"):
-            writer = ArtifactWriter(settings.data_dir, run_id=run_id, node_id=node.id, columns=[])
-        for row_idx, row in enumerate(inputs[:total]):
-            if row_idx in existing:
-                continue
-            out = {k: v for k, v in row.items() if k not in drop} if drop else dict(row)
-            await _write_unit(session_factory, run_id, node.id, row_idx, "done", [out], "",
-                              drop=node.config.get("drop_columns"), file_row=row_idx + 1)
-            if writer is not None:
-                writer.append(row_idx + 1, strip_trace_rows([out]))
-            done += 1
-            await _set_node_state(session_factory, run_id, node.id, user_id=user_id,
-                                  status="running", total=total, done=done, failed=0)
-        if writer is not None:
-            artifact = writer.close()
-            async with session_factory() as s:
-                await register_artifact_as_dataset(
-                    s, user_id=user_id, name=cfg.get("dataset_name", "运行结果"),
-                    source_artifact=artifact, data_dir=settings.data_dir,
-                    run_id=run_id, node_id=node.id)
-    except Exception as e:
-        await _write_unit(session_factory, run_id, node.id, done, "failed", [], str(e))
-        await _set_node_state(session_factory, run_id, node.id, user_id=user_id,
-                              status="failed", total=total, done=done, failed=1)
-        raise
-    await _set_node_state(session_factory, run_id, node.id, user_id=user_id,
-                          status="done", total=total, done=done, failed=0)
+    """批级 output（生成循环用物化列表喂入）：复用流式实现，避免两份近重复的输出写入逻辑。
+    列表包装成异步迭代器即可——count 截断/续跑跳过/save_as_dataset 全由 _run_output_stream_node 统一处理。"""
+    async def _aiter():
+        for row in inputs:
+            yield row
+    await _run_output_stream_node(session_factory, run_id, user_id, node, _aiter())
 
 
 async def _run_output_stream_node(session_factory, run_id, user_id, node: Node, inputs):
@@ -495,8 +442,9 @@ async def _run_output_stream_node(session_factory, run_id, user_id, node: Node, 
             if writer is not None:
                 writer.append(row_idx + 1, strip_trace_rows([out]))
             done += 1
-            await _set_node_state(session_factory, run_id, node.id, user_id=user_id,
-                                  status="running", total=total, done=done, failed=0)
+            if done % _PROGRESS_EVERY == 0:
+                await _set_node_state(session_factory, run_id, node.id, user_id=user_id,
+                                      status="running", total=total, done=done, failed=0)
         if writer is not None:
             artifact = writer.close()
             async with session_factory() as s:
@@ -513,42 +461,11 @@ async def _run_output_stream_node(session_factory, run_id, user_id, node: Node, 
                           status="done", total=total, done=done, failed=0)
 
 
-async def _barrier_output(session_factory, user_id, node: Node, inputs, run_id: int | None = None) -> list[dict]:
-    cfg = node.config
-    if node.type == "input":
-        rows: list[dict] = []
-        async with session_factory() as s:
-            for ds_id in cfg.get("dataset_ids", []):
-                ds = await s.get(Dataset, ds_id)
-                if ds is None or ds.user_id != user_id:
-                    continue
-                ds = await ensure_dataset_materialized(s, ds, settings.data_dir)
-                rows.extend(row for _, row in _iter_dataset_rows(ds, settings.data_dir))
-        return attach_root_trace(rows, run_id=run_id or 0, node_id=node.id)
+async def _barrier_output(node: Node, inputs) -> list[dict]:
+    # input/output 已分别在 _run_barrier_node 入口转去 _run_input_node/_run_output_node，本函数只剩 auto_process。
     if node.type == "auto_process":
         return await nodes.apply_operations_with_agent(
-            inputs, cfg.get("operations", []), seed=cfg.get("seed"))
-    if node.type == "output":
-        # 先按 drop_columns 剔列，使 save_as_dataset 落库数据集与节点 RunRow 输出/声明血缘一致——
-        # 被标记删除的列不应泄漏进最终训练数据集。（_write_unit 之后会再 drop 一次，幂等无害。）
-        drop = set(cfg.get("drop_columns") or [])
-        out = [{k: v for k, v in r.items() if k not in drop} for r in inputs] if drop else inputs
-        if cfg.get("count"):                       # 产量封顶：合成已早停，此处把最终输出截到精确 ≤count
-            out = out[:cfg["count"]]
-        if cfg.get("save_as_dataset"):
-            export_rows = strip_trace_rows(out)
-            columns = ordered_union([list(row) for row in export_rows])
-            writer = ArtifactWriter(settings.data_dir, run_id=run_id or 0, node_id=node.id,
-                                    columns=columns)
-            for idx, row in enumerate(export_rows, start=1):
-                writer.append(idx, [row])
-            artifact = writer.close()
-            async with session_factory() as s:
-                await register_artifact_as_dataset(
-                    s, user_id=user_id, name=cfg.get("dataset_name", "运行结果"),
-                    source_artifact=artifact, data_dir=settings.data_dir,
-                    run_id=run_id, node_id=node.id)
-        return out
+            inputs, node.config.get("operations", []), seed=node.config.get("seed"))
     raise ValueError(f"未知节点类型: {node.type}")
 
 
@@ -581,52 +498,33 @@ async def _run_per_row_node(session_factory, run_id, user_id, node: Node, inputs
     done_count, failed_count = len(done_idx), len(failed_idx)
     await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running",
                           total=total, done=done_count, failed=failed_count)
-    node_sem = asyncio.Semaphore(cfg.get("concurrency", 4))
 
     async def work(i: int):
         nonlocal done_count, failed_count
-        async with node_sem:
-            if cancel_event.is_set():
-                return
-            trace_id = row_trace_id(inputs[i])
-            ctx = (log_context(run_id=run_id, node_id=node.id, user_id=user_id,
-                               source=log_source, trace_id=trace_id)
-                   if log_source else nullcontext())
-            try:
-                with ctx:
-                    out_rows, usage = await _cancellable(row_coro(i), cancel_event)
-            except asyncio.CancelledError:
-                return  # 硬中断：在途请求已 abort，该行不落库（保持 pending）
-            except Exception as e:
-                await _write_unit(session_factory, run_id, node.id, row_base + i, "failed", [], str(e),
-                                  trace_id=trace_id)
-                failed_count += 1
-            else:
-                out_rows = attach_child_trace(inputs[i], out_rows, node_id=node.id, row_idx=row_base + i)
-                await _write_unit(session_factory, run_id, node.id, row_base + i, "done", out_rows, "",
-                                  usage=usage, drop=cfg.get("drop_columns"))
-                done_count += 1
-            await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running",
-                                  total=total, done=done_count, failed=failed_count)
+        if cancel_event.is_set():
+            return
+        trace_id = row_trace_id(inputs[i])
+        ctx = (log_context(run_id=run_id, node_id=node.id, user_id=user_id,
+                           source=log_source, trace_id=trace_id)
+               if log_source else nullcontext())
+        try:
+            with ctx:
+                out_rows, usage = await _cancellable(row_coro(i), cancel_event)
+        except asyncio.CancelledError:
+            return  # 硬中断：在途请求已 abort，该行不落库（保持 pending）
+        except Exception as e:
+            await _write_unit(session_factory, run_id, node.id, row_base + i, "failed", [], str(e),
+                              trace_id=trace_id)
+            failed_count += 1
+        else:
+            out_rows = attach_child_trace(inputs[i], out_rows, node_id=node.id, row_idx=row_base + i)
+            await _write_unit(session_factory, run_id, node.id, row_base + i, "done", out_rows, "",
+                              usage=usage, drop=cfg.get("drop_columns"))
+            done_count += 1
+        await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running",
+                              total=total, done=done_count, failed=failed_count)
 
-    queue: asyncio.Queue[int] = asyncio.Queue()
-    for i in todo:
-        queue.put_nowait(i)
-
-    async def worker():
-        while True:
-            try:
-                i = queue.get_nowait()
-            except asyncio.QueueEmpty:
-                return
-            try:
-                await work(i)
-            finally:
-                queue.task_done()
-
-    workers = [asyncio.create_task(worker()) for _ in range(min(cfg.get("concurrency", 4), len(todo)))]
-    if workers:
-        await asyncio.gather(*workers)
+    await _bounded_map(todo, cfg.get("concurrency", 4), work)   # 节点内有界并发；concurrency 即 worker 数
     if finalize_state and not cancel_event.is_set():
         await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="done",
                               total=total, done=done_count, failed=failed_count)
@@ -790,7 +688,8 @@ async def _bounded_map(items: list, limit: int, fn):
             finally:
                 queue.task_done()
 
-    workers = [asyncio.create_task(worker()) for _ in range(min(limit, len(items)))]
+    # max(1, ...)：concurrency<=0 误配时仍至少 1 个 worker，否则队列永不消费→静默丢数据/全 None。
+    workers = [asyncio.create_task(worker()) for _ in range(min(max(1, limit), len(items)))]
     if workers:
         await asyncio.gather(*workers)
     return results
@@ -801,14 +700,12 @@ async def _qc_judge_batch(session_factory, run_id, user_id, node: Node, rows, jm
     """一轮 K-of-N 质检判定（单点，供单遍 QC 与无输入生成循环共用）。
     返回 (通过行, 不通过行, usage 汇总, 通过数)。逐行隔离、硬中断沿用。"""
     cfg = node.config
-    sem = asyncio.Semaphore(cfg.get("concurrency", 4))
 
     async def judge(row):
-        async with sem:
-            with log_context(run_id=run_id, node_id=node.id, user_id=user_id,
-                             source="qc", trace_id=row_trace_id(row)):
-                return await _cancellable(
-                    nodes.run_qc_judge_row(cfg, row, jmcs, pass_k, user_sem), cancel_event)
+        with log_context(run_id=run_id, node_id=node.id, user_id=user_id,
+                         source="qc", trace_id=row_trace_id(row)):
+            return await _cancellable(
+                nodes.run_qc_judge_row(cfg, row, jmcs, pass_k, user_sem), cancel_event)
 
     usage = nodes.zero_usage()
     passed, failed = [], []
@@ -910,15 +807,13 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
                 tmc = await s.get(ModelConfig, tgt.config.get("model_config_id"))
             if tmc is None or tmc.user_id != user_id:
                 raise ValueError(f"回扫目标 {target_id}: 模型配置不存在")
-            rsem = asyncio.Semaphore(tgt.config.get("concurrency", 4))
             regen_cfg = {**tgt.config, "fanout_n": 1}  # 回扫一行换一行，不套用 fanout：否则产物翻倍、failed 计负
 
             async def regen(row):
-                async with rsem:
-                    with log_context(run_id=run_id, node_id=target_id, user_id=user_id,
-                                     source="synth", trace_id=row_trace_id(row)):
-                        return await _cancellable(
-                            nodes.run_llm_synth_row(regen_cfg, row, tmc, user_sem), cancel_event)
+                with log_context(run_id=run_id, node_id=target_id, user_id=user_id,
+                                 source="synth", trace_id=row_trace_id(row)):
+                    return await _cancellable(
+                        nodes.run_llm_synth_row(regen_cfg, row, tmc, user_sem), cancel_event)
 
             while failed and rounds < cfg.get("max_rounds", 3):
                 rounds += 1

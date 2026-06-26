@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app import crypto
 from app.engine import runner
@@ -359,6 +359,52 @@ async def test_output_save_as_dataset(session_factory, monkeypatch):
     async with session_factory() as s:
         ds = (await s.execute(select(Dataset).where(Dataset.name == "结果集"))).scalar_one()
     assert ds.source == "run" and ds.row_count == 3
+
+
+async def test_bounded_map_processes_all_when_limit_zero():
+    # concurrency<=0 必须仍逐个处理全部项（钳到至少 1 个 worker），不能静默返回全 None 丢数据
+    seen = []
+
+    async def fn(x):
+        seen.append(x)
+        return x * 2
+
+    out = await runner._bounded_map([1, 2, 3], 0, fn)
+    assert out == [2, 4, 6]
+    assert sorted(seen) == [1, 2, 3]
+
+
+async def test_per_row_node_concurrency_zero_processes_all_rows(session_factory, monkeypatch):
+    # concurrency=0 误配：旧实现 worker 数=0 → 队列永不消费 → 节点误标 done(done=0) 静默丢数据。
+    patch_chat(monkeypatch)
+    graph = json.loads(json.dumps(GRAPH))
+    for n in graph["nodes"]:
+        if n["type"] == "llm_synth":
+            n["config"]["concurrency"] = 0
+    run_id = await make_run(session_factory, graph, rows=3)
+    await run_it(session_factory, run_id)
+    assert (await get_run(session_factory, run_id)).status == "completed"
+    async with session_factory() as s:
+        gen = (await s.execute(select(RunNodeState).where(
+            RunNodeState.run_id == run_id, RunNodeState.node_id == "gen"))).scalar_one()
+        out_rows = (await s.execute(select(func.count()).select_from(RunRow).where(
+            RunRow.run_id == run_id, RunRow.node_id == "out", RunRow.status == "done"))).scalar()
+    assert gen.status == "done" and gen.done == 3 and gen.failed == 0
+    assert out_rows == 3
+
+
+async def test_input_output_final_state_exact_with_throttled_progress(session_factory, monkeypatch):
+    # 进度态(RunNodeState)逐行提交已节流为每 _PROGRESS_EVERY 行一次；收尾必须仍精确置终态：
+    # done==total 即使行数不是 _PROGRESS_EVERY 的整数倍（这里 3 行 < 200，循环内零次提交，全靠收尾）。
+    patch_chat(monkeypatch)
+    run_id = await make_run(session_factory, rows=3)
+    await run_it(session_factory, run_id)
+    async with session_factory() as s:
+        states = {ns.node_id: ns for ns in (await s.execute(select(RunNodeState).where(
+            RunNodeState.run_id == run_id))).scalars().all()}
+    for nid in ("in", "out"):
+        assert states[nid].status == "done"
+        assert states[nid].done == states[nid].total == 3 and states[nid].failed == 0
 
 
 async def test_barrier_crash_window_repairs_state(session_factory, monkeypatch):
