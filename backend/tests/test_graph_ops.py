@@ -63,3 +63,70 @@ def test_disconnect_removes_and_missing_raises():
     assert g["edges"] == []
     with pytest.raises(go.GraphOpError):
         go.disconnect(g, "a", "b")
+
+
+def _node(t="llm_synth"):
+    return {"id": "n", "type": t, "config": {}}
+
+
+def test_apply_llm_config_and_params():
+    n = _node()
+    go.apply_node_config(n, "prompt", "你好 {{q}}")
+    go.apply_node_config(n, "out", "ans")
+    go.apply_node_config(n, "fanout", "2")
+    go.apply_node_config(n, "temp", "0.7")
+    c = n["config"]
+    assert c["user_prompt"] == "你好 {{q}}" and c["output_column"] == "ans"
+    assert c["fanout_n"] == 2 and c["params"]["temperature"] == 0.7
+
+
+def test_apply_resolve_keys_expect_ids():
+    n = _node()
+    go.apply_node_config(n, "model", 7)            # 已解析 id
+    go.apply_node_config(n, "dataset", [3, 4])     # 已解析 id 列表
+    assert n["config"]["model_config_id"] == 7 and n["config"]["dataset_ids"] == [3, 4]
+
+
+def test_apply_extract_dict_or_string():
+    n = _node("http_fetch")
+    go.apply_node_config(n, "extract", "who:name,yr:age")
+    assert n["config"]["extract"] == {"who": "name", "yr": "age"}
+    go.apply_node_config(n, "extract", {"x": "y"})  # dict 直接用
+    assert n["config"]["extract"] == {"x": "y"}
+
+
+def test_apply_count_empty_means_none():
+    n = _node("output")
+    go.apply_node_config(n, "count", "5")
+    assert n["config"]["count"] == 5
+    go.apply_node_config(n, "count", "")
+    assert n["config"]["count"] is None
+
+
+def test_apply_think_and_unknown_key():
+    n = _node()
+    go.apply_node_config(n, "think", "on")
+    assert n["config"]["params"]["thinking_enabled"] is True
+    with pytest.raises(go.GraphOpError, match="未知配置键"):
+        go.apply_node_config(n, "nope", "x")
+
+
+def test_add_and_remove_op():
+    n = _node("auto_process")
+    op = go.add_op(n, "dedup", ["q,a"])
+    assert op == {"op": "dedup", "columns": ["q", "a"]}
+    assert n["config"]["operations"] == [op]
+    removed = go.remove_op(n, 1)
+    assert removed["op"] == "dedup" and n["config"]["operations"] == []
+
+
+def test_add_op_non_auto_raises():
+    with pytest.raises(go.GraphOpError, match="auto"):
+        go.add_op(_node("llm_synth"), "shuffle", [])
+
+
+def test_remove_op_index_out_of_range():
+    n = _node("auto_process")
+    go.add_op(n, "shuffle", [])
+    with pytest.raises(go.GraphOpError, match="序号"):
+        go.remove_op(n, 5)
