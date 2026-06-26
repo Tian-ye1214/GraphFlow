@@ -894,10 +894,37 @@ function HttpFetchForm({ config, onChange, workflowId, nodeId, inputCols }: Form
           </>
         ) },
         { key: 'extract', label: '提取', children: (
-          <Field label="提取（响应 JSON 路径 → 输出列；如 temp ← data.temp）">
-            <KvEditor pairs={config.extract ?? {}} onChange={(e) => patch({ extract: e })}
-                      keyPlaceholder="输出列名" valPlaceholder="JSON 路径 如 data.weather.0.desc" />
-          </Field>
+          <>
+            <Field label="提取（响应 JSON 路径 → 输出列；如 temp ← data.temp）">
+              <KvEditor pairs={config.extract ?? {}} onChange={(e) => patch({ extract: e })}
+                        keyPlaceholder="输出列名" valPlaceholder="JSON 路径 如 data.weather.0.desc" />
+            </Field>
+            <Field label="展开数组成多行（可选）：填了即把该路径下的数组每个元素摊成一行，上方提取路径相对每个元素">
+              <Input value={config.records_path ?? ''}
+                     placeholder="数组 JSON 路径 如 data.items（留空=不展开）"
+                     onChange={(e) => patch({ records_path: e.target.value || undefined })} />
+            </Field>
+          </>
+        ) },
+        { key: 'poll', label: '轮询（异步任务等待；留空状态路径=不轮询）', children: (
+          <>
+            <Field label="状态字段路径：反复发同一请求，直到此 JSON 路径的值达「完成值」">
+              <Input value={config.poll_status_path ?? ''}
+                     placeholder="状态字段 JSON 路径 如 status"
+                     onChange={(e) => patch({ poll_status_path: e.target.value || undefined })} />
+            </Field>
+            <Field label="完成值（状态字段等于它即停止轮询）">
+              <Input value={config.poll_until ?? ''}
+                     placeholder="如 completed / done"
+                     onChange={(e) => patch({ poll_until: e.target.value || undefined })} />
+            </Field>
+            <Space wrap>
+              <Field label="轮询间隔(秒)"><InputNumber min={0} value={config.poll_interval ?? 2}
+                onChange={(v) => patch({ poll_interval: v ?? 2 })} /></Field>
+              <Field label="轮询次数上限"><InputNumber min={1} value={config.poll_max_attempts ?? 30}
+                onChange={(v) => patch({ poll_max_attempts: v ?? 30 })} /></Field>
+            </Space>
+          </>
         ) },
         { key: 'advanced', label: '高级（请求头 / 并发 / 重试 / 超时）', children: (
           <>
@@ -908,7 +935,7 @@ function HttpFetchForm({ config, onChange, workflowId, nodeId, inputCols }: Form
             <Space wrap>
               <Field label="节点并发"><InputNumber min={1} value={config.concurrency ?? 4}
                 onChange={(v) => patch({ concurrency: v ?? 4 })} /></Field>
-              <Field label="重试次数"><InputNumber min={0} value={config.retries ?? 2}
+              <Field label="重试次数（单次请求传输层失败重试，与轮询次数不同）"><InputNumber min={0} value={config.retries ?? 2}
                 onChange={(v) => patch({ retries: v ?? 2 })} /></Field>
               <Field label="超时(秒)"><InputNumber min={1} value={config.timeout ?? 30}
                 onChange={(v) => patch({ timeout: v ?? 30 })} /></Field>

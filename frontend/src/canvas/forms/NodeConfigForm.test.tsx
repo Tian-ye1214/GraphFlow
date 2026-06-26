@@ -371,3 +371,31 @@ describe('NodeConfigForm thinking params', () => {
     })
   })
 })
+
+describe('HttpFetchForm 轮询与展开', () => {
+  it('展示轮询字段，编辑写入 poll_status_path', async () => {
+    mockNodeConfigApis({ http_node: { input: ['id'], output: ['id'] } })
+    const onChange = vi.fn()
+    render(
+      <NodeConfigForm type="http_fetch" workflowId={301} nodeId="http_node"
+        config={{ url: 'http://x' }} onChange={onChange} />,
+    )
+    fireEvent.click(await screen.findByText('轮询（异步任务等待；留空状态路径=不轮询）'))
+    const input = screen.getByPlaceholderText('状态字段 JSON 路径 如 status')
+    fireEvent.change(input, { target: { value: 'status' } })
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ poll_status_path: 'status' }))
+  })
+
+  it('展示 records_path，编辑写入 records_path', async () => {
+    mockNodeConfigApis({ http_node: { input: ['id'], output: ['id'] } })
+    const onChange = vi.fn()
+    render(
+      <NodeConfigForm type="http_fetch" workflowId={301} nodeId="http_node"
+        config={{ url: 'http://x' }} onChange={onChange} />,
+    )
+    fireEvent.click(await screen.findByText('提取'))
+    const input = screen.getByPlaceholderText('数组 JSON 路径 如 data.items（留空=不展开）')
+    fireEvent.change(input, { target: { value: 'items' } })
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ records_path: 'items' }))
+  })
+})
