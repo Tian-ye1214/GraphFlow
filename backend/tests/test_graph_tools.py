@@ -108,3 +108,60 @@ async def test_set_node_prompt_inline(session_factory):
     await GraphToolkit(sf, uid).set_node_prompt(wf_id, "g", "user", body="翻译 {{q}}")
     cfg = next(n for n in (await _graph(sf, wf_id))["nodes"] if n["id"] == "g")["config"]
     assert cfg["user_prompt"] == "翻译 {{q}}"
+
+
+async def test_list_and_show(session_factory):
+    sf = session_factory
+    g = {"nodes": [{"id": "in", "type": "input", "config": {"dataset_ids": []}},
+                   {"id": "o", "type": "output", "config": {}}],
+         "edges": [{"source": "in", "target": "o", "kind": "normal"}]}
+    uid, wf_id = await _seed(sf, g)
+    tk = GraphToolkit(sf, uid)
+    lst = json.loads(await tk.list_workflows())
+    assert any(w["id"] == wf_id and w["name"] == "链路A" for w in lst["rows"])
+    shown = json.loads(await tk.show_workflow_graph(wf_id))
+    assert {n["id"] for n in shown["rows"]} == {"in", "o"}
+    assert len(shown["edges"]) == 1
+
+
+async def test_show_cross_tenant(session_factory):
+    sf = session_factory
+    uid, wf_id = await _seed(sf)
+    out = json.loads(await GraphToolkit(sf, uid + 999).show_workflow_graph(wf_id))
+    assert out.get("error") == "workflow_not_found"
+
+
+async def test_list_node_ops(session_factory):
+    sf = session_factory
+    g = {"nodes": [{"id": "p", "type": "auto_process",
+                    "config": {"operations": [{"op": "shuffle"}]}}], "edges": []}
+    uid, wf_id = await _seed(sf, g)
+    out = json.loads(await GraphToolkit(sf, uid).list_node_ops(wf_id, "p"))
+    assert out["rows"][0]["op"] == "shuffle"
+
+
+async def test_workflow_columns_tool(session_factory):
+    sf = session_factory
+    # input(dataset 集A 含列 q) -> llm(产出 a) 的列血缘：llm 输入含 q、输出含 a
+    g = {"nodes": [{"id": "in", "type": "input", "config": {"dataset_ids": []}},
+                   {"id": "g", "type": "llm_synth", "config": {"output_column": "a"}}],
+         "edges": [{"source": "in", "target": "g", "kind": "normal"}]}
+    uid, wf_id = await _seed(sf, g)
+    async with sf() as s:                              # 把 input 的 dataset_ids 指到真实的「集A」
+        ds = (await s.execute(
+            select(Dataset).where(Dataset.user_id == uid, Dataset.name == "集A"))).scalars().first()
+        wf = await s.get(Workflow, wf_id)
+        graph = json.loads(wf.graph_json)
+        graph["nodes"][0]["config"]["dataset_ids"] = [ds.id]
+        wf.graph_json = json.dumps(graph)
+        await s.commit()
+    out = json.loads(await GraphToolkit(sf, uid).workflow_columns(wf_id, "g"))
+    row = out["rows"][0]
+    assert row["node_id"] == "g" and "q" in row["input"] and "a" in row["output"]
+
+
+async def test_workflow_columns_cross_tenant(session_factory):
+    sf = session_factory
+    uid, wf_id = await _seed(sf)
+    out = json.loads(await GraphToolkit(sf, uid + 999).workflow_columns(wf_id))
+    assert out.get("error") == "workflow_not_found"

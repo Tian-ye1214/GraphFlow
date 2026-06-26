@@ -6,6 +6,10 @@ import json
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.agent.data_preview import _fit_budget
+from app.agent.node_info import _summarize_node
+from app.engine.columns import propagate_columns, resolve_dataset_cols
+from app.engine.graph import GraphError, parse_graph, validate_graph
 from app.events import publish
 from app.models import Workflow
 from app.services import graph_ops as go
@@ -216,8 +220,82 @@ class GraphToolkit:
             return f"已删除操作: {go.OP_LABELS.get(removed['op'], removed['op'])}"
         return await self._mutate(workflow_id, fn)
 
+    async def list_workflows(self) -> str:
+        """列本租户全部工作流(id/名)。先用它拿到 workflow_id 再做后续操作。"""
+        async with self._sf() as s:
+            recs = (await s.execute(select(Workflow).where(Workflow.user_id == self._uid)
+                                    .order_by(Workflow.id.desc()))).scalars().all()
+            return json.dumps(_fit_budget(
+                {"rows": [{"id": w.id, "name": w.name} for w in recs]}), ensure_ascii=False)
+
+    async def show_workflow_graph(self, workflow_id: int) -> str:
+        """看某工作流的图：所有节点(id/类型/关键配置摘要含提示词)与连线(普通/回扫)。
+        Parameters:
+            workflow_id: 工作流 id
+        """
+        async with self._sf() as s:
+            wf = await self._owned(s, workflow_id)
+            if wf is None:
+                return json.dumps({"error": "workflow_not_found"}, ensure_ascii=False)
+            try:
+                graph = parse_graph(wf.graph_json)
+            except Exception:
+                return json.dumps({"error": "graph_unparseable"}, ensure_ascii=False)
+            nodes = [{"id": n.id, "type": n.type, "config": _summarize_node(n)} for n in graph.nodes]
+            edges = [{"source": e["source"], "target": e["target"], "kind": e["kind"]}
+                     for e in graph.edges]
+            return json.dumps(_fit_budget(
+                {"workflow_name": wf.name, "rows": nodes, "edges": edges}, key="rows"),
+                ensure_ascii=False)
+
+    async def workflow_columns(self, workflow_id: int, node_id: str | None = None) -> str:
+        """看工作流列血缘：各节点的输入列与输出列（据此知道某节点能引用哪些 {{列}}、产出什么列）。
+        草稿态/脏图无法计算列血缘时返回 graph_invalid。
+        Parameters:
+            workflow_id: 工作流 id
+            node_id: 可选，仅看某个节点
+        """
+        async with self._sf() as s:
+            wf = await self._owned(s, workflow_id)
+            if wf is None:
+                return json.dumps({"error": "workflow_not_found"}, ensure_ascii=False)
+            try:
+                graph = parse_graph(wf.graph_json)
+                validate_graph(graph)
+                dataset_cols = await resolve_dataset_cols(s, graph, self._uid)
+                cols = propagate_columns(graph, dataset_cols)
+            except (GraphError, AttributeError, TypeError, KeyError) as e:
+                return json.dumps({"error": "graph_invalid", "detail": str(e)}, ensure_ascii=False)
+            if node_id is not None:
+                if node_id not in cols:
+                    return json.dumps({"error": "node_not_found"}, ensure_ascii=False)
+                cols = {node_id: cols[node_id]}
+            rows = [{"node_id": nid, "input": io["input"], "output": io["output"]}
+                    for nid, io in cols.items()]
+            return json.dumps(_fit_budget({"rows": rows}), ensure_ascii=False)
+
+    async def list_node_ops(self, workflow_id: int, node_id: str) -> str:
+        """列自动处理节点的操作序列。
+        Parameters:
+            workflow_id: 工作流 id
+            node_id: auto_process 节点 id
+        """
+        async with self._sf() as s:
+            wf = await self._owned(s, workflow_id)
+            if wf is None:
+                return json.dumps({"error": "workflow_not_found"}, ensure_ascii=False)
+            graph = json.loads(wf.graph_json)
+            try:
+                node = go.find_node(graph, node_id)
+            except go.GraphOpError:
+                return json.dumps({"error": "node_not_found"}, ensure_ascii=False)
+            ops = node.get("config", {}).get("operations", [])
+            return json.dumps({"rows": ops}, ensure_ascii=False)
+
     @property
     def tools(self) -> list:
-        return [self.create_workflow, self.rename_workflow, self.delete_workflow,
+        return [self.list_workflows, self.show_workflow_graph, self.workflow_columns,
+                self.list_node_ops,
+                self.create_workflow, self.rename_workflow, self.delete_workflow,
                 self.add_node, self.remove_node, self.connect_nodes, self.disconnect_nodes,
                 self.set_node_config, self.set_node_prompt, self.add_node_op, self.remove_node_op]
