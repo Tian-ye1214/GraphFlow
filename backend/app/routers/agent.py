@@ -173,6 +173,19 @@ async def stop_session(sid: int, user: User = Depends(get_current_user),
     return {"ok": True}
 
 
+@router.post("/sessions/{sid}/interrupt")
+async def interrupt_session(sid: int, user: User = Depends(get_current_user),
+                            session: AsyncSession = Depends(get_session)):
+    await _get_owned(sid, user, session)
+    interrupted = turn_manager.cancel(sid)
+    if interrupted:   # 仅在确实打断了一个在跑的回合时落 marker（避免对已空闲会话写多余消息）
+        session.add(AgentMessage(session_id=sid, role="assistant",
+                                 content_json=json.dumps({"text": "（已被用户打断）"}, ensure_ascii=False)))
+        await session.commit()
+        publish(user.id, "agent", sid, kind="message")
+    return {"ok": True, "interrupted": interrupted}
+
+
 class GoalIn(BaseModel):
     workflow_id: int
     goal_text: str
