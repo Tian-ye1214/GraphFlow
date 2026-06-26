@@ -273,6 +273,41 @@ async def test_http_poll_non_json_treated_as_not_ready(monkeypatch):
     assert out == [{"id": "1", "v": 1}]
 
 
+async def test_http_poll_error_never_leaks_apikey(monkeypatch):
+    """轮询超时与非 JSON 的错误文案只含 endpoint，绝不含合并 params 后的 url（api_key 在查询串里，防 token 外泄）。"""
+    async def fake_pending(method, url, headers=None, body=None, timeout=30, retries=2):
+        return 200, json.dumps({"status": "pending"})
+
+    monkeypatch.setattr("app.services.http.fetch", fake_pending)
+    cfg = {"endpoint": "http://job", "params": {"api_key": "SECRET"},
+           "poll_status_path": "status", "poll_until": "completed",
+           "poll_interval": 0, "poll_max_attempts": 2, "extract": {"r": "result"}}
+    with pytest.raises(ValueError) as ei:
+        await nodes.run_http_fetch_row(cfg, {"id": "1"})
+    assert "SECRET" not in str(ei.value)
+
+    async def fake_nonjson(method, url, headers=None, body=None, timeout=30, retries=2):
+        return 200, "not json"
+
+    monkeypatch.setattr("app.services.http.fetch", fake_nonjson)
+    cfg2 = {"endpoint": "http://api", "params": {"api_key": "SECRET"}, "extract": {"v": "v"}}
+    with pytest.raises(ValueError) as ei2:
+        await nodes.run_http_fetch_row(cfg2, {"id": "1"})
+    assert "SECRET" not in str(ei2.value)
+
+
+async def test_http_poll_numeric_status_normalized(monkeypatch):
+    """状态字段与 poll_until 均为数字：str() 双侧归一后比较达成（锁定归一两端）。"""
+    async def fake_fetch(method, url, headers=None, body=None, timeout=30, retries=2):
+        return 200, json.dumps({"status": 2, "v": "ok"})
+
+    monkeypatch.setattr("app.services.http.fetch", fake_fetch)
+    cfg = {"url": "http://job", "poll_status_path": "status", "poll_until": 2,
+           "poll_interval": 0, "poll_max_attempts": 3, "extract": {"v": "v"}}
+    out, _ = await nodes.run_http_fetch_row(cfg, {"id": "1"})
+    assert out == [{"id": "1", "v": "ok"}]
+
+
 async def test_http_explode_records_to_rows(monkeypatch):
     """配了 records_path：数组每元素出一行，extract 相对元素取值，base 列并入每行。"""
     async def fake_fetch(method, url, headers=None, body=None, timeout=30, retries=2):
