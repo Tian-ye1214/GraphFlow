@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Button, Collapse, Input, InputNumber, Popover, Radio, Select, Space, Spin, Switch, Table, Tag } from 'antd'
 import { api } from '../../api/client'
 import type { CodegenOut, ColumnsMap, Dataset, ModelConfig, PromptDetail, PromptSummary, RowsPage } from '../../api/types'
-import { activeConversation, newConversation, sendAssist, setDraft, setModelConfigId, switchConversation, useNodeAssist } from '../../agent/nodeAssistantStore'
+import { activeConversation, cancelAssist, newConversation, sendAssist, setDraft, setModelConfigId, switchConversation, useNodeAssist } from '../../agent/nodeAssistantStore'
 import { roleLabel, ROLE_BG } from '../../agent/chatPresentation'
 import { extractTplVars, renderCell } from '../../utils'
 
@@ -408,7 +408,7 @@ function NodeAssist({ nodeType, workflowId, nodeId, config, onApply }: {
                 options={st.conversations.map((c, i) => ({ value: c.id, label: c.title || `会话 ${st.conversations.length - i}` }))} />
         <Button size="small" onClick={() => newConversation(key)}>新会话</Button>
       </Space>
-      <div style={{ maxHeight: 200, overflowY: 'auto', marginBottom: 8 }}>
+      <div style={{ height: 200, overflowY: 'auto', marginBottom: 8 }}>
         {active.messages.map((m, i) => (
           <div key={i} style={{ margin: '6px 0' }}>
             <div style={{ fontSize: 11, color: '#999' }}>{roleLabel(m.role)}</div>
@@ -427,8 +427,9 @@ function NodeAssist({ nodeType, workflowId, nodeId, config, onApply }: {
         <Select size="small" style={{ width: 150 }} placeholder="生成用模型" value={modelSel}
                 onChange={(v) => setModelConfigId(key, v)}
                 options={models.map((m) => ({ value: m.id, label: m.name }))} />
-        <Button size="small" loading={st.pending} disabled={!st.draft.trim() || !modelSel}
-                onClick={send}>发送</Button>
+        {st.pending
+          ? <Button size="small" danger onClick={() => cancelAssist(key)}>打断</Button>
+          : <Button size="small" disabled={!st.draft.trim() || !modelSel} onClick={send}>发送</Button>}
       </Space>
     </div>
   )

@@ -399,3 +399,36 @@ describe('HttpFetchForm 轮询与展开', () => {
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ records_path: 'items' }))
   })
 })
+
+describe('NodeConfigForm 节点助手打断按钮', () => {
+  it('在途时「发送」原地切换为「打断」，点击调用 stop 端点', async () => {
+    const posts = mockNodeConfigApis({ ls: { input: ['q'], output: ['q'] } })
+    // 预置 draft + 助手模型，使「发送」可点
+    persistAssistState('graphflow.nodeAssistant.v1:1:llm_synth:ls', '把 q 翻译成英文', 1)
+    // node-assist 请求挂起 → 维持 pending
+    let releaseHang: () => void = () => {}
+    const realFetch = globalThis.fetch as any
+    vi.stubGlobal('fetch', vi.fn(async (path: string, init?: RequestInit) => {
+      if (path.includes('/api/agent/node-assist/stop')) {
+        posts.push({ path, body: JSON.parse(String(init?.body ?? '{}')) })
+        return new Response(JSON.stringify({ ok: true }), { status: 200 })
+      }
+      if (path.endsWith('/api/agent/node-assist')) {
+        posts.push({ path, body: JSON.parse(String(init?.body ?? '{}')) })
+        return new Promise<Response>((resolve) => { releaseHang = () => resolve(new Response('{}', { status: 200 })) })
+      }
+      return realFetch(path, init)
+    }))
+
+    render(<NodeConfigForm type="llm_synth" workflowId={1} nodeId="ls" config={{}} onChange={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: /发\s*送/ }))
+    const interruptBtn = await screen.findByRole('button', { name: /打\s*断/ })
+    expect(interruptBtn).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /发\s*送/ })).not.toBeInTheDocument()   // 原地替换，不并存
+    fireEvent.click(interruptBtn)
+    await waitFor(() => {
+      expect(posts.some((p) => p.path.includes('/api/agent/node-assist/stop'))).toBe(true)
+    })
+    releaseHang()
+  })
+})
