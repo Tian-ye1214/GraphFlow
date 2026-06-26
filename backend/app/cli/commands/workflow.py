@@ -3,8 +3,9 @@ import re
 from pathlib import Path
 
 from app.cli import save_state
-from app.cli.client import Cli, die, find_node, summarize, NODE_TYPES, NODE_LABELS
+from app.cli.client import Cli, die, summarize, NODE_LABELS
 from app.cli.commands.node import node_actions
+from app.services import graph_ops
 
 
 def cmd_wf_ls(args):
@@ -57,23 +58,8 @@ def cmd_show(args):
 
 def cmd_node_add(args):
     cli = Cli()
-    ntype = NODE_TYPES.get(args.type)
-    if ntype is None:
-        die(f"未知节点类型 {args.type}（可选: input/llm/auto/output/qc/http）")
     wf = cli.get_wf()
-    nodes = wf["graph"]["nodes"]
-    if args.id:
-        node_id = args.id
-        if any(n["id"] == node_id for n in nodes):
-            die(f"节点 {node_id} 已存在")
-    else:
-        i = 1
-        while any(n["id"] == f"{ntype}_{i}" for n in nodes):
-            i += 1
-        node_id = f"{ntype}_{i}"
-    nodes.append({"id": node_id, "type": ntype,
-                  "position": {"x": 80 + len(nodes) * 50, "y": 80 + len(nodes) * 40},
-                  "config": {}})
+    node_id = graph_ops.add_node(wf["graph"], args.type, args.id)
     cli.put_graph(wf["id"], wf["graph"])
     print(f"已添加节点 {node_id}")
 
@@ -81,26 +67,16 @@ def cmd_node_add(args):
 def cmd_node_rm(args):
     cli = Cli()
     wf = cli.get_wf()
-    graph = wf["graph"]
-    find_node(graph, args.id)
-    graph["nodes"] = [n for n in graph["nodes"] if n["id"] != args.id]
-    graph["edges"] = [e for e in graph["edges"] if args.id not in (e["source"], e["target"])]
-    cli.put_graph(wf["id"], graph)
+    graph_ops.remove_node(wf["graph"], args.id)
+    cli.put_graph(wf["id"], wf["graph"])
     print(f"已删除节点 {args.id} 及其连线")
 
 
 def cmd_link(args):
     cli = Cli()
     wf = cli.get_wf()
-    graph = wf["graph"]
-    src = find_node(graph, args.source)
-    find_node(graph, args.target)
-    if args.kind == "rescan" and src["type"] != "qc":
-        die("rescan 回扫边必须从 qc 节点出发")
-    if any(e["source"] == args.source and e["target"] == args.target for e in graph["edges"]):
-        die("连线已存在")
-    graph["edges"].append({"source": args.source, "target": args.target, "kind": args.kind})
-    cli.put_graph(wf["id"], graph)
+    graph_ops.connect(wf["graph"], args.source, args.target, args.kind)
+    cli.put_graph(wf["id"], wf["graph"])
     arrow = "⟲回扫" if args.kind == "rescan" else "->"
     print(f"已连线 {args.source} {arrow} {args.target}")
 
@@ -108,13 +84,8 @@ def cmd_link(args):
 def cmd_unlink(args):
     cli = Cli()
     wf = cli.get_wf()
-    graph = wf["graph"]
-    before = len(graph["edges"])
-    graph["edges"] = [e for e in graph["edges"]
-                      if not (e["source"] == args.source and e["target"] == args.target)]
-    if len(graph["edges"]) == before:
-        die(f"不存在连线 {args.source} -> {args.target}")
-    cli.put_graph(wf["id"], graph)
+    graph_ops.disconnect(wf["graph"], args.source, args.target)
+    cli.put_graph(wf["id"], wf["graph"])
     print(f"已断开 {args.source} -> {args.target}")
 
 

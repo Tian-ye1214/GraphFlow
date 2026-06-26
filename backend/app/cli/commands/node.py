@@ -6,8 +6,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from app.cli.client import (Cli, die, find_node, parse_kv, convert, build_op,
-                            _auto_node, LLM_CONFIG_KEYS, LLM_PARAM_KEYS, HTTP_STR_KEYS, OP_LABELS)
+from app.cli.client import Cli, die, parse_kv
+from app.services import graph_ops
 
 
 def node_actions(sub):
@@ -26,70 +26,34 @@ def node_actions(sub):
 def cmd_node_set(args):
     cli = Cli()
     wf = cli.get_wf()
-    node = find_node(wf["graph"], args.id)
-    cfg = node["config"]
+    node = graph_ops.find_node(wf["graph"], args.id)
     for k, v in parse_kv(args.pairs).items():
-        if k == "dataset":
-            cfg["dataset_ids"] = [cli.resolve("datasets", r) for r in v.split(",") if r]
-        elif k == "model":
-            cfg["model_config_id"] = cli.resolve("models", v)
-        elif k == "save_as":
-            cfg["save_as_dataset"] = bool(v)
-            cfg["dataset_name"] = v
-        elif k == "judge_models":
-            cfg["judge_model_ids"] = [cli.resolve("models", r) for r in v.split(",") if r]
-        elif k == "pass_k":
-            cfg["pass_k"] = int(v)
-        elif k == "max_rounds":
-            cfg["max_rounds"] = int(v)
-        elif k == "count":                          # output 产量上限：合成产够即停；留空=不限
-            cfg["count"] = int(v) if v else None
-        elif k in HTTP_STR_KEYS:
-            cfg[k] = v
-        elif k == "extract":
-            cfg["extract"] = _parse_colon_map(v, "extract", "列:JSON路径")
-        elif k in LLM_CONFIG_KEYS:
-            cfg[LLM_CONFIG_KEYS[k]] = convert(LLM_CONFIG_KEYS[k], v)
-        elif k in LLM_PARAM_KEYS:
-            cfg.setdefault("params", {})[LLM_PARAM_KEYS[k]] = convert(LLM_PARAM_KEYS[k], v)
-        elif k == "drop":
-            cfg["drop_columns"] = [c for c in v.split(",") if c]
-        elif k == "outs":
-            cfg["output_columns"] = [c for c in v.split(",") if c]
-        elif k == "status_col":
-            cfg["status_column"] = v
-        elif k == "feedback_col":
-            cfg["feedback_column"] = v
-        elif k == "think":
-            cfg.setdefault("params", {})["thinking_enabled"] = v.lower() in ("on", "true", "1", "yes")
-        elif k == "effort":
-            cfg.setdefault("params", {})["reasoning_effort"] = v
-        elif k == "headers":
-            cfg["headers"] = _parse_colon_map(v, "headers", "名:值")
+        if k in graph_ops.RESOLVE_KEYS:                 # dataset/model/judge_models：名/ID→id
+            kind, is_list = graph_ops.RESOLVE_KEYS[k]
+            refs = [r for r in v.split(",") if r] if is_list else [v]
+            ids = [cli.resolve(kind, r) for r in refs]
+            graph_ops.apply_node_config(node, k, ids if is_list else ids[0])
+        elif k in ("extract", "headers"):               # 冒号串→dict（缺冒号优雅 die）
+            fmt = "列:JSON路径" if k == "extract" else "名:值"
+            graph_ops.apply_node_config(node, k, _parse_colon_map(v, k, fmt))
         else:
-            die(f"未知配置键 {k}")
+            graph_ops.apply_node_config(node, k, v)     # 其余键 + 类型转换走单点
     cli.put_graph(wf["id"], wf["graph"])
-    print(f"已更新 {args.id}: {json.dumps(cfg, ensure_ascii=False)}")
+    print(f"已更新 {args.id}: {json.dumps(node['config'], ensure_ascii=False)}")
 
 
 def cmd_node_show(args):
     cli = Cli()
-    node = find_node(cli.get_wf()["graph"], args.id)
+    node = graph_ops.find_node(cli.get_wf()["graph"], args.id)
     print(json.dumps(node, ensure_ascii=False, indent=2))
 
 
 def _parse_colon_map(v: str, key: str, fmt: str) -> dict:
-    """解析 `a:b,c:d` 形式（首个冒号切分，值可含冒号）。非空但缺冒号的段 → die，
-    不把用户输入静默吞成空 dict（对齐 parse_kv/build_op 的 die+用法提示惯例）。"""
-    out = {}
-    for seg in v.split(","):
-        if not seg.strip():
-            continue   # 容忍尾随/多余逗号
-        if ":" not in seg:
-            die(f"{key} 格式应为 {fmt}[,{fmt}]，缺少冒号: {seg!r}")
-        k, val = seg.split(":", 1)
-        out[k] = val
-    return out
+    """CLI 侧解析 `a:b,c:d`：复用 graph_ops 单点逻辑，把 GraphOpError 转成命令行 die（SystemExit）。"""
+    try:
+        return graph_ops._parse_colon_map(v, key, fmt)
+    except graph_ops.GraphOpError as e:
+        die(str(e))
 
 
 def _read_prompt(args) -> str:
@@ -123,7 +87,7 @@ def add_prompt_source_args(parser, *, required=True):
 def cmd_node_prompt(args):
     cli = Cli()
     wf = cli.get_wf()
-    node = find_node(wf["graph"], args.id)
+    node = graph_ops.find_node(wf["graph"], args.id)
     field = "system_prompt" if args.system else "user_prompt"
     cfg = node["config"]
     if args.library:
@@ -146,28 +110,30 @@ def cmd_node_prompt(args):
 
 def cmd_op_add(args):
     cli = Cli()
-    wf, ops = _auto_node(cli, args.node_id)
-    ops.append(build_op(args.op, args.params))
+    wf = cli.get_wf()
+    node = graph_ops.find_node(wf["graph"], args.node_id)
+    op = graph_ops.add_op(node, args.op, args.params)
     cli.put_graph(wf["id"], wf["graph"])
-    print(f"已添加操作 #{len(ops)}: {json.dumps(ops[-1], ensure_ascii=False)}")
+    print(f"已添加操作 #{len(node['config']['operations'])}: {json.dumps(op, ensure_ascii=False)}")
 
 
 def cmd_op_ls(args):
     cli = Cli()
-    _, ops = _auto_node(cli, args.node_id)
-    for i, o in enumerate(ops, 1):
+    node = graph_ops.find_node(cli.get_wf()["graph"], args.node_id)
+    if node["type"] != "auto_process":
+        die(f"{args.node_id} 不是自动处理节点")
+    for i, o in enumerate(node["config"].get("operations", []), 1):
         rest = {k: v for k, v in o.items() if k != "op"}
-        print(f"{i}. {OP_LABELS[o['op']]} {json.dumps(rest, ensure_ascii=False)}")
+        print(f"{i}. {graph_ops.OP_LABELS[o['op']]} {json.dumps(rest, ensure_ascii=False)}")
 
 
 def cmd_op_rm(args):
     cli = Cli()
-    wf, ops = _auto_node(cli, args.node_id)
-    if not 1 <= args.index <= len(ops):
-        die(f"序号超出范围（1-{len(ops)}）")
-    removed = ops.pop(args.index - 1)
+    wf = cli.get_wf()
+    node = graph_ops.find_node(wf["graph"], args.node_id)
+    removed = graph_ops.remove_op(node, args.index)
     cli.put_graph(wf["id"], wf["graph"])
-    print(f"已删除操作: {OP_LABELS[removed['op']]}")
+    print(f"已删除操作: {graph_ops.OP_LABELS[removed['op']]}")
 
 
 def register(sub):

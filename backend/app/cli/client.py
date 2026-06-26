@@ -6,10 +6,9 @@ from pathlib import Path
 import httpx
 
 from app.cli import load_state
+# 图变更逻辑/常量单点在 graph_ops；client 仅为旧调用方(model.py)再导出仍需的项，避免重复定义。
+from app.services.graph_ops import _convert as convert, LLM_PARAM_KEYS  # noqa: F401
 
-NODE_TYPES = {"input": "input", "llm": "llm_synth", "auto": "auto_process", "output": "output",
-              "qc": "qc", "llm_synth": "llm_synth", "auto_process": "auto_process",
-              "http": "http_fetch", "http_fetch": "http_fetch"}
 NODE_LABELS = {"input": "输入", "llm_synth": "LLM 合成", "auto_process": "自动处理",
                "output": "输出", "qc": "质检", "http_fetch": "HTTP 取数"}
 KIND_LABELS = {"workflows": "工作流", "datasets": "数据集", "models": "模型配置", "prompts": "提示词"}
@@ -97,26 +96,6 @@ def summarize(n: dict) -> str:
     return f"保存为数据集「{c['dataset_name']}」" if c.get("save_as_dataset") else ""
 
 
-LLM_CONFIG_KEYS = {"system": "system_prompt", "prompt": "user_prompt", "out": "output_column",
-                   "mode": "output_mode", "fanout": "fanout_n", "conc": "concurrency",
-                   "retries": "retries"}
-LLM_PARAM_KEYS = {"temp": "temperature", "top_p": "top_p", "max_tokens": "max_tokens",
-                  "timeout": "timeout", "json_mode": "json_mode"}
-INT_KEYS = {"fanout_n", "concurrency", "retries", "max_tokens", "timeout"}
-FLOAT_KEYS = {"temperature", "top_p"}
-HTTP_STR_KEYS = {"url", "endpoint", "method", "body"}
-
-
-def convert(field: str, v: str):
-    if field in INT_KEYS:
-        return int(v)
-    if field in FLOAT_KEYS:
-        return float(v)
-    if field == "json_mode":
-        return v.lower() in ("true", "1", "yes")
-    return v
-
-
 def parse_kv(pairs: list[str]) -> dict:
     out = {}
     for p in pairs:
@@ -125,60 +104,6 @@ def parse_kv(pairs: list[str]) -> dict:
         k, v = p.split("=", 1)
         out[k] = v
     return out
-
-
-def find_node(graph: dict, node_id: str) -> dict:
-    for n in graph["nodes"]:
-        if n["id"] == node_id:
-            return n
-    die(f"节点 {node_id} 不存在")
-
-
-OP_LABELS = {"dedup": "去重", "filter": "过滤", "rename": "重命名", "drop": "删除列",
-             "concat": "拼接列", "cast": "类型转换", "sample": "随机采样", "shuffle": "打乱"}
-
-
-def build_op(op: str, params: list[str]) -> dict:
-    if op == "dedup":
-        return {"op": "dedup", "columns": params[0].split(",") if params else []}
-    if op == "filter":
-        if len(params) != 3:
-            die("用法: gf op add <节点> filter <列> <min_len|max_len|contains|not_contains|regex> <值>")
-        col, mode, value = params
-        return {"op": "filter", "column": col, "mode": mode,
-                "value": int(value) if mode in ("min_len", "max_len") else value}
-    if op == "rename":
-        if len(params) != 2:
-            die("用法: gf op add <节点> rename <原列> <新列>")
-        return {"op": "rename", "mapping": {params[0]: params[1]}}
-    if op == "drop":
-        if len(params) != 1:
-            die("用法: gf op add <节点> drop <列1,列2>")
-        return {"op": "drop", "columns": params[0].split(",")}
-    if op == "concat":
-        if len(params) < 2:
-            die("用法: gf op add <节点> concat <列1,列2> <目标列> [分隔符]")
-        return {"op": "concat", "columns": params[0].split(","), "target": params[1],
-                "sep": params[2] if len(params) > 2 else ""}
-    if op == "cast":
-        if len(params) != 2 or params[1] not in ("str", "int", "float"):
-            die("用法: gf op add <节点> cast <列> <str|int|float>")
-        return {"op": "cast", "column": params[0], "to": params[1]}
-    if op == "sample":
-        if len(params) != 1:
-            die("用法: gf op add <节点> sample <n>")
-        return {"op": "sample", "n": int(params[0])}
-    if op == "shuffle":
-        return {"op": "shuffle"}
-    die(f"未知操作 {op}（可选: dedup/filter/rename/drop/concat/cast/sample/shuffle）")
-
-
-def _auto_node(cli: Cli, node_id: str) -> tuple[dict, list]:
-    wf = cli.get_wf()
-    node = find_node(wf["graph"], node_id)
-    if node["type"] != "auto_process":
-        die(f"{node_id} 不是自动处理节点")
-    return wf, node["config"].setdefault("operations", [])
 
 
 MODEL_KEYS = {"name": "name", "model": "model_name", "url": "base_url", "key": "api_key",
