@@ -202,9 +202,11 @@ Live（重启后人工跑，沿用 `tools/` 风格、smoke 用户建即删）：
 - **Task 5** 前端 `HttpFetchForm` 加「轮询」面板（状态路径/完成值/间隔/次数）+ 提取面板加 `records_path`，presence-based 无 Switch；重试字段加「与轮询次数不同」区分注释。
 - **Task 6** 全量回归。
 
-实现完全照设计，无设计偏差；已知取舍见上一节（起始节点进度 1/1、逐行×展开乘积全内存、轮询期不容忍 HTTP 错、完成值精确比较）。
+已知取舍见上一节（起始节点进度 1/1、逐行×展开乘积全内存、轮询期不容忍 HTTP 错、完成值精确比较）。
 
-**回归结果**：后端 `pytest -q` **776 passed**（新增 ~14 个 http 测试）；前端 `vitest run` **89 passed / 19 文件**、`tsc --noEmit` 干净。
+**整分支对抗式评审发现并修复 1 处安全偏差**（7 维 finder→逐条怀疑者 verify，5 确认/4 反驳）：`_http_poll` 的两处 `ValueError`（轮询耗尽 + 同步非 JSON）原插值了合并 `params` 后的完整 `url`，而 `params` 含 `api_key`（查询串），违反本 spec §2「错误文案只含 method/endpoint/status」的硬约束——会把凭据明文落进 `RunRow.error` 并经 SSE/日志/导出回显。改用未合并 params 的 `endpoint`，并补一条「错误文案绝不含 api_key」守护测试 + 一条数字状态归一测试（commit d87b0ae）。根因：实现沿用了旧 `http.py`「url 可记录」约定，但 api_key 自批二十四从 headers 迁入 params/查询串后该约定已不适用，本 spec 已据此改用 endpoint，实现起初漏改。
+
+**回归结果**：后端 `pytest -q` **778 passed**（新增 ~16 个 http 测试，含安全修复后的 2 个守护测试）；前端 `vitest run` **89 passed / 19 文件**、`tsc --noEmit` 干净。
 
 **留观（非本特性引入）**：后端全量跑出 4 条 `aiosqlite`「Event loop is closed」teardown 告警——仅在整套连跑时出现（`test_http_node.py`、`test_columns.py` 单独跑均 0 告警），系 Windows 上 pytest-asyncio + aiosqlite 关闭期竞态的既有噪声，与本分支无关。
 
