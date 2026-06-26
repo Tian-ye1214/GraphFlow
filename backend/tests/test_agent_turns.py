@@ -185,3 +185,23 @@ def test_session_dir_uses_sanitized_username(monkeypatch, tmp_path):
     p = turns.session_dir("a/b:c", 7)
     assert p.is_absolute()
     assert p.parts[-2:] == ("a_b_c", "7")  # 用户名清洗非法字符，会话 id 作子目录
+
+
+async def test_cancel_returns_true_for_live_task_false_when_idle(monkeypatch, sid):
+    class Blocker(FakeSystem):
+        async def run_turn(self, text, history):
+            await asyncio.sleep(5)
+            return history, "x"
+
+    tm = turns.AgentTurnManager()
+    monkeypatch.setattr(turns, "AgentSystem", lambda **kw: Blocker([]))
+    assert tm.cancel(sid) is False                 # 无在跑任务
+    tm.submit(sid, 1, "go")
+    await asyncio.sleep(0.01)                       # 让 _drain 任务起跑
+    task = tm.tasks.get(sid)
+    assert tm.cancel(sid) is True                  # 取消了活任务
+    assert tm.cancel(sid) is False                 # 第二次：任务已在取消中/已移除
+    import contextlib
+    if task:
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(task, 5)

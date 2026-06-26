@@ -68,11 +68,14 @@ class AgentTurnManager:
         queue.clear()
         queue.append(first)
 
-    def cancel(self, session_id: int) -> None:
+    def cancel(self, session_id: int) -> bool:
         self.queues.get(session_id, deque()).clear()
         task = self.tasks.get(session_id)
-        if task:
+        if task and not task.done():
             task.cancel()
+            self.tasks.pop(session_id, None)
+            return True
+        return False
 
     async def _mark_idle(self, session_id: int) -> None:
         async with get_session_factory()() as s:
