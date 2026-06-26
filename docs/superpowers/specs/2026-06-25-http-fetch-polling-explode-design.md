@@ -190,3 +190,24 @@ Live（重启后人工跑，沿用 `tools/` 风格、smoke 用户建即删）：
 - 总时长封顶、失败状态早退、多完成值。
 - 轮询期间容忍 HTTP 错误。
 - 嵌套展开（数组里套数组）/ 通配 JSON 路径（`json_path_get` 本就不支持，沿用）。
+
+## 实现记录（2026-06-26）
+
+按计划 6 任务全部实现，每任务 TDD（RED→GREEN）+ 独立 subagent 评审通过，零 Critical/Important 遗留。
+
+- **Task 1** 轮询循环 `_http_poll`（间隔 + 次数上限，首次即发、达完成值即停）。
+- **Task 2** `records_path` 展开成多行（extract 相对元素，复用 fanout 多行机制；空数组→0 行；非数组→点名报错）。
+- **Task 3** 新键脏 config 预校验（bool-first 守卫数值键、`poll_status_path` 有则 `poll_until` 必填）→ 整 run failed 点名键 + 节点 id。
+- **Task 4** 无输入 `http_fetch` 改走 topo 作起始数据源：`_node_inputs` 喂带 root trace 的空种子 `[{}]` 触发一次取数；`gen_types` 收窄为 `{"llm_synth"}`，`http_fetch` 退出生成循环（死 http 分支已清）。
+- **Task 5** 前端 `HttpFetchForm` 加「轮询」面板（状态路径/完成值/间隔/次数）+ 提取面板加 `records_path`，presence-based 无 Switch；重试字段加「与轮询次数不同」区分注释。
+- **Task 6** 全量回归。
+
+实现完全照设计，无设计偏差；已知取舍见上一节（起始节点进度 1/1、逐行×展开乘积全内存、轮询期不容忍 HTTP 错、完成值精确比较）。
+
+**回归结果**：后端 `pytest -q` **776 passed**（新增 ~14 个 http 测试）；前端 `vitest run` **89 passed / 19 文件**、`tsc --noEmit` 干净。
+
+**留观（非本特性引入）**：后端全量跑出 4 条 `aiosqlite`「Event loop is closed」teardown 告警——仅在整套连跑时出现（`test_http_node.py`、`test_columns.py` 单独跑均 0 告警），系 Windows 上 pytest-asyncio + aiosqlite 关闭期竞态的既有噪声，与本分支无关。
+
+**过程备注**：`backend/tests/test_gen_loop.py` 在父提交 71fd62c 处为未跟踪文件，本分支随 Task 4 入库（diff stat 显 +530 多为既有内容，实际改动仅重命名 + 更新 1 个过时 http 测试），与其余已跟踪测试文件一致。
+
+Live（重启后人工跑）尚未执行，待合并后线上重启验证。
