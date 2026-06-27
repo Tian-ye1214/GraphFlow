@@ -37,10 +37,17 @@ def truncate(text: str) -> str:
     return text[:MAX_TOOL_OUTPUT_CHARS] + f"\n\n[输出已截断，省略 {omitted} 字符]"
 
 
+_SECRET_KEYS = {"api_key", "key", "token", "secret", "password"}
+
+
 def _brief(kwargs: dict) -> str:
     if "command" in kwargs:
         return str(kwargs["command"])[:80]
-    return ", ".join(f"{k}={str(v)[:40]}" for k, v in list(kwargs.items())[:3])[:80]
+    parts = []
+    for k, v in list(kwargs.items())[:3]:
+        shown = "***" if k.lower() in _SECRET_KEYS else str(v)[:40]
+        parts.append(f"{k}={shown}")
+    return ", ".join(parts)[:80]
 
 
 def wrap_tools(tools: list) -> list:

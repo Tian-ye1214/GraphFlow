@@ -105,3 +105,16 @@ async def test_gf_login_intercepted(tk):
     assert "禁止" in out and "Return code" not in out  # 未起子进程
     out = await tk.run_command("GF LOGIN bob")
     assert "禁止" in out
+
+
+def test_brief_redacts_secret_named_kwargs():
+    from app.agent.tools import _brief
+    out = _brief({"name": "gpt", "api_key": "sk-supersecret-xyz", "base_url": "http://x"})
+    assert "sk-supersecret" not in out
+    assert "api_key=***" in out
+    assert "gpt" in out          # 非密钥参数照常显示
+
+
+def test_brief_keeps_command_branch():
+    from app.agent.tools import _brief
+    assert _brief({"command": "gf runs"}) == "gf runs"
