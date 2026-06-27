@@ -26,8 +26,8 @@ from app.routers.workflows import get_owned_workflow
 from app.services.dataset_store import _jsonify_nested
 from app.services.run_artifacts import (count_output_ref_rows, iter_node_done_rows,
                                         read_output_ref_rows, rows_for_rec)
-from app.services.run_service import (purge_run_rows, unlink_run_exports,
-                                      validate_graph_resource_ownership)
+from app.services.run_service import (purge_run_rows, restore_workflow_from_run,
+                                      unlink_run_exports, validate_graph_resource_ownership)
 from app.services.trace import (PARENT_TRACE_ID_KEY, row_trace_id, rows_matching_trace,
                                 strip_trace_row, strip_trace_rows)
 
@@ -242,13 +242,9 @@ async def delete_run(run_id: int, user: User = Depends(get_current_user),
 async def restore_run_version(run_id: int, user: User = Depends(get_current_user),
                               session: AsyncSession = Depends(get_session)):
     run = await _get_owned_run(run_id, user, session)
-    ver = await session.get(WorkflowVersion, run.workflow_version_id)
-    wf = await session.get(Workflow, run.workflow_id)
-    if wf is None or wf.user_id != user.id:
+    wf = await restore_workflow_from_run(session, run, user.id)
+    if wf is None:
         raise HTTPException(status_code=404, detail="工作流不存在")
-    wf.graph_json = ver.graph_json
-    await session.commit()
-    publish(user.id, "workflow", wf.id)
     return {"ok": True}
 
 

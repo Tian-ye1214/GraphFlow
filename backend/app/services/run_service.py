@@ -7,6 +7,7 @@ from sqlalchemy import delete as sa_delete, func, select
 
 from app.engine.graph import parse_graph, validate_graph
 from app.engine.manager import manager
+from app.events import publish
 from app.models import (Dataset, ModelCallLog, ModelConfig, QcFailure, QcMetric, Run, RunLog,
                         RunNodeState, RunRow, User, Workflow, WorkflowVersion)
 from app.services.trace import strip_trace_row
@@ -146,3 +147,16 @@ async def sample_failures(session_factory, run_id: int, n: int = 20) -> list[dic
         "reasons": json.loads(f.reasons_json),
         "model_logs": by_trace.get(f.trace_id, []),
     } for f in rows]
+
+
+async def restore_workflow_from_run(session, run, user_id: int):
+    """把 run 快照版本的图覆盖回工作流。他人工作流返回 None；成功 commit + 发 workflow 事件，返回 wf。
+    REST 路由与 Agent restore_workflow_from_run 工具共用此单点。"""
+    ver = await session.get(WorkflowVersion, run.workflow_version_id)
+    wf = await session.get(Workflow, run.workflow_id)
+    if wf is None or wf.user_id != user_id:
+        return None
+    wf.graph_json = ver.graph_json
+    await session.commit()
+    publish(user_id, "workflow", wf.id)
+    return wf

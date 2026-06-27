@@ -1,3 +1,5 @@
+import json
+
 from sqlalchemy import select
 
 import app.services.run_service as rs
@@ -129,3 +131,39 @@ async def test_ownership_rejects_other_users_resources(session_factory):
             await rs.validate_graph_resource_ownership(s, g_judge, aid)
         with pytest.raises(ValueError, match="数据集"):
             await rs.validate_graph_resource_ownership(s, g_ds, bid)
+
+
+async def _seed_run_with_version(sf, old_graph, ver_graph):
+    from app.models import Run, User, Workflow, WorkflowVersion
+    async with sf() as s:
+        u = User(username="ru"); s.add(u); await s.flush()
+        wf = Workflow(user_id=u.id, name="w", graph_json=json.dumps(old_graph))
+        s.add(wf); await s.flush()
+        ver = WorkflowVersion(workflow_id=wf.id, version=1, graph_json=json.dumps(ver_graph))
+        s.add(ver); await s.flush()
+        run = Run(user_id=u.id, workflow_id=wf.id, workflow_version_id=ver.id, status="completed")
+        s.add(run); await s.commit()
+        return u.id, wf.id, run.id
+
+
+async def test_restore_overwrites_workflow_graph(session_factory):
+    from app.models import Run, Workflow
+    sf = session_factory
+    uid, wf_id, run_id = await _seed_run_with_version(
+        sf, {"nodes": [], "edges": []}, {"nodes": [{"id": "a", "type": "input", "config": {}}], "edges": []})
+    async with sf() as s:
+        run = await s.get(Run, run_id)
+        wf = await rs.restore_workflow_from_run(s, run, uid)
+        assert wf is not None
+    async with sf() as s:
+        g = json.loads((await s.get(Workflow, wf_id)).graph_json)
+        assert [n["id"] for n in g["nodes"]] == ["a"]
+
+
+async def test_restore_cross_tenant_returns_none(session_factory):
+    from app.models import Run
+    sf = session_factory
+    uid, wf_id, run_id = await _seed_run_with_version(sf, {"nodes": [], "edges": []}, {"nodes": [], "edges": []})
+    async with sf() as s:
+        run = await s.get(Run, run_id)
+        assert await rs.restore_workflow_from_run(s, run, uid + 999) is None
