@@ -316,8 +316,8 @@ class GraphToolkit:
             if wf is None:
                 return "工作流不存在"
             out_rel = f"workflow_{workflow_id}.gfpkg"
-            out_path = resolve_in(Path(self._workdir), out_rel)
             try:
+                out_path = resolve_in(Path(self._workdir), out_rel)
                 await export_package(s, wf, str(out_path))
             except Exception as e:
                 return f"Error: 导出失败 {e}"
@@ -337,8 +337,6 @@ class GraphToolkit:
         async with self._sf() as s:
             try:
                 wf_out, _report = await import_package(s, str(src), self._uid)
-            except (PackageError, GraphError) as e:
-                return f"Error: {e}"
             except Exception as e:
                 return f"Error: {e}"
         return f"已导入工作流「{wf_out['name']}」(#{wf_out['id']})"

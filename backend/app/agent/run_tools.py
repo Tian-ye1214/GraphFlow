@@ -9,9 +9,10 @@ from app.agent.data_preview import _fit_budget
 from app.config import settings
 from app.engine.graph import GraphError, parse_graph, validate_graph
 from app.engine.manager import manager
+from app.events import publish
 from app.models import (ModelCallLog, QcFailure, QcMetric, Run, RunLog, RunNodeState, RunRow,
-                        User, Workflow)
-from app.routers.runs import _prepare_rerun_failed
+                        User, Workflow, WorkflowVersion)
+from app.routers.runs import _has_failed_rows, _prepare_rerun_failed, _rerun_scope
 from app.services.run_service import (enqueue_run, purge_run_rows,
                                       restore_workflow_from_run as _restore_from_run,
                                       unlink_run_exports, validate_graph_resource_ownership)
@@ -158,9 +159,24 @@ class RunToolkit:
                 if run is None:
                     return "运行不存在"
                 cap = (await s.get(User, self._uid)).max_llm_concurrency
-            await _prepare_rerun_failed(self._sf, int(run_id), node_id, self._uid)
-            manager.submit(int(run_id), self._uid, cap, self._sf)
-            return f"已重跑运行 #{run_id} 的失败行"
+                ver = await s.get(WorkflowVersion, run.workflow_version_id)
+                graph = parse_graph(ver.graph_json)
+                if node_id is not None and node_id not in {n.id for n in graph.nodes}:
+                    return f"Error: 节点 {node_id} 不在该运行的图中"
+                scope = _rerun_scope(graph, node_id)
+                if run.status in ("completed", "failed", "cancelled"):
+                    if not await _has_failed_rows(s, run.id, scope):
+                        return "Error: 没有失败行"
+                    await _prepare_rerun_failed(self._sf, int(run_id), node_id, self._uid)
+                    manager.submit(int(run_id), self._uid, cap, self._sf)
+                    return f"已重跑运行 #{run_id} 的失败行"
+                elif run.status not in ("queued", "running"):
+                    return f"Error: 当前状态 {run.status} 不可重跑"
+                # active run：等当前跑完再重跑
+                async def prepare() -> bool:
+                    return await _prepare_rerun_failed(self._sf, int(run_id), node_id, self._uid)
+                manager.submit_prepared(int(run_id), self._uid, cap, self._sf, prepare)
+                return f"已请求重跑运行 #{run_id} 的失败行（将在当前运行完成后执行）"
         except Exception as e:
             return f"Error: {e}"
 
@@ -201,6 +217,7 @@ class RunToolkit:
                 await purge_run_rows(s, [int(run_id)], version_ids=[ver_id])
                 await s.commit()
             unlink_run_exports([int(run_id)], settings.data_dir)
+            publish(self._uid, "run", int(run_id))
             return f"已删除运行 #{run_id}"
         except Exception as e:
             return f"Error: {e}"

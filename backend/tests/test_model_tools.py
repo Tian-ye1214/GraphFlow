@@ -41,3 +41,15 @@ async def test_model_tool_cross_tenant(session_factory):
         mc = ModelConfig(user_id=uid, name="m", model_name="g", base_url="u",
                          api_key_enc="", default_params_json="{}"); s.add(mc); await s.commit(); mid = mc.id
     assert "不存在" in await ModelToolkit(sf, uid + 999).delete_model(mid)
+
+
+async def test_update_model_dirty_json_returns_error_not_raises(session_factory):
+    """脏 default_params_json 调 update_model：json.loads 抛异常须被 try/except 兜成 Error 串，不抛进框架。"""
+    sf = session_factory
+    uid = await _seed_user(sf)
+    async with sf() as s:
+        mc = ModelConfig(user_id=uid, name="dirty", model_name="g", base_url="u",
+                         api_key_enc="", default_params_json="{bad")
+        s.add(mc); await s.commit(); mid = mc.id
+    msg = await ModelToolkit(sf, uid).update_model(mid)
+    assert "Error" in msg

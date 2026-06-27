@@ -118,3 +118,30 @@ async def test_delete_all_runs_confirmed(session_factory):
     assert "删除" in msg
     async with sf() as s:
         assert await s.get(Run, run_id) is None
+
+
+async def test_rerun_failed_no_failed_rows_returns_error(session_factory):
+    """终态 run 无失败行：rerun_failed 应返回含「没有失败行」的 Error 串，不谎报已重跑。"""
+    sf = session_factory
+    uid, wf_id, run_id = await _seed_run(sf)
+    # _seed_run: run.status="completed"，唯一 RunRow.status="done"，无失败行
+    msg = await RunToolkit(sf, uid).rerun_failed(run_id)
+    assert "没有失败行" in msg
+
+
+async def test_rerun_failed_with_failed_rows_returns_ok(session_factory):
+    """终态 run 有失败行：rerun_failed 返回「已重跑」，mock 掉 _prepare_rerun_failed 和 manager.submit。"""
+    from unittest.mock import AsyncMock, patch
+    sf = session_factory
+    uid, wf_id, run_id = await _seed_run(sf)
+    # 追加一条 failed RunRow
+    async with sf() as s:
+        s.add(RunRow(run_id=run_id, node_id="o", row_idx=1, status="failed",
+                     data_json='{"ans":"bad"}'))
+        await s.commit()
+    with patch("app.agent.run_tools._prepare_rerun_failed", new_callable=AsyncMock) as mock_prep, \
+         patch("app.agent.run_tools.manager") as mock_manager:
+        mock_prep.return_value = True
+        mock_manager.submit.return_value = {"position": 1}
+        msg = await RunToolkit(sf, uid).rerun_failed(run_id)
+    assert "已重跑" in msg
