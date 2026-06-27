@@ -1,7 +1,9 @@
 import json
+from sqlalchemy import func, select
 from app.agent.run_tools import RunToolkit
 from app.models import (ModelCallLog, QcFailure, QcMetric, Run, RunLog, RunNodeState, RunRow,
                         User, Workflow, WorkflowVersion)
+from app.services import run_service
 
 
 async def _seed_run(sf):
@@ -58,3 +60,36 @@ async def test_read_run_logs(session_factory):
         await s.commit()
     out = json.loads(await RunToolkit(sf, uid).read_run_logs(run_id))
     assert any(r["message"] == "hello" for r in out["rows"])
+
+
+async def test_delete_run_requires_confirmation(session_factory):
+    sf = session_factory; uid, wf_id, run_id = await _seed_run(sf)
+    msg = await RunToolkit(sf, uid).delete_run(run_id)               # 默认未确认
+    assert "确认" in msg
+    async with sf() as s:
+        assert await s.get(Run, run_id) is not None                 # 未删
+
+
+async def test_delete_run_confirmed_cascades(session_factory):
+    sf = session_factory; uid, wf_id, run_id = await _seed_run(sf)
+    msg = await RunToolkit(sf, uid, confirm_delete=True).delete_run(run_id)
+    assert "已删除" in msg
+    async with sf() as s:
+        assert await s.get(Run, run_id) is None
+        cnt = (await s.execute(select(func.count()).select_from(RunRow)
+               .where(RunRow.run_id == run_id))).scalar()
+        assert cnt == 0
+
+
+async def test_restore_workflow_requires_confirmation(session_factory):
+    sf = session_factory; uid, wf_id, run_id = await _seed_run(sf)
+    msg = await RunToolkit(sf, uid).restore_workflow_from_run(run_id)
+    assert "确认" in msg
+
+
+async def test_delete_all_runs_confirmed(session_factory):
+    sf = session_factory; uid, wf_id, run_id = await _seed_run(sf)
+    msg = await RunToolkit(sf, uid, confirm_delete=True).delete_all_runs()
+    assert "删除" in msg
+    async with sf() as s:
+        assert await s.get(Run, run_id) is None

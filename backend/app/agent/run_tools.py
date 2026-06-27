@@ -6,8 +6,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.agent.data_preview import _fit_budget
+from app.config import settings
+from app.engine.graph import GraphError, parse_graph, validate_graph
+from app.engine.manager import manager
 from app.models import (ModelCallLog, QcFailure, QcMetric, Run, RunLog, RunNodeState, RunRow,
-                        Workflow)
+                        User, Workflow)
+from app.routers.runs import _prepare_rerun_failed
+from app.services.run_service import (enqueue_run, purge_run_rows,
+                                      restore_workflow_from_run as _restore_from_run,
+                                      unlink_run_exports, validate_graph_resource_ownership)
 
 
 class RunToolkit:
@@ -106,7 +113,121 @@ class RunToolkit:
                               "reasons": json.loads(f.reasons_json or "[]")} for f in fails]},
                 key="failures"), ensure_ascii=False)
 
+    async def start_run(self, workflow_id: int) -> str:
+        """启动一次运行(不阻塞，返回 run_id；用 get_run 看进度)。
+        Parameters:
+            workflow_id: 工作流 id
+        """
+        try:
+            async with self._sf() as s:
+                wf = await s.get(Workflow, int(workflow_id))
+                if wf is None or wf.user_id != self._uid:
+                    return "工作流不存在"
+                try:
+                    graph = parse_graph(wf.graph_json)
+                    validate_graph(graph)
+                    if not graph.nodes:
+                        raise GraphError("工作流为空")
+                    await validate_graph_resource_ownership(s, graph, self._uid)
+                except (GraphError, ValueError) as e:
+                    return f"Error: {e}"
+            run_id = await enqueue_run(self._sf, self._uid, workflow_id)
+            return f"已启动运行 #{run_id}（排队中），用 get_run({run_id}) 看进度"
+        except Exception as e:
+            return f"Error: {e}"
+
+    async def cancel_run(self, run_id: int) -> str:
+        """取消运行中/排队中的运行。"""
+        try:
+            async with self._sf() as s:
+                run = await self._owned_run(s, run_id)
+                if run is None:
+                    return "运行不存在"
+                if run.status not in ("queued", "running"):
+                    return f"Error: 当前状态 {run.status} 不可取消"
+            manager.cancel(int(run_id))
+            return f"已请求取消运行 #{run_id}"
+        except Exception as e:
+            return f"Error: {e}"
+
+    async def rerun_failed(self, run_id: int, node_id: str | None = None) -> str:
+        """重跑失败行(可指定节点)。复用 manager 入队。"""
+        try:
+            async with self._sf() as s:
+                run = await self._owned_run(s, run_id)
+                if run is None:
+                    return "运行不存在"
+                cap = (await s.get(User, self._uid)).max_llm_concurrency
+            await _prepare_rerun_failed(self._sf, int(run_id), node_id, self._uid)
+            manager.submit(int(run_id), self._uid, cap, self._sf)
+            return f"已重跑运行 #{run_id} 的失败行"
+        except Exception as e:
+            return f"Error: {e}"
+
+    async def restore_workflow_from_run(self, run_id: int) -> str:
+        """把工作流图恢复到该运行的版本(覆盖当前图)。需用户确认。
+        Parameters:
+            run_id: 运行 id
+        """
+        try:
+            async with self._sf() as s:
+                run = await self._owned_run(s, run_id)
+                if run is None:
+                    return "运行不存在"
+                if not self._confirm_delete:
+                    return ("恢复工作流版本会覆盖当前图(丢失当前未跑的编辑)，需用户确认："
+                            f"请说明后在回复末尾单独一行输出 [confirm_delete] 恢复运行#{run_id}的版本，等待确认。")
+                wf = await _restore_from_run(s, run, self._uid)
+                return f"已把工作流恢复到运行 #{run_id} 的版本" if wf else "工作流不存在"
+        except Exception as e:
+            return f"Error: {e}"
+
+    async def delete_run(self, run_id: int) -> str:
+        """删除单次运行(级联子表+磁盘导出)。需用户确认。
+        Parameters:
+            run_id: 运行 id
+        """
+        try:
+            async with self._sf() as s:
+                run = await self._owned_run(s, run_id)
+                if run is None:
+                    return "运行不存在"
+                if run.status in ("queued", "running"):
+                    return "Error: 运行中，请先取消再删除"
+                if not self._confirm_delete:
+                    return ("删除运行需用户确认：请向用户说明将删除运行及其全部行/日志/质检/导出，"
+                            f"在回复末尾单独一行输出 [confirm_delete] gf rmrun {run_id}，然后结束回合等待确认。")
+                ver_id = run.workflow_version_id
+                await purge_run_rows(s, [int(run_id)], version_ids=[ver_id])
+                await s.commit()
+            unlink_run_exports([int(run_id)], settings.data_dir)
+            return f"已删除运行 #{run_id}"
+        except Exception as e:
+            return f"Error: {e}"
+
+    async def delete_all_runs(self) -> str:
+        """清空本租户全部运行(运行中除外)。需用户确认。"""
+        try:
+            async with self._sf() as s:
+                runs = (await s.execute(select(Run).where(
+                    Run.user_id == self._uid, Run.status.notin_(("queued", "running"))))).scalars().all()
+                if not self._confirm_delete:
+                    return ("清空全部运行需用户确认：请向用户说明将删除全部已结束运行及其数据，"
+                            "在回复末尾单独一行输出 [confirm_delete] 清空全部运行记录，然后结束回合等待确认。")
+                run_ids = [r.id for r in runs]
+                ver_ids = [r.workflow_version_id for r in runs]
+                if run_ids:
+                    await purge_run_rows(s, run_ids, version_ids=ver_ids)
+                    await s.commit()
+            if run_ids:
+                unlink_run_exports(run_ids, settings.data_dir)
+            return f"已删除 {len(run_ids)} 条运行记录"
+        except Exception as e:
+            return f"Error: {e}"
+
     @property
     def tools(self) -> list:
         return [self.list_runs, self.get_run, self.read_run_rows,
-                self.read_run_logs, self.read_run_qc]
+                self.read_run_logs, self.read_run_qc,
+                self.start_run, self.cancel_run, self.rerun_failed,
+                self.restore_workflow_from_run, self.delete_run, self.delete_all_runs]
