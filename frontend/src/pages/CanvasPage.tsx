@@ -10,7 +10,7 @@ import { api } from '../api/client'
 import type { Workflow } from '../api/types'
 import NodeConfigForm from '../canvas/forms/NodeConfigForm'
 import { nodeTypes } from '../canvas/nodeTypes'
-import { NODE_LABELS, RESCAN_EDGE, fromFlow, toFlow, displayName } from '../canvas/serialize'
+import { NODE_LABELS, RESCAN_EDGE, fromFlow, toFlow, displayName, stripPrompt, copyLabel } from '../canvas/serialize'
 import { useEvents } from '../api/events'
 import { graphFingerprint } from '../canvas/fingerprint'
 import { nodeDropPosition } from '../canvas/layout'
@@ -34,6 +34,9 @@ function Canvas() {
   const baseline = useRef('')
   const rf = useReactFlow()
   const flowWrap = useRef<HTMLDivElement>(null)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const clip = useRef<{ type: string; config: Record<string, any>; label?: string; position: { x: number; y: number } } | null>(null)
+  const pasteSeq = useRef(0)
 
   const load = useCallback(async () => {
     const w = await api.get<Workflow>(`/api/workflows/${id}`)
@@ -74,6 +77,42 @@ function Canvas() {
     }, 800)
     return () => clearTimeout(t)
   }, [nodes, edges, id])
+
+  // Ctrl/⌘+C 复制选中节点、Ctrl/⌘+V 粘贴副本（去提示词、显示名自增、错位放置）。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return
+      const t = e.target as HTMLElement | null
+      if (t?.closest('input, textarea, [contenteditable="true"]')) return   // 放行输入控件内的文本复制
+      const key = e.key.toLowerCase()
+      if (key === 'c' && selected) {
+        clip.current = {
+          type: selected.type!,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          config: (selected.data as { config?: Record<string, any> }).config ?? {},
+          label: (selected.data as { label?: string }).label,
+          position: selected.position,
+        }
+        pasteSeq.current = 0
+      } else if (key === 'v' && clip.current) {
+        e.preventDefault()
+        const c = clip.current
+        pasteSeq.current += 1
+        const off = 40 * pasteSeq.current
+        const existing = new Set(nodes.map((n) => displayName((n.data as { label?: string })?.label, n.id)))
+        const id = nextId(c.type, nodes)
+        const label = c.label && c.label.trim() ? copyLabel(c.label, existing) : undefined
+        setNodes((ns) => [...ns, {
+          id, type: c.type,
+          position: { x: c.position.x + off, y: c.position.y + off },
+          data: { config: stripPrompt(c.config), ...(label ? { label } : {}) },
+        }])
+        setSelectedId(id)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [nodes, selected, setNodes])
 
   const addNode = (type: keyof typeof NODE_LABELS) =>
     setNodes((ns) => {
