@@ -17,6 +17,24 @@ export function displayName(label: string | undefined, id: string): string {
   return (label && label.trim()) ? label : id
 }
 
+export const PROMPT_KEYS = ['system_prompt', 'user_prompt', 'system_prompt_ref', 'user_prompt_ref'] as const
+
+// 深拷贝 config 并删掉提示词字段（含库引用）。非提示词节点没这些键 → 等价于原样深拷贝。
+export function stripPrompt(config: Record<string, any>): Record<string, any> {
+  const c = JSON.parse(JSON.stringify(config ?? {}))
+  for (const k of PROMPT_KEYS) delete c[k]
+  return c
+}
+
+// 副本显示名：剥掉结尾的 _<数字> 得词干，返回最小未占用的「词干_n」(n≥2)。
+export function copyLabel(base: string, existing: Set<string>): string {
+  const stem = base.replace(/_\d+$/, '')
+  for (let n = 2; ; n++) {
+    const name = `${stem}_${n}`
+    if (!existing.has(name)) return name
+  }
+}
+
 export function toFlow(graph: WorkflowGraph): { nodes: Node[]; edges: Edge[] } {
   return {
     nodes: graph.nodes.map((n) => ({

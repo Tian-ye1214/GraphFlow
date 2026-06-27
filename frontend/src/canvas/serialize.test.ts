@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fromFlow, toFlow, displayName } from './serialize'
+import { fromFlow, toFlow, displayName, stripPrompt, copyLabel } from './serialize'
 import type { WorkflowGraph } from '../api/types'
 
 const GRAPH: WorkflowGraph = {
@@ -42,5 +42,39 @@ describe('node label', () => {
     expect(displayName('翻译', 'llm_synth_1')).toBe('翻译')
     expect(displayName('', 'llm_synth_1')).toBe('llm_synth_1')
     expect(displayName(undefined, 'input_1')).toBe('input_1')
+  })
+})
+
+describe('stripPrompt', () => {
+  it('删掉 4 个提示词键、保留其余键', () => {
+    const out = stripPrompt({
+      model_config_id: 7, output_column: 'q_en', params: { temperature: 0 },
+      system_prompt: 'sys', user_prompt: 'Q:{{q}}', system_prompt_ref: 3, user_prompt_ref: 4,
+    })
+    expect(out).toEqual({ model_config_id: 7, output_column: 'q_en', params: { temperature: 0 } })
+  })
+  it('深拷贝隔离：改返回对象不影响入参', () => {
+    const src = { params: { temperature: 0 }, user_prompt: 'x' }
+    const out = stripPrompt(src)
+    out.params.temperature = 1
+    expect(src.params.temperature).toBe(0)
+  })
+  it('没有提示词键的 config 原样返回（值相等、对象不同引用）', () => {
+    const src = { dataset_ids: [1, 2] }
+    const out = stripPrompt(src)
+    expect(out).toEqual({ dataset_ids: [1, 2] })
+    expect(out).not.toBe(src)
+  })
+})
+
+describe('copyLabel', () => {
+  it('原名未带后缀 → _2', () => {
+    expect(copyLabel('翻译', new Set(['翻译']))).toBe('翻译_2')
+  })
+  it('_2 已占用 → _3', () => {
+    expect(copyLabel('翻译', new Set(['翻译', '翻译_2']))).toBe('翻译_3')
+  })
+  it('复制已带后缀的名：剥词干再自增（翻译_2 → 翻译_3，而非 翻译_2_2）', () => {
+    expect(copyLabel('翻译_2', new Set(['翻译', '翻译_2']))).toBe('翻译_3')
   })
 })
