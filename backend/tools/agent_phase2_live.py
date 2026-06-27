@@ -175,8 +175,9 @@ async def part_a2_prompt(sf, uid):
 # Part A3: ModelToolkit 门禁两态
 # ---------------------------------------------------------------------------
 
-async def part_a3_model(sf, uid):
-    """A3: create_model(带key)→返回串不含明文key→delete(门禁两态)。"""
+async def part_a3_model(sf, uid, real_mid):
+    """A3: create_model(带key)→返回串不含明文key→test_model(真实模型连通)→delete(门禁两态)。
+    test_model 用 admin 现有真实 deepseek 模型 real_mid（fake key 模型连通必失败，不能用它测）。"""
     from app.agent.model_tools import ModelToolkit
 
     tk = ModelToolkit(sf, uid, confirm_delete=True)
@@ -197,6 +198,10 @@ async def part_a3_model(sf, uid):
     mid = _eid(c_msg)
     ck("create_model 成功有 id", mid > 0, f"msg={c_msg}")
     ck("create_model 返回串不含明文 key", FAKE_KEY not in c_msg, f"msg={c_msg}")
+
+    # test_model：用 admin 真实 deepseek 模型连通（成功返回「连通正常：...」）
+    t_msg = await tk.test_model(real_mid)
+    ck("test_model 真实模型连通", t_msg.startswith("连通正常"), f"msg={t_msg[:80]}")
 
     # delete 未确认拦
     guard = await tk_no.delete_model(mid)
@@ -353,10 +358,12 @@ class Rest:
         return None
 
     def cleanup(self):
-        """删所有 _p2live_ 相关资源，确保回基线。"""
-        # 取消还在跑的 run
+        """删所有 _p2live_ 相关资源，确保回基线。只动标签资源，绝不误伤 admin 真实数据。"""
+        # 只取消标签工作流的 run（不误伤 admin 其它真实 run）
+        tagged_wf_ids = {w["id"] for w in self.c.get("/api/workflows").json()
+                         if w["name"].startswith(TAG)}
         for r in self.c.get("/api/runs").json():
-            if r["status"] in ("running", "queued"):
+            if r["status"] in ("running", "queued") and r.get("workflow_id") in tagged_wf_ids:
                 self.c.post(f"/api/runs/{r['id']}/cancel")
         # 删 _p2live_ 工作流
         for w in self.c.get("/api/workflows").json():
@@ -376,6 +383,10 @@ class Rest:
         for p in self.c.get("/api/prompts").json():
             if p.get("name", "").startswith(TAG):
                 self.c.delete(f"/api/prompts/{p['id']}")
+        # 清 _p2live_ 模型（A3 若中途失败，fake 模型不留在 admin 列表）
+        for m in self.c.get("/api/models").json():
+            if m.get("name", "").startswith(TAG):
+                self.c.delete(f"/api/models/{m['id']}")
 
 
 # ---------------------------------------------------------------------------
@@ -420,8 +431,8 @@ async def main():
         print("\n--- Part A2: PromptToolkit 全生命周期 ---")
         results += await part_a2_prompt(sf, uid)
 
-        print("\n--- Part A3: ModelToolkit 创建+门禁+删除 ---")
-        results += await part_a3_model(sf, uid)
+        print("\n--- Part A3: ModelToolkit 创建+连通+门禁+删除 ---")
+        results += await part_a3_model(sf, uid, mid)
 
         print("\n--- Part A4: DatasetToolkit 上传+摄入+导出+门禁+删除 ---")
         results += await part_a4_dataset(sf, uid, wd)
