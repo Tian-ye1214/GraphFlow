@@ -88,7 +88,7 @@ async def test_add_op_and_remove(session_factory):
 async def test_create_rename_delete_workflow(session_factory):
     sf = session_factory
     uid, _ = await _seed(sf)
-    tk = GraphToolkit(sf, uid)
+    tk = GraphToolkit(sf, uid, confirm_delete=True)   # CRUD 直驱：删除走已确认路径
     msg = await tk.create_workflow("新链路")
     async with sf() as s:
         wf = (await s.execute(
@@ -213,7 +213,7 @@ async def test_delete_workflow_cascades_children(session_factory):
         s.add(ModelCallLog(user_id=uid, workflow_id=wf_id, node_id="g", source="assistant"))
         await s.commit()
         run_id = run.id
-    msg = await GraphToolkit(sf, uid).delete_workflow(wf_id)
+    msg = await GraphToolkit(sf, uid, confirm_delete=True).delete_workflow(wf_id)
     assert "已删除" in msg
     async with sf() as s:
         assert await s.get(Workflow, wf_id) is None
@@ -236,10 +236,29 @@ async def test_delete_workflow_blocked_while_running(session_factory):
         s.add(ver); await s.flush()
         s.add(Run(user_id=uid, workflow_id=wf_id, workflow_version_id=ver.id, status="running"))
         await s.commit()
-    msg = await GraphToolkit(sf, uid).delete_workflow(wf_id)
+    msg = await GraphToolkit(sf, uid, confirm_delete=True).delete_workflow(wf_id)
     assert "运行中" in msg
     async with sf() as s:
         assert await s.get(Workflow, wf_id) is not None   # 未删
+
+
+async def test_delete_workflow_requires_confirmation(session_factory):
+    """未确认(confirm_delete 默认 False)删工作流：返回需确认提示串且不删除/不级联——
+    对齐 CLI `gf wf rm` 的服务端删除门禁，堵住原生工具绕过确认的后门。"""
+    sf = session_factory
+    uid, wf_id = await _seed(sf)
+    async with sf() as s:
+        ver = WorkflowVersion(workflow_id=wf_id, version=1, graph_json="{}")
+        s.add(ver); await s.flush()
+        s.add(Run(user_id=uid, workflow_id=wf_id, workflow_version_id=ver.id, status="completed"))
+        await s.commit()
+    msg = await GraphToolkit(sf, uid).delete_workflow(wf_id)   # 默认 confirm_delete=False
+    assert "确认" in msg and f"gf wf rm {wf_id}" in msg
+    async with sf() as s:
+        assert await s.get(Workflow, wf_id) is not None        # 工作流未删
+        cnt = (await s.execute(select(func.count()).select_from(Run)
+                               .where(Run.workflow_id == wf_id))).scalar()
+        assert cnt == 1                                         # 子数据完好未级联
 
 
 async def test_set_node_prompt_copy_from_library(session_factory):

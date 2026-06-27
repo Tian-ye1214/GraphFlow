@@ -49,7 +49,8 @@ class AgentSystem:
         if self._session_factory is not None and self._user_id is not None:
             from app.agent.catalog import make_catalog_tools
             from app.agent.graph_tools import GraphToolkit
-            tools += GraphToolkit(self._session_factory, self._user_id).tools
+            tools += GraphToolkit(self._session_factory, self._user_id,
+                                  self._confirm_delete).tools
             tools += make_catalog_tools(self._session_factory, self._user_id)
         return tools
 

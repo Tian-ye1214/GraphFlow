@@ -19,9 +19,11 @@ from app.services.workflow_store import delete_workflow_full, resolve_ref, updat
 
 
 class GraphToolkit:
-    def __init__(self, session_factory: async_sessionmaker, user_id: int):
+    def __init__(self, session_factory: async_sessionmaker, user_id: int,
+                 confirm_delete: bool = False):
         self._sf = session_factory
         self._uid = user_id
+        self._confirm_delete = confirm_delete
 
     async def _owned(self, session, workflow_id: int):
         wf = await session.get(Workflow, int(workflow_id))
@@ -75,6 +77,7 @@ class GraphToolkit:
 
     async def delete_workflow(self, workflow_id: int) -> str:
         """删除工作流（级联清运行记录/版本/日志/磁盘导出）。有运行中的任务则先取消。
+        破坏性删除需用户确认：未确认时返回需确认提示串、不执行（同 CLI gf wf rm 的删除门禁）。
         Parameters:
             workflow_id: 工作流 id
         """
@@ -82,6 +85,9 @@ class GraphToolkit:
             wf = await self._owned(s, workflow_id)
             if wf is None:
                 return "工作流不存在"
+            if not self._confirm_delete:   # 删除门禁单点：与 tools.py run_command(gf wf rm) 同语义
+                return ("删除工作流需用户确认：请向用户说明将删除该工作流及其全部运行记录/版本/日志/导出，"
+                        f"在回复末尾单独一行输出 [confirm_delete] gf wf rm {workflow_id}，然后结束回合等待确认。")
             runs = (await s.execute(
                 select(Run.id, Run.status).where(Run.workflow_id == wf.id))).all()
             if any(st in ("queued", "running") for _, st in runs):

@@ -33,7 +33,7 @@ async def part_a(sf, uid, ds_name, model_name, rest):
     from app.models import ModelCallLog, Run, RunRow, Workflow, WorkflowVersion
     from sqlalchemy import func, select
 
-    tk = GraphToolkit(sf, uid)
+    tk = GraphToolkit(sf, uid, confirm_delete=True)   # 直驱确定性测试：第10步删除走已确认路径
     R = []
 
     def ck(name, ok, detail=""):
