@@ -6,12 +6,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import crypto
 from app.auth import get_current_user
 from app.db import get_session
-from app.events import publish
 from app.models import ModelConfig, User
-from app.services import llm
+from app.services import llm, model_service
 
 router = APIRouter(prefix="/api/models", tags=["models"])
 
@@ -76,15 +74,10 @@ async def list_models(user: User = Depends(get_current_user), session: AsyncSess
 async def create_model(body: ModelConfigIn, user: User = Depends(get_current_user),
                        session: AsyncSession = Depends(get_session)):
     provider, api_version, azure_api_mode = _validated_provider_fields(body)
-    mc = ModelConfig(
-        user_id=user.id, name=body.name, model_name=body.model_name, base_url=body.base_url,
+    mc = await model_service.create_model(
+        session, user.id, name=body.name, model_name=body.model_name, base_url=body.base_url,
         provider=provider, azure_api_mode=azure_api_mode, api_version=api_version,
-        api_key_enc=crypto.encrypt(body.api_key) if body.api_key else "",
-        default_params_json=json.dumps(body.default_params, ensure_ascii=False),
-    )
-    session.add(mc)
-    await session.commit()
-    publish(user.id, "model", mc.id)
+        api_key=body.api_key, default_params=body.default_params)
     return _out(mc)
 
 
@@ -93,13 +86,10 @@ async def update_model(mc_id: int, body: ModelConfigIn, user: User = Depends(get
                        session: AsyncSession = Depends(get_session)):
     mc = await _get_owned(mc_id, user, session)
     provider, api_version, azure_api_mode = _validated_provider_fields(body, existing_key=mc.api_key_enc)
-    mc.name, mc.model_name, mc.base_url = body.name, body.model_name, body.base_url
-    mc.provider, mc.azure_api_mode, mc.api_version = provider, azure_api_mode, api_version
-    mc.default_params_json = json.dumps(body.default_params, ensure_ascii=False)
-    if body.api_key:
-        mc.api_key_enc = crypto.encrypt(body.api_key)
-    await session.commit()
-    publish(user.id, "model", mc.id)
+    mc = await model_service.update_model(
+        session, mc, name=body.name, model_name=body.model_name, base_url=body.base_url,
+        provider=provider, azure_api_mode=azure_api_mode, api_version=api_version,
+        default_params=body.default_params, api_key=body.api_key)
     return _out(mc)
 
 
@@ -107,9 +97,7 @@ async def update_model(mc_id: int, body: ModelConfigIn, user: User = Depends(get
 async def delete_model(mc_id: int, user: User = Depends(get_current_user),
                        session: AsyncSession = Depends(get_session)):
     mc = await _get_owned(mc_id, user, session)
-    await session.delete(mc)
-    await session.commit()
-    publish(user.id, "model", mc_id)
+    await model_service.delete_model(session, mc)
     return {"ok": True}
 
 
