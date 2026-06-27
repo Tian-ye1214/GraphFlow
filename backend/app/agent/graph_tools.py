@@ -2,6 +2,7 @@
 范式同 catalog/node_info（session_factory + user_id + 归属校验）；图变更走 graph_ops 单点，
 落库+SSE 走 workflow_store。归属不符返回人话错误串，不抛异常到框架。"""
 import json
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -9,21 +10,24 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.agent.catalog import CatalogTools
 from app.agent.data_preview import _fit_budget
 from app.agent.node_info import _summarize_node
+from app.agent.sandbox import resolve_in
 from app.config import settings
 from app.engine.columns import propagate_columns, resolve_dataset_cols
 from app.engine.graph import GraphError, parse_graph, validate_graph
 from app.events import publish
 from app.models import Run, Workflow
 from app.services import graph_ops as go
+from app.services.workflow_package import PackageError, export_package, import_package
 from app.services.workflow_store import delete_workflow_full, resolve_ref, update_workflow_graph
 
 
 class GraphToolkit:
     def __init__(self, session_factory: async_sessionmaker, user_id: int,
-                 confirm_delete: bool = False):
+                 confirm_delete: bool = False, workdir=None):
         self._sf = session_factory
         self._uid = user_id
         self._confirm_delete = confirm_delete
+        self._workdir = workdir
 
     async def _owned(self, session, workflow_id: int):
         wf = await session.get(Workflow, int(workflow_id))
@@ -302,10 +306,48 @@ class GraphToolkit:
             ops = node.get("config", {}).get("operations", [])
             return json.dumps({"rows": ops}, ensure_ascii=False)
 
+    async def export_workflow(self, workflow_id: int) -> str:
+        """把工作流打包成 .gfpkg 导出到会话工作目录(自包含图+数据集+提示词，模型去密钥)。
+        Parameters:
+            workflow_id: 工作流 id
+        """
+        async with self._sf() as s:
+            wf = await self._owned(s, workflow_id)
+            if wf is None:
+                return "工作流不存在"
+            out_rel = f"workflow_{workflow_id}.gfpkg"
+            out_path = resolve_in(Path(self._workdir), out_rel)
+            try:
+                await export_package(s, wf, str(out_path))
+            except Exception as e:
+                return f"Error: 导出失败 {e}"
+            return f"已导出 {out_rel}"
+
+    async def import_workflow(self, file_path: str) -> str:
+        """从会话工作目录的 .gfpkg 导入一条工作流(同名资源复用、模型需补密钥)。
+        Parameters:
+            file_path: .gfpkg 路径，相对会话工作目录
+        """
+        try:
+            src = resolve_in(Path(self._workdir), file_path)
+        except ValueError as e:
+            return f"Security error: {e}"
+        if not src.exists():
+            return f"Error: 文件不存在 {file_path}"
+        async with self._sf() as s:
+            try:
+                wf_out, _report = await import_package(s, str(src), self._uid)
+            except (PackageError, GraphError) as e:
+                return f"Error: {e}"
+            except Exception as e:
+                return f"Error: {e}"
+        return f"已导入工作流「{wf_out['name']}」(#{wf_out['id']})"
+
     @property
     def tools(self) -> list:
         return [self.list_workflows, self.show_workflow_graph, self.workflow_columns,
                 self.list_node_ops,
                 self.create_workflow, self.rename_workflow, self.delete_workflow,
                 self.add_node, self.remove_node, self.connect_nodes, self.disconnect_nodes,
-                self.set_node_config, self.set_node_prompt, self.add_node_op, self.remove_node_op]
+                self.set_node_config, self.set_node_prompt, self.add_node_op, self.remove_node_op,
+                self.export_workflow, self.import_workflow]

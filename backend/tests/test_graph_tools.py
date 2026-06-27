@@ -276,3 +276,25 @@ async def test_set_node_prompt_copy_from_library(session_factory):
     await GraphToolkit(sf, uid).set_node_prompt(wf_id, "g", "user", library_ref=pid, mode="copy")
     cfg = next(n for n in (await _graph(sf, wf_id))["nodes"] if n["id"] == "g")["config"]
     assert cfg["user_prompt"] == "最新版 {{q}}"
+
+
+async def test_export_then_import_workflow_roundtrip(session_factory, tmp_path):
+    sf = session_factory
+    g = {"nodes": [{"id": "in", "type": "input", "config": {}}], "edges": []}
+    uid, wf_id = await _seed(sf, g)
+    tk = GraphToolkit(sf, uid, workdir=tmp_path)
+    msg = await tk.export_workflow(wf_id)
+    assert ".gfpkg" in msg
+    # 导出文件落在工作目录
+    pkgs = list(tmp_path.glob("*.gfpkg"))
+    assert pkgs
+    imp = await tk.import_workflow(pkgs[0].name)
+    assert "已导入" in imp
+
+
+async def test_import_workflow_bad_file_returns_error(session_factory, tmp_path):
+    sf = session_factory
+    uid, wf_id = await _seed(sf)
+    (tmp_path / "bad.gfpkg").write_text("not a zip", encoding="utf-8")
+    msg = await GraphToolkit(sf, uid, workdir=tmp_path).import_workflow("bad.gfpkg")
+    assert msg.startswith("Error")
