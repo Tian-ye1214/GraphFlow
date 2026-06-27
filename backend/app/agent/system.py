@@ -48,10 +48,18 @@ class AgentSystem:
         tools = tk.tools + sk.tools
         if self._session_factory is not None and self._user_id is not None:
             from app.agent.catalog import make_catalog_tools
+            from app.agent.dataset_tools import DatasetToolkit
             from app.agent.graph_tools import GraphToolkit
-            tools += GraphToolkit(self._session_factory, self._user_id,
-                                  self._confirm_delete).tools
-            tools += make_catalog_tools(self._session_factory, self._user_id)
+            from app.agent.model_tools import ModelToolkit
+            from app.agent.prompt_tools import PromptToolkit
+            from app.agent.run_tools import RunToolkit
+            sf, uid, cd = self._session_factory, self._user_id, self._confirm_delete
+            tools += GraphToolkit(sf, uid, cd, workdir=self.workdir).tools
+            tools += make_catalog_tools(sf, uid)
+            tools += RunToolkit(sf, uid, cd).tools
+            tools += ModelToolkit(sf, uid, cd).tools
+            tools += DatasetToolkit(sf, uid, self.workdir, cd).tools
+            tools += PromptToolkit(sf, uid, cd).tools
         return tools
 
     async def _compact(self, history: list, running_mc) -> list:

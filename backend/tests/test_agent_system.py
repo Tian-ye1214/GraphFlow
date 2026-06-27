@@ -123,6 +123,25 @@ def test_make_tools_without_session_omits_graph_tools(tmp_path):
     assert "add_node" not in names and "list_workflows" not in names
 
 
+def test_make_tools_includes_phase2_tools(tmp_path):
+    echo = FunctionModel(lambda m, i: ModelResponse(parts=[TextPart("ok")]))
+    sysm = AgentSystem(models={"coordinator": echo, "manager": echo, "worker": echo},
+                       workdir=tmp_path, confirm_delete=False, emit=None,
+                       user_id=1, session_factory=lambda: None)
+    names = {getattr(t, "__name__", "") for t in sysm._make_tools(tmp_path / "s.json")}
+    assert {"start_run", "get_run", "create_model", "delete_model", "upload_dataset",
+            "create_prompt", "rollback_prompt", "export_workflow", "import_workflow"} <= names
+
+
+def test_make_tools_no_duplicate_names(tmp_path):
+    echo = FunctionModel(lambda m, i: ModelResponse(parts=[TextPart("ok")]))
+    sysm = AgentSystem(models={"coordinator": echo, "manager": echo, "worker": echo},
+                       workdir=tmp_path, confirm_delete=False, emit=None,
+                       user_id=1, session_factory=lambda: None)
+    names = [getattr(t, "__name__", "") for t in sysm._make_tools(tmp_path / "s.json")]
+    assert len(names) == len(set(names)), f"重名: {[n for n in names if names.count(n) > 1]}"
+
+
 async def test_adhoc_worker_routing(tmp_path):
     (tmp_path / "cli.json").write_text("{}", encoding="utf-8")
 
