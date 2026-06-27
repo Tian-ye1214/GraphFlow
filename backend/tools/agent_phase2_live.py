@@ -95,13 +95,15 @@ async def part_a1_run(sf, uid, ds_name, model_name, wd):
     ck("get_run 轮询 completed", final_status == "completed", f"status={final_status}")
 
     # 4. read_run_rows 验 LLM 节点 g 的 ans 产出列有值
+    #    RunRow.data_json 存「该输入行产出的若干输出行」列表(fanout 模型)，故每行 data 是 list[dict]
     rows_data = []
     if run_id:
         rj = json.loads(await rtk.read_run_rows(run_id, "g"))
         rows_data = rj.get("rows", [])
-    ans_ok = bool(rows_data) and all(r.get("data", {}).get("ans") for r in rows_data)
-    sample = (rows_data[0]["data"].get("ans") if rows_data else "")
-    ck("read_run_rows 产出 ans", ans_ok, f"n={len(rows_data)} sample={sample[:40]!r}")
+    out_rows = [d for r in rows_data for d in (r.get("data") or []) if isinstance(d, dict)]
+    ans_ok = bool(out_rows) and all(d.get("ans") for d in out_rows)
+    sample = (out_rows[0].get("ans") if out_rows else "")
+    ck("read_run_rows 产出 ans", ans_ok, f"n={len(out_rows)} sample={sample[:40]!r}")
 
     # 5. export_workflow → import_workflow 往返
     exp_msg = await tk.export_workflow(wf_id)

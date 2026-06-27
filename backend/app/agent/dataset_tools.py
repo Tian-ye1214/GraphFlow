@@ -43,7 +43,9 @@ class DatasetToolkit:
             upload_dir.mkdir(parents=True, exist_ok=True)
             dest = upload_dir / f"{uuid4().hex[:8]}_{src.name}"
             shutil.copy2(src, dest)
-            original = name or src.name
+            # 展示名用 name(留空用文件名)，但格式必须从真实文件扩展名探测——name 常无扩展名，
+            # 直接当文件名喂 detect_upload_structure 会「不支持的文件格式」。拼「展示名+真实后缀」。
+            original = f"{name}{src.suffix}" if name else src.name
             async with self._sf() as s:
                 created = await dataset_service.ingest_file(s, self._sf, self._uid,
                                                             original, dest)
