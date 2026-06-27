@@ -192,6 +192,47 @@ export function applyAssistPatch(config: Record<string, any>, patch: Record<stri
   return merged
 }
 
+// 应用前 diff：助手补丁会改动当前配置的哪些顶层字段。变更检测按真实值比较，
+// 但嵌套对象(如 http_fetch 的 params/headers，可能含真实密钥)只显示「{…}」不展开。
+export function configDiff(current: Record<string, any>, patch: Record<string, any>):
+  { key: string; before: string; after: string }[] {
+  const cmp = (v: any) => JSON.stringify(v ?? null)
+  const disp = (v: any): string => {
+    if (v === undefined) return '∅'
+    if (typeof v === 'string') return v
+    if (v && typeof v === 'object' && !Array.isArray(v)) return '{…}'
+    return JSON.stringify(v)
+  }
+  return Object.keys(patch)
+    .filter((k) => cmp(current[k]) !== cmp(patch[k]))
+    .map((k) => ({ key: k, before: disp(current[k]), after: disp(patch[k]) }))
+}
+
+function ApplyPatch({ current, patch, onApply }: {
+  current: Record<string, any>
+  patch: Record<string, any>
+  onApply: (c: Record<string, any>) => void
+}) {
+  const diff = configDiff(current, patch)
+  const trunc = (s: string) => (s.length > 80 ? s.slice(0, 80) + '…' : s)
+  return (
+    <div>
+      {diff.length > 0 && (
+        <div style={{ fontSize: 11, background: '#fafafa', border: '1px solid #f0f0f0',
+                      borderRadius: 4, padding: '4px 6px', margin: '2px 0' }}>
+          {diff.map((d) => (
+            <div key={d.key} style={{ wordBreak: 'break-all' }}>
+              <b>{d.key}</b>：<span style={{ color: '#999', textDecoration: 'line-through' }}>{trunc(d.before)}</span>
+              {' → '}<span style={{ color: '#389e0d' }}>{trunc(d.after)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <Button size="small" type="link" onClick={() => onApply(patch)}>应用到节点</Button>
+    </div>
+  )
+}
+
 function MissingColsWarning({ text, inputCols }: { text: string; inputCols: string[] }) {
   const miss = missingCols(text, inputCols)
   if (miss.length === 0) return null
@@ -415,7 +456,7 @@ function NodeAssist({ nodeType, workflowId, nodeId, config, onApply }: {
             <div style={{ background: ROLE_BG[m.role], borderRadius: 6, padding: '4px 8px',
                           whiteSpace: 'pre-wrap', fontSize: 12 }}>{m.text}</div>
             {m.config && (
-              <Button size="small" type="link" onClick={() => onApply(m.config!)}>应用到节点</Button>
+              <ApplyPatch current={config} patch={m.config} onApply={onApply} />
             )}
           </div>
         ))}

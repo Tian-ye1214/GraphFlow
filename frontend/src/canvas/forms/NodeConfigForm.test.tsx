@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import NodeConfigForm, { THINKING_EFFORT_OPTIONS, buildCodegenPayload, missingLibVars } from './NodeConfigForm'
+import NodeConfigForm, { THINKING_EFFORT_OPTIONS, buildCodegenPayload, configDiff, missingLibVars } from './NodeConfigForm'
 
 class ResizeObserverStub {
   observe() {}
@@ -303,6 +303,24 @@ describe('NodeConfigForm node assistant drafts', () => {
       path: '/api/agent/codegen',
       body: { model_config_id: 2, instruction: 'write code' },
     })
+  })
+})
+
+describe('configDiff', () => {
+  it('only changed fields; new key shows ∅; nested objects masked not dumped', () => {
+    expect(configDiff({ user_prompt: 'old' }, { user_prompt: 'new' }))
+      .toEqual([{ key: 'user_prompt', before: 'old', after: 'new' }])
+    // unchanged key omitted
+    expect(configDiff({ a: 'x', b: 'y' }, { a: 'x', b: 'z' }))
+      .toEqual([{ key: 'b', before: 'y', after: 'z' }])
+    // newly set key
+    expect(configDiff({}, { output_column: 'ans' }))
+      .toEqual([{ key: 'output_column', before: '∅', after: 'ans' }])
+    // changed nested object detected but value never dumped (no secret leak)
+    expect(configDiff({ params: { api_key: 'real-secret' } }, { params: { api_key: '***REDACTED***' } }))
+      .toEqual([{ key: 'params', before: '{…}', after: '{…}' }])
+    // identical nested object → no diff
+    expect(configDiff({ params: { k: 1 } }, { params: { k: 1 } })).toEqual([])
   })
 })
 
