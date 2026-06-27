@@ -21,16 +21,14 @@ from app.events import publish
 from app.models import Dataset, DatasetRow, User
 from app.services.dataset_crud import DatasetCrudError, apply_dataset_operations
 from app.services.dataset_store import (
-    dataset_root,
-    detect_upload_structure,
     ensure_dataset_materialized,
     iter_csv_lines,
     iter_jsonl_lines,
     read_dataset_range,
     write_xlsx_export,
 )
+from app.services import dataset_service
 from app.services.file_parse import union_columns
-from app.services.ingest_manager import ingest_manager
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
 
@@ -246,35 +244,16 @@ async def upload(
             raise HTTPException(status_code=422, detail="磁盘空间不足，无法导入该文件")
 
         try:
-            units = detect_upload_structure(original_name, file_path)
+            created = await dataset_service.ingest_file(
+                session, factory, user.id, original_name, file_path)
         except (ValueError, UnicodeDecodeError, RecursionError) as exc:
             file_path.unlink(missing_ok=True)
             raise HTTPException(
                 status_code=422, detail=f"{original_name} parse failed: {exc}") from exc
-
-        if not units:                       # Excel 无可用数据 sheet：无占位行则源文件无人回收，直接清掉
+        if not created:                     # Excel 无可用数据 sheet：无占位行则源文件无人回收，直接清掉
             file_path.unlink(missing_ok=True)
             continue
-
-        created = []
-        for unit in units:
-            ds = Dataset(
-                user_id=user.id, name=unit.name, source="upload",
-                original_filename=original_name, original_format=unit.original_format,
-                file_path=str(file_path), row_count=0,
-                columns_json=json.dumps(unit.columns, ensure_ascii=False),
-                status="importing", header_row=unit.header_row,
-                data_start_row=unit.data_start_row, total_rows_including_header=0,
-            )
-            session.add(ds)
-            created.append((ds, unit))
-        await session.commit()              # 短事务：占位行立即可见
-
-        for ds, unit in created:
-            ingest_manager.submit(ds.id, source_path=file_path, unit=unit,
-                                  version=ds.version, user_id=user.id, session_factory=factory)
-            results.append(_out(ds))
-            publish(user.id, "dataset", ds.id)
+        results.extend(_out(ds) for ds in created)
     return results
 
 
@@ -432,23 +411,5 @@ async def delete_dataset(
     session: AsyncSession = Depends(get_session),
 ):
     ds = await _get_owned(ds_id, user, session)
-    # 迁移后真实数据全在分片目录 datasets/<uid>/<id>/v*/，删库行不回收磁盘 → 提交成功后整 id 目录删掉。
-    shard_dir = dataset_root(settings.data_dir, ds.user_id, ds.id, ds.version).parent
-    file_path = ds.file_path
-    await session.execute(sa_delete(DatasetRow).where(DatasetRow.dataset_id == ds.id))
-    await session.delete(ds)
-    await session.commit()
-    shutil.rmtree(shard_dir, ignore_errors=True)
-    if file_path:
-        # 多 sheet Excel 共享同一 file_path；只有无其他 Dataset 仍在 importing 时才删源文件，
-        # 否则兄弟 sheet 的后台摄入任务会因源文件消失而 failed。
-        still = (await session.execute(
-            select(Dataset.id).where(
-                Dataset.file_path == str(file_path),
-                Dataset.status == "importing",
-            )
-        )).first()
-        if still is None:
-            Path(file_path).unlink(missing_ok=True)
-    publish(user.id, "dataset", ds_id)
+    await dataset_service.delete_dataset(session, ds, settings.data_dir)
     return {"ok": True}
