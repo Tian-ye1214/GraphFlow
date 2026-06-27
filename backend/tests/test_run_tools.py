@@ -1,7 +1,7 @@
 import json
 from app.agent.run_tools import RunToolkit
-from app.models import (ModelCallLog, QcMetric, Run, RunNodeState, RunRow, User, Workflow,
-                        WorkflowVersion)
+from app.models import (ModelCallLog, QcFailure, QcMetric, Run, RunLog, RunNodeState, RunRow,
+                        User, Workflow, WorkflowVersion)
 
 
 async def _seed_run(sf):
@@ -37,3 +37,24 @@ async def test_run_reads_cross_tenant(session_factory):
     sf = session_factory; uid, wf_id, run_id = await _seed_run(sf)
     out = json.loads(await RunToolkit(sf, uid + 999).get_run(run_id))
     assert out.get("error") == "run_not_found"
+
+
+async def test_read_run_qc_default_empty_sample(session_factory):
+    sf = session_factory; uid, wf_id, run_id = await _seed_run(sf)
+    async with sf() as s:
+        s.add(QcMetric(run_id=run_id, node_id="q", total=3, first_round_pass=2))
+        s.add(QcFailure(run_id=run_id, node_id="q"))  # 故意默认空 sample_json="" / reasons_json
+        await s.commit()
+    out = json.loads(await RunToolkit(sf, uid).read_run_qc(run_id))
+    assert out["metrics"][0]["first_round_pass"] == 2
+    assert out["failures"][0]["sample"] is None  # or "null" 兜底生效，不抛
+    assert out["failures"][0]["reasons"] == []
+
+
+async def test_read_run_logs(session_factory):
+    sf = session_factory; uid, wf_id, run_id = await _seed_run(sf)
+    async with sf() as s:
+        s.add(RunLog(run_id=run_id, node_id="o", level="info", message="hello"))
+        await s.commit()
+    out = json.loads(await RunToolkit(sf, uid).read_run_logs(run_id))
+    assert any(r["message"] == "hello" for r in out["rows"])

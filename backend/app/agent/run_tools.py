@@ -42,12 +42,12 @@ class RunToolkit:
                 return json.dumps({"error": "run_not_found"}, ensure_ascii=False)
             states = (await s.execute(
                 select(RunNodeState).where(RunNodeState.run_id == run.id))).scalars().all()
-            return json.dumps({
+            return json.dumps(_fit_budget({
                 "id": run.id, "status": run.status, "error": run.error,
                 "stats": json.loads(run.stats_json),
                 "node_states": [{"node_id": st.node_id, "status": st.status, "total": st.total,
                                  "done": st.done, "failed": st.failed} for st in states]},
-                ensure_ascii=False)
+                key="node_states"), ensure_ascii=False)
 
     async def read_run_rows(self, run_id: int, node_id: str, status: str | None = None,
                             limit: int = 20) -> str:
@@ -102,8 +102,8 @@ class RunToolkit:
             return json.dumps(_fit_budget({
                 "metrics": [{"node_id": m.node_id, "total": m.total,
                              "first_round_pass": m.first_round_pass} for m in metrics],
-                "failures": [{"node_id": f.node_id, "sample": json.loads(f.sample_json),
-                              "reasons": json.loads(f.reasons_json)} for f in fails]},
+                "failures": [{"node_id": f.node_id, "sample": json.loads(f.sample_json or "null"),
+                              "reasons": json.loads(f.reasons_json or "[]")} for f in fails]},
                 key="failures"), ensure_ascii=False)
 
     @property
