@@ -27,7 +27,7 @@ async def test_upload_dataset_path_escape_blocked(session_factory, tmp_path):
     sf = session_factory
     uid = await _seed_user(sf)
     msg = await DatasetToolkit(sf, uid, tmp_path).upload_dataset("../../etc/passwd")
-    assert "Security error" in msg or "Error" in msg
+    assert "Security error" in msg
 
 
 async def test_delete_dataset_requires_confirmation(session_factory, tmp_path):
