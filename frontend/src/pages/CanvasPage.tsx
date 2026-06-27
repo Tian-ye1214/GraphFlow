@@ -34,7 +34,6 @@ function Canvas() {
   const baseline = useRef('')
   const rf = useReactFlow()
   const flowWrap = useRef<HTMLDivElement>(null)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const clip = useRef<{ type: string; config: Record<string, any>; label?: string; position: { x: number; y: number } } | null>(null)
   const pasteSeq = useRef(0)
 
@@ -88,7 +87,6 @@ function Canvas() {
       if (key === 'c' && selected) {
         clip.current = {
           type: selected.type!,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           config: (selected.data as { config?: Record<string, any> }).config ?? {},
           label: (selected.data as { label?: string }).label,
           position: selected.position,
