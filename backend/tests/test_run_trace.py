@@ -2,6 +2,7 @@ import json
 
 from app.models import ModelCallLog, QcFailure, Run, RunRow, User, WorkflowVersion
 from app.services import llm
+from conftest import wait_ready
 from tests.test_runs_api import wait_run
 
 
@@ -138,6 +139,7 @@ async def test_runner_assigns_trace_ids_and_hides_internal_fields(auth_client, m
         "/api/datasets/upload",
         files=[("files", ("seed.jsonl", b'{"q":"a"}\n{"q":"b"}\n', "application/octet-stream"))])
     ds_id = upload.json()[0]["id"]
+    await wait_ready(auth_client, ds_id)   # 摄入完成再起跑，否则 row_count=0 静默空跑（且会被起跑前校验 422 拦下）
     mc = (await auth_client.post("/api/models", json={
         "name": "m", "model_name": "m", "base_url": "http://x/v1",
         "api_key": "k", "default_params": {}})).json()
@@ -180,6 +182,7 @@ async def test_trace_internal_fields_are_not_visible_to_node_prompts(auth_client
         "/api/datasets/upload",
         files=[("files", ("seed.jsonl", b'{"q":"a"}\n', "application/octet-stream"))])
     ds_id = upload.json()[0]["id"]
+    await wait_ready(auth_client, ds_id)   # 摄入完成再起跑，否则 row_count=0 静默空跑（且会被起跑前校验 422 拦下）
     mc = (await auth_client.post("/api/models", json={
         "name": "m", "model_name": "m", "base_url": "http://x/v1",
         "api_key": "k", "default_params": {}})).json()
@@ -210,6 +213,7 @@ async def test_runner_qc_failure_trace_links_to_trace_api(auth_client, monkeypat
         "/api/datasets/upload",
         files=[("files", ("seed.jsonl", b'{"q":"a"}\n', "application/octet-stream"))])
     ds_id = upload.json()[0]["id"]
+    await wait_ready(auth_client, ds_id)   # 摄入完成再起跑，否则 row_count=0 静默空跑（且会被起跑前校验 422 拦下）
     mc = (await auth_client.post("/api/models", json={
         "name": "m", "model_name": "m", "base_url": "http://x/v1",
         "api_key": "k", "default_params": {}})).json()

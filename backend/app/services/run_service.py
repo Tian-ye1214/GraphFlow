@@ -66,6 +66,9 @@ async def validate_graph_resource_ownership(session, graph, user_id: int) -> Non
                 ds = await session.get(Dataset, ds_id)
                 if ds is None or ds.user_id != user_id:
                     raise ValueError(f"节点 {n.id}: 数据集不存在")
+                if ds.status != "ready":  # 摄入未完成就起跑会静默产 0 行——起跑前拦死，点名报错
+                    hint = "仍在导入中，请等待导入完成后再运行" if ds.status == "importing" else "导入失败，请重新上传"
+                    raise ValueError(f"节点 {n.id}: 数据集{hint}（status={ds.status}）")
         elif n.type == "llm_synth":
             mc_id = n.config.get("model_config_id")
             mc = await session.get(ModelConfig, mc_id) if mc_id else None

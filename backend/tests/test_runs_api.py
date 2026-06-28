@@ -494,3 +494,27 @@ async def test_list_runs_qc_summary_bulk_and_failures_limit_clamp(auth_client, s
     assert summaries[r2]["total"] == 4 and summaries[r2]["first_round_rate"] == 0.25
     assert (await auth_client.get(f"/api/runs/{r1}/qc-failures?limit=-1")).json() == []   # 负 limit 钳到 0
     assert len((await auth_client.get(f"/api/runs/{r1}/qc-failures?limit=2")).json()) == 2
+
+
+async def test_run_rejected_when_input_dataset_still_importing(auth_client, session_factory):
+    """起跑前若 input 数据集仍在导入(importing)，应 422 点名报错，而非静默产 0 行。
+    复现根因:摄入未完成时 row_count=0，input 节点 0>=0 直接判 done 0 行 → 整 run 静默空跑。"""
+    from conftest import wait_ready
+
+    from app.models import Dataset
+    ds = (await auth_client.post(
+        "/api/datasets/upload",
+        files=[("files", ("种子.jsonl", JSONL, "application/octet-stream"))])).json()[0]
+    await wait_ready(auth_client, ds["id"])
+    async with session_factory() as s:                       # 回拨 importing 模拟摄入未完成
+        d = await s.get(Dataset, ds["id"])
+        d.status = "importing"
+        await s.commit()
+    wf = (await auth_client.post("/api/workflows", json={"name": "未就绪"})).json()
+    graph = {"nodes": [{"id": "in", "type": "input", "config": {"dataset_ids": [ds["id"]]}},
+                       {"id": "out", "type": "output", "config": {}}],
+             "edges": [{"source": "in", "target": "out", "kind": "normal"}]}
+    await auth_client.put(f"/api/workflows/{wf['id']}", json={"graph": graph})
+    r = await auth_client.post("/api/runs", json={"workflow_id": wf["id"]})
+    assert r.status_code == 422, r.text
+    assert "导入" in r.json()["detail"]
