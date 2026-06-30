@@ -810,19 +810,32 @@ async def _run_qc_node(session_factory, run_id, user_id, graph: Graph, node: Nod
             regen_cfg = {**tgt.config, "fanout_n": 1}  # 回扫一行换一行，不套用 fanout：否则产物翻倍、failed 计负
 
             async def regen(row):
+                # 逐行隔离：单行再生成抽风（非 JSON / 重试耗尽）返回 None，留作失败行，
+                # 不让异常冒出 _bounded_map 拖垮整 run、更不丢已通过样本（对齐单遍 work() 的行隔离）。
                 with log_context(run_id=run_id, node_id=target_id, user_id=user_id,
                                  source="synth", trace_id=row_trace_id(row)):
-                    return await _cancellable(
-                        nodes.run_llm_synth_row(regen_cfg, row, tmc, user_sem), cancel_event)
+                    try:
+                        return await _cancellable(
+                            nodes.run_llm_synth_row(regen_cfg, row, tmc, user_sem), cancel_event)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        return None
 
             while failed and rounds < cfg.get("max_rounds", 3):
                 rounds += 1
                 regenerated: list[dict] = []
-                for src, (out_rows, u) in zip(failed, await _bounded_map(
+                still_failed: list[dict] = []  # 再生成抽风的行：跳过判定，并回失败集（下一轮重试/最终落库）
+                for src, res in zip(failed, await _bounded_map(
                     failed, tgt.config.get("concurrency", 4), regen)):
+                    if res is None:
+                        still_failed.append(src)
+                        continue
+                    out_rows, u = res
                     fold(u)
                     regenerated.extend(attach_child_trace(src, out_rows, node_id=target_id, row_idx=0))
                 fresh_pass, failed = await judge_all(regenerated)
+                failed = failed + still_failed
                 passed.extend(fresh_pass)
                 await _set_node_state(session_factory, run_id, node.id, user_id=user_id, status="running",
                                       total=len(inputs), done=len(passed), failed=len(failed))

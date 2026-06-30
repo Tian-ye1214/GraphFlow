@@ -91,7 +91,10 @@ async def enqueue_run(session_factory, user_id: int, workflow_id: int) -> int:
         wf = await s.get(Workflow, workflow_id)
         if wf is None or wf.user_id != user_id:
             raise ValueError("工作流不存在")
-        validate_graph(parse_graph(wf.graph_json))
+        graph = parse_graph(wf.graph_json)
+        validate_graph(graph)
+        # 资源归属/就绪校验：与 create_run 同走单点，挡住目标模式拿 importing/failed 数据集静默空跑（见 fb1a031）
+        await validate_graph_resource_ownership(s, graph, user_id)
         max_ver = (await s.execute(select(func.max(WorkflowVersion.version)).where(
             WorkflowVersion.workflow_id == workflow_id))).scalar() or 0
         ver = WorkflowVersion(workflow_id=workflow_id, version=max_ver + 1, graph_json=wf.graph_json)
